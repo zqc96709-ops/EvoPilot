@@ -4,6 +4,12 @@ Local-first、Desktop-first 的个人操作系统，用来连接：
 
 `Capture → Plan → Focus → Work → Time → Result → Review → Insight → Principle → Mental Model → Decision → Action`
 
+## 下载与安装
+
+到 [GitHub Releases](https://github.com/zqc96709-ops/jason-os/releases) 下载最新版 `.dmg`，打开后将 `Jason OS.app` 拖入“应用程序”目录。
+
+当前首发包仅支持 Apple Silicon Mac（M1、M2、M3、M4）。由于尚未使用 Apple Developer ID 公证，macOS 可能提示“无法验证开发者”；请仅从本仓库下载，并在 Finder 中按住 Control 点击 App 后选择“打开”。
+
 ## 开发运行
 
 ```bash
