@@ -3,7 +3,7 @@ export type Entity =
   | 'goals' | 'keyResults' | 'projects' | 'tasks' | 'hypotheses' | 'experiments' | 'timeLogs' | 'results'
   | 'reviews' | 'knowledge' | 'insights' | 'principles' | 'mentalModels' | 'mentalModelUsages'
   | 'decisions' | 'notes' | 'notebookCategories' | 'notebookFolders' | 'notebookFiles' | 'inbox' | 'events' | 'people' | 'dataRecords' | 'attachments' | 'timelineEvents' | 'agentRuns' | 'agentActions'
-  | 'externalSources' | 'signals' | 'opportunities' | 'intelligenceBriefs'
+  | 'externalSources' | 'signals' | 'opportunities' | 'intelligenceBriefs' | 'researchRequests' | 'researchResults'
   | 'financialAccounts' | 'financialCategories' | 'financialTransactions'
   | 'decisionFrameworks' | 'ceoPrinciples' | 'decisionLenses' | 'profiles'
 
@@ -233,9 +233,18 @@ export const entities: EntityConfig[] = [
   { entity: 'intelligenceBriefs', label: '情报简报', singular: '情报简报', icon: '✺', titleKey: 'title', description: '把少量重要信号、机会和风险整理成 CEO 可以快速阅读的简报。', fields: [
     { key: 'title', label: '简报标题' }, { key: 'periodStart', label: '周期开始', type: 'date' }, { key: 'periodEnd', label: '周期结束', type: 'date' }, { key: 'signalIds', label: '信号', relation: 'signals', multiple: true }, { key: 'opportunityIds', label: '机会', relation: 'opportunities', multiple: true }, { key: 'riskSignalIds', label: '风险信号', relation: 'signals', multiple: true }, { key: 'summary', label: '摘要', multiline: true }, { key: 'dataGaps', label: '数据缺口', multiline: true }, { key: 'generatedAt', label: '生成时间', type: 'datetime-local' }, { key: 'status', label: '状态', type: 'select', options: [option('draft', '草稿'), option('published', '已确认')] },
   ] },
+  { entity: 'researchRequests', label: '调研需求', singular: '调研需求', icon: '⌕', titleKey: 'title', description: '在收纳箱中提出外部调研需求；确认前不会执行，也不会自动关联 Jason OS。', fields: [
+    { key: 'title', label: '调研标题' }, { key: 'request', label: '调研要求', multiline: true }, { key: 'status', label: '状态', type: 'select', options: [option('DRAFT', '方案待确认'), option('RUNNING', '调研中'), option('COMPLETED', '已完成'), option('FAILED', '未完成'), option('CANCELLED', '已取消')] },
+    { key: 'scope', label: '调研范围' }, { key: 'dimensions', label: '研究维度' }, { key: 'deliverables', label: '交付内容' }, { key: 'sourcePlan', label: '情报源方案', multiline: true }, { key: 'selectedSourceKeys', label: '已选择情报源', multiline: true },
+    { key: 'notebookCategoryId', label: '收纳箱分类', relation: 'notebookCategories' }, { key: 'tags', label: '标签（逗号分隔）' }, { key: 'startedAt', label: '开始时间', type: 'datetime-local', readOnly: true }, { key: 'completedAt', label: '完成时间', type: 'datetime-local', readOnly: true },
+  ] },
+  { entity: 'researchResults', label: '调研结果', singular: '调研结果', icon: '◈', titleKey: 'title', description: '外部调研的结果与证据；由用户决定是否分类、存入知识或关联 Jason OS。', fields: [
+    { key: 'title', label: '结果标题' }, { key: 'summary', label: '调研摘要', multiline: true }, { key: 'evidenceUrls', label: '证据链接', multiline: true }, { key: 'researchRequestId', label: '来源调研需求', relation: 'researchRequests' },
+    { key: 'status', label: '状态', type: 'select', options: [option('COMPLETED', '已完成'), option('PARTIAL', '部分完成'), option('FAILED', '未完成')] }, { key: 'notebookCategoryId', label: '收纳箱分类', relation: 'notebookCategories' }, { key: 'tags', label: '标签（逗号分隔）' }, { key: 'completedAt', label: '完成时间', type: 'datetime-local', readOnly: true },
+  ] },
   { entity: 'inbox', label: '收集箱', singular: '收集', icon: '↓', titleKey: 'content', description: '先记录事实，稍后再分类。', fields: [
     { key: 'content', label: '内容或链接', multiline: true, placeholder: '粘贴微信公众号、抖音、小红书、X、Instagram、Reddit、Facebook 等公开链接' }, { key: 'type', label: '建议类型' }, { key: 'status', label: '状态', type: 'select', options: [option('unprocessed', '待处理'), option('processed', '已处理'), option('archived', '已归档')] },
-    { key: 'platform', label: '来源平台' }, { key: 'sourceUrl', label: '原始链接' }, { key: 'author', label: '作者' }, { key: 'captureStatus', label: '采集状态' },
+    { key: 'platform', label: '来源平台' }, { key: 'sourceUrl', label: '原始链接' }, { key: 'author', label: '作者' }, { key: 'captureStatus', label: '采集状态' }, { key: 'notebookCategoryId', label: 'Notebook 分类', relation: 'notebookCategories' },
   ] },
   { entity: 'events', label: '事件', singular: '事件', icon: '●', titleKey: 'title', description: '记录会议、约会、截止日与外部事件。', fields: [
     { key: 'title', label: '事件' }, { key: 'type', label: '类型', type: 'select', options: ['会议', '约会', '截止日', '重要事件', '外部事件'] },

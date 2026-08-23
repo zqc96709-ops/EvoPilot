@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import './App.css'
 import { buildAgentContext } from './agent/contextEngine'
@@ -7,7 +7,8 @@ import { buildRadarData, radarCategories, type RadarCategory, type RadarData, ty
 import { mentalModelCategories, modelCategoryLabel, modelDefinition, modelSourcePerson, modelTrigger, type ModelRecommendation } from './mentalModels'
 import { runDecisionEngine, impactLabel, urgencyLabel, reversibilityLabel, type DecisionAnalysis } from './decisionIntelligence'
 import { accountBalanceMinor, decimalToMinor, formatMoneyMinor, minorToDecimal, projectEconomics } from './finance'
-import { briefingSignals, detectExternalSignals, type DetectedSignal, type ExternalItem } from './externalIntelligence'
+import { briefingSignals, detectExternalSignals, type ExternalItem } from './externalIntelligence'
+import { createResearchPlan, parseResearchSources, resolveResearchSources, type ResearchPlan, type ResearchSourcePlan } from './researchPlanner'
 import { calendarDateKey, taskCalendarItems, type CalendarScope } from './calendar'
 import { taskMatrixQuadrants, taskQuadrant } from './taskMatrix'
 import { filterTimelineItems, groupTimelineItems, timelineCausalEdges, timelineGoalId, timelineProjectId, timelineProjection, timelineTimestamp, timelineEntityTypes, visibleTimelineCausalEdges, type TimelineCausalEdge, type TimelineFilter, type TimelineProjectionItem, type TimelineRange } from './timeline'
@@ -18,11 +19,13 @@ import {
   type Entity, type EntityConfig, type FieldOption, type RecordData,
 } from './model'
 
-type View = 'command' | 'today' | 'tasks' | 'time' | 'projects' | 'outcomes' | 'finance' | 'externalIntelligence' | 'notebook' | 'knowledge' | 'reviews' | 'insights' | 'principles' | 'mentalModels' | 'decisions' | 'events' | 'people' | 'timeline' | 'aiNews' | 'settings' | 'profile'
+type View = 'command' | 'today' | 'tasks' | 'time' | 'projects' | 'outcomes' | 'finance' | 'notebook' | 'knowledge' | 'reviews' | 'insights' | 'principles' | 'mentalModels' | 'decisions' | 'events' | 'people' | 'timeline' | 'aiNews' | 'settings' | 'profile'
 type EditState = { config: EntityConfig; record?: RecordData; initial?: Partial<RecordData> }
 type Notice = { text: string; tone?: 'success' | 'danger' }
 type TaskView = 'list' | 'kanban' | 'matrix' | 'calendar'
 type TimeRange = 'day' | 'week' | 'month'
+type ThemePreference = 'dark' | 'light' | 'auto'
+const resolvedTheme = (theme: ThemePreference) => theme === 'auto' ? (new Date().getHours() >= 7 && new Date().getHours() < 19 ? 'light' : 'dark') : theme
 type ProfileSection = 'basic' | 'personal' | 'ai'
 
 const today = () => localDateKey()
@@ -37,6 +40,7 @@ const formatDate = (value: unknown, withTime = false) => {
 const formatMinutes = (minutes: number) => minutes < 60 ? `${Math.round(minutes)} 分钟` : `${Math.floor(minutes / 60)} 小时 ${Math.round(minutes % 60)} 分钟`
 const optionParts = (option: FieldOption) => typeof option === 'string' ? { value: option, label: option } : option
 const defaultStatus = (entity: Entity) => ({ tasks: 'todo', goals: 'active', projects: 'active', hypotheses: 'untested', experiments: 'planned', decisions: 'pending', inbox: 'unprocessed', notes: 'INBOX', notebookFiles: 'ACTIVE', results: 'PLANNED', financialAccounts: 'ACTIVE', financialCategories: 'ACTIVE', financialTransactions: 'POSTED' } as Partial<Record<Entity, string>>)[entity] || 'active'
+const tagsFor = (record: RecordData) => Array.isArray(record.tags) ? record.tags.map(String).map((tag) => tag.trim()).filter(Boolean) : String(record.tags || '').split(',').map((tag) => tag.trim()).filter(Boolean)
 const matchesRange = (record: RecordData, range: TimeRange) => {
   const value = record.startAt || recordDate(record)
   const date = new Date(Number(value) || String(value))
@@ -47,10 +51,44 @@ const matchesRange = (record: RecordData, range: TimeRange) => {
   return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth()
 }
 
+type PaneSizes = { left: number; right: number }
+const useThreePaneResize = (storageKey: string, defaults: PaneSizes) => {
+  const layoutRef = useRef<HTMLDivElement>(null)
+  const [sizes, setSizes] = useState<PaneSizes>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(storageKey) || '') as Partial<PaneSizes>
+      return Number.isFinite(saved.left) && Number.isFinite(saved.right) ? { left: Number(saved.left), right: Number(saved.right) } : defaults
+    } catch { return defaults }
+  })
+  const startResize = (side: keyof PaneSizes) => (event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    const initial = sizes
+    const startX = event.clientX
+    const move = (next: PointerEvent) => {
+      const width = layoutRef.current?.getBoundingClientRect().width || window.innerWidth
+      setSizes((current) => {
+        const delta = next.clientX - startX
+        const limit = side === 'left' ? Math.max(160, width - initial.right - 280) : Math.max(260, width - initial.left - 280)
+        const value = side === 'left' ? initial.left + delta : initial.right - delta
+        return { ...current, [side]: Math.max(side === 'left' ? 160 : 260, Math.min(limit, value)) }
+      })
+    }
+    const stop = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', stop)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', stop)
+  }
+  useEffect(() => { localStorage.setItem(storageKey, JSON.stringify(sizes)) }, [sizes, storageKey])
+  return { layoutRef, startResize, style: { '--pane-left': `${sizes.left}px`, '--pane-right': `${sizes.right}px` } as React.CSSProperties }
+}
+
 function App() {
   const [records, setRecords] = useState<RecordData[]>([])
   const [view, setView] = useState<View>('command')
   const [sidebarOpen, setSidebarOpen] = useState(() => localStorage.getItem('jason-os-sidebar-open') !== 'false')
+  const [themePreference, setThemePreference] = useState<ThemePreference>(() => { const stored = localStorage.getItem('jason-os-theme'); return stored === 'light' || stored === 'auto' ? stored : 'dark' })
   const [sidebarPeek, setSidebarPeek] = useState(false)
   const [aiWidth, setAiWidth] = useState(() => { const value = Number(localStorage.getItem('jason-os-ai-width')); return Number.isFinite(value) ? clampAiWidth(value) : clampAiWidth(430) })
   const [aiResizing, setAiResizing] = useState(false)
@@ -88,6 +126,8 @@ function App() {
   useEffect(() => { localStorage.setItem('jason-os-ai-chat', JSON.stringify(chat.slice(-20))) }, [chat])
   useEffect(() => { localStorage.setItem('jason-os-sidebar-open', String(sidebarOpen)) }, [sidebarOpen])
   useEffect(() => { localStorage.setItem('jason-os-ai-width', String(aiWidth)) }, [aiWidth])
+  const activeTheme = resolvedTheme(themePreference)
+  useEffect(() => { localStorage.setItem('jason-os-theme', themePreference); document.documentElement.dataset.theme = activeTheme }, [themePreference, activeTheme])
   useEffect(() => {
     if (!aiResizing) return
     const move = (event: PointerEvent) => setAiWidth(clampAiWidth(window.innerWidth - event.clientX))
@@ -100,7 +140,7 @@ function App() {
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if (event.metaKey && event.key.toLowerCase() === 'k') { event.preventDefault(); setPaletteOpen(true) }
-      if (event.metaKey && event.shiftKey && event.code === 'Space') { event.preventDefault(); openCreate('inbox') }
+      if (event.metaKey && event.shiftKey && event.code === 'Space') { event.preventDefault(); setView('notebook') }
       if (event.key === 'Escape') { setPaletteOpen(false); setSearchOpen(false); setAiOpen(false); setDetailId(null) }
     }
     window.addEventListener('keydown', handler); return () => window.removeEventListener('keydown', handler)
@@ -183,7 +223,7 @@ function App() {
   const viewAiActionResult = (action: AgentAction) => {
     const record = action.result && 'id' in action.result && 'entity' in action.result ? action.result as RecordData : undefined
     if (!record) return
-    const targetView = ({ tasks: 'tasks', timeLogs: 'time', projects: 'projects', results: 'outcomes', financialAccounts: 'finance', financialCategories: 'finance', financialTransactions: 'finance', signals: 'externalIntelligence', opportunities: 'externalIntelligence', externalSources: 'externalIntelligence', intelligenceBriefs: 'externalIntelligence', knowledge: 'knowledge', reviews: 'reviews', insights: 'insights', principles: 'principles', mentalModels: 'mentalModels', decisions: 'decisions', events: 'events', people: 'people' } as Partial<Record<Entity, View>>)[record.entity]
+    const targetView = ({ tasks: 'tasks', timeLogs: 'time', projects: 'projects', results: 'outcomes', financialAccounts: 'finance', financialCategories: 'finance', financialTransactions: 'finance', signals: 'notebook', opportunities: 'notebook', externalSources: 'notebook', intelligenceBriefs: 'notebook', knowledge: 'knowledge', reviews: 'reviews', insights: 'insights', principles: 'principles', mentalModels: 'mentalModels', decisions: 'decisions', events: 'events', people: 'people' } as Partial<Record<Entity, View>>)[record.entity]
     if (targetView) setView(targetView)
     setAiOpen(false); openRecord(record)
   }
@@ -221,12 +261,11 @@ function App() {
     { group: '核心', items: [{ view: 'command', label: '指挥中心', icon: '⌂' }] },
     { group: '聚焦', items: [{ view: 'today', label: '今天', icon: '◉' }, { view: 'tasks', label: '任务', icon: '□' }, { view: 'time', label: '时间', icon: '◷' }] },
     { group: '工作', items: [{ view: 'projects', label: '项目', icon: '◈' }, { view: 'outcomes', label: '结果', icon: '✓' }, { view: 'finance', label: '财务', icon: '¥' }] },
-    { group: '情报', items: [{ view: 'externalIntelligence', label: '外部情报', icon: '✺' }] },
-    { group: '记忆', items: [{ view: 'notebook', label: 'Notebook', icon: '✎' }, { view: 'knowledge', label: '知识', icon: '⌘' }, { view: 'reviews', label: '复盘', icon: '◑' }, { view: 'insights', label: '洞见', icon: '✦' }, { view: 'principles', label: '原则', icon: '∴' }, { view: 'mentalModels', label: '思维模型', icon: '◇' }] },
+    { group: '记忆', items: [{ view: 'knowledge', label: '知识', icon: '⌘' }, { view: 'reviews', label: '复盘', icon: '◑' }, { view: 'insights', label: '洞见', icon: '✦' }, { view: 'principles', label: '原则', icon: '∴' }, { view: 'mentalModels', label: '思维模型', icon: '◇' }] },
     { group: '决策', items: [{ view: 'decisions', label: '决策日志', icon: '◆' }] },
     { group: '情境', items: [{ view: 'events', label: '事件', icon: '●' }, { view: 'people', label: '人物', icon: '♙' }, { view: 'timeline', label: '时间线', icon: '⌁' }] },
   ]
-  const pageTitle = view === 'profile' ? '我的档案' : view === 'aiNews' ? 'AI News Radar' : nav.flatMap((group) => group.items).find((item) => item.view === view)?.label || (view === 'settings' ? '设置' : 'Jason OS')
+  const pageTitle = view === 'profile' ? '我的档案' : view === 'notebook' ? '收纳箱' : view === 'aiNews' ? 'AI News Radar' : nav.flatMap((group) => group.items).find((item) => item.view === view)?.label || (view === 'settings' ? '设置' : 'Jason OS')
 
   const effectiveSidebarOpen = sidebarOpen || sidebarPeek
   const toggleSidebar = () => { setSidebarPeek(false); setSidebarOpen((open) => !open) }
@@ -235,18 +274,18 @@ function App() {
     if (event.clientX <= 14) setSidebarPeek(true)
     else if (sidebarPeek && event.clientX > 236) setSidebarPeek(false)
   }
-  return <div className={`app-shell ${effectiveSidebarOpen ? "" : "sidebar-collapsed"} ${sidebarPeek ? "sidebar-peek" : ""} ${aiOpen ? "ai-open" : ""} ${aiResizing ? "ai-resizing" : ""}`} style={{ "--ai-width": `${aiWidth}px` } as React.CSSProperties} onPointerMove={handleShellPointer}>
+  return <div className={`app-shell ${activeTheme === 'light' ? 'light-theme' : 'dark-theme'} ${effectiveSidebarOpen ? "" : "sidebar-collapsed"} ${sidebarPeek ? "sidebar-peek" : ""} ${aiOpen ? "ai-open" : ""} ${aiResizing ? "ai-resizing" : ""}`} style={{ "--ai-width": `${aiWidth}px` } as React.CSSProperties} onPointerMove={handleShellPointer}>
     <GlobalHeader
       query={searchQuery} onQuery={(value) => { setSearchQuery(value); setSearchOpen(true) }} onSearchFocus={() => setSearchOpen(true)}
       sidebarOpen={effectiveSidebarOpen} onToggleSidebar={toggleSidebar} onProfile={(section) => { setProfileSection(section); setView('profile') }} onSettings={() => setView('settings')} onAiNews={() => setView('aiNews')} aiNewsActive={view === 'aiNews'} onAi={() => setAiOpen(true)} onPalette={() => setPaletteOpen(true)} aiConfigured={Boolean(aiConfig?.configured)}
     />
     <aside className="sidebar">
-      <button className="quick-capture" onClick={() => openCreate('inbox')}><span>＋</span><div><strong>快速收集</strong><small>⌘ ⇧ Space</small></div></button>
+      <button className="quick-capture" onClick={() => setView('notebook')}><span>▱</span><div><strong>收纳箱</strong><small>收集与笔记 · ⌘ ⇧ Space</small></div></button>
       <nav>{nav.map((group) => <section key={group.group}><p>{group.group}</p>{group.items.map((item) => <button key={item.view} className={view === item.view ? 'active' : ''} onClick={() => { setView(item.view); if (item.view !== 'projects') setSelectedProjectId(null) }}><span>{item.icon}</span>{item.label}</button>)}</section>)}</nav>
       <div className="sidebar-bottom-actions"><button className={`running-card ${running ? 'live' : ''}`} onClick={() => running ? stopTimer() : startTimer()}>{running ? <><span className="pulse" /><div><strong>{titleFor(running)}</strong><small>点击停止并记录时间</small></div></> : <><span>▶</span><div><strong>开始计时</strong><small>记录现实投入</small></div></>}</button><button className={`sidebar-settings ${view === 'settings' ? 'active' : ''}`} onClick={() => setView('settings')}><span>⚙</span>设置与数据</button></div>
     </aside>
     <main className="main-content">
-      <div className="page-heading"><div><p className="eyebrow">JASON OS · PERSONAL OPERATING SYSTEM</p><h1>{pageTitle}</h1></div>{!['command', 'aiNews', 'timeline', 'externalIntelligence', 'outcomes', 'finance', 'notebook', 'profile', 'settings'].includes(view) && <button className="button primary" onClick={() => openCreate(viewEntity(view))}>＋ 新建</button>}</div>
+      {view !== 'notebook' && <div className="page-heading"><div><p className="eyebrow">JASON OS · PERSONAL OPERATING SYSTEM</p><h1>{pageTitle}</h1></div>{!['command', 'aiNews', 'timeline', 'outcomes', 'finance', 'profile', 'settings'].includes(view) && <button className="button primary" onClick={() => openCreate(viewEntity(view))}>＋ 新建</button>}</div>}
       {view === 'command' && <CommandCenter records={records} externalItems={externalItems} onOpen={openRecord} onCreate={openCreate} onView={setView} onStartTimer={startTimer} onAi={(prompt) => { setAiDraft(prompt); setAiOpen(true) }} />}
       {view === 'today' && <TodayView records={records} running={running} onOpen={openRecord} onEdit={(record) => setEditing({ config: configFor(record.entity), record })} onComplete={completeTask} onStartTimer={startTimer} onStopTimer={stopTimer} onCreate={openCreate} />}
       {view === 'tasks' && <TasksView records={records} onOpen={openRecord} onEdit={(record) => setEditing({ config: configFor('tasks'), record })} onComplete={completeTask} onStartTimer={startTimer} onCreate={(initial) => openCreate('tasks', initial)} />}
@@ -254,8 +293,7 @@ function App() {
       {view === 'projects' && <ProjectsView records={records} selectedId={selectedProjectId} onSelect={setSelectedProjectId} onOpen={openRecord} onCreate={openCreate} onEdit={(record) => setEditing({ config: configFor(record.entity), record })} onStartTimer={startTimer} onAiAnalyze={(question, context) => { setAiOpen(true); void sendAi(question, context) }} />}
       {view === 'outcomes' && <OutcomesView records={records} onOpen={openRecord} onCreate={openCreate} />}
       {view === 'finance' && <FinanceView records={records} onOpen={openRecord} onCreate={openCreate} />}
-      {view === 'externalIntelligence' && <ExternalIntelligenceView records={records} items={externalItems} onOpen={openRecord} onCreate={openCreate} onSave={saveRecord} onRefresh={refresh} onAi={(prompt) => { setAiDraft(prompt); setAiOpen(true) }} onNotice={showNotice} />}
-      {view === 'notebook' && <NotebookView records={records} onOpen={openRecord} onCreate={openCreate} onRefresh={refresh} onNotice={showNotice} onAi={(question, context) => { setAiOpen(true); void sendAi(question, context) }} />}
+      {view === 'notebook' && <NotebookView records={records} externalItems={externalItems} captureConfig={captureConfig} onOpen={openRecord} onRefresh={refresh} onNotice={showNotice} onAi={(question, context) => { setAiOpen(true); void sendAi(question, context) }} />}
       {(['knowledge', 'reviews', 'insights', 'principles'] as View[]).includes(view) && <MemoryView entity={view as Entity} records={records} onOpen={openRecord} onCreate={openCreate} />}
       {view === 'mentalModels' && <MentalModelsView records={records} onOpen={openRecord} onCreate={openCreate} onSaveDecision={saveDecisionAnalysis} decisionModelIds={decisionModelIds} onAddModel={addModelToDecision} onRemoveModel={removeModelFromDecision} />}
       {view === 'decisions' && <DecisionsView records={records} onOpen={openRecord} onCreate={() => openCreate('decisions', { date: today(), status: 'pending' })} />}
@@ -263,7 +301,7 @@ function App() {
       {view === 'timeline' && <TimelineView records={records} onOpen={openRecord} onAiAnalyze={(question, context) => { setAiOpen(true); void sendAi(question, context) }} />}
       {view === 'profile' && <ProfileView profile={records.find((record) => record.entity === 'profiles')} initialSection={profileSection} onSave={saveProfile} />}
       {view === 'aiNews' && <AiNewsRadarView />}
-      {view === 'settings' && <SettingsView config={aiConfig} captureConfig={captureConfig} onSaveAiProvider={saveAiProvider} onSaveCaptureProvider={saveCaptureProvider} onExport={async (format) => showNotice(`已导出：${await api.export(format)}`)} onBackup={createBackup} backups={backups} onRestoreBackup={restoreBackup} onRestoreRecord={restoreRecord} />}
+      {view === 'settings' && <SettingsView themePreference={themePreference} activeTheme={activeTheme} onThemeChange={setThemePreference} config={aiConfig} captureConfig={captureConfig} onSaveAiProvider={saveAiProvider} onSaveCaptureProvider={saveCaptureProvider} onExport={async (format) => showNotice(`已导出：${await api.export(format)}`)} onBackup={createBackup} backups={backups} onRestoreBackup={restoreBackup} onRestoreRecord={restoreRecord} />}
     </main>
     {notice && <div className={`toast ${notice.tone === 'danger' ? 'danger' : ''}`}>{notice.text}</div>}
     {searchOpen && <SearchOverlay query={searchQuery} results={searchResults} selectedEntities={searchEntities} onToggleEntity={(entity) => setSearchEntities((current) => current.includes(entity) ? current.filter((item) => item !== entity) : [...current, entity])} onOpen={openRecord} onClose={() => setSearchOpen(false)} />}
@@ -275,7 +313,7 @@ function App() {
   </div>
 }
 
-const viewEntity = (view: View): Entity => ({ command: 'inbox', today: 'tasks', tasks: 'tasks', time: 'timeLogs', projects: 'projects', outcomes: 'results', finance: 'financialTransactions', externalIntelligence: 'signals', notebook: 'notes', knowledge: 'knowledge', reviews: 'reviews', insights: 'insights', principles: 'principles', mentalModels: 'mentalModels', decisions: 'decisions', events: 'events', people: 'people', timeline: 'events', aiNews: 'inbox', settings: 'inbox', profile: 'profiles' }[view] as Entity)
+const viewEntity = (view: View): Entity => ({ command: 'inbox', today: 'tasks', tasks: 'tasks', time: 'timeLogs', projects: 'projects', outcomes: 'results', finance: 'financialTransactions', notebook: 'notes', knowledge: 'knowledge', reviews: 'reviews', insights: 'insights', principles: 'principles', mentalModels: 'mentalModels', decisions: 'decisions', events: 'events', people: 'people', timeline: 'events', aiNews: 'inbox', settings: 'inbox', profile: 'profiles' }[view] as Entity)
 
 function GlobalHeader({ query, onQuery, onSearchFocus, sidebarOpen, onToggleSidebar, onProfile, onSettings, onAiNews, aiNewsActive, onAi, onPalette, aiConfigured }: { query: string; onQuery: (value: string) => void; onSearchFocus: () => void; sidebarOpen: boolean; onToggleSidebar: () => void; onProfile: (section: ProfileSection) => void; onSettings: () => void; onAiNews: () => void; aiNewsActive: boolean; onAi: () => void; onPalette: () => void; aiConfigured: boolean }) {
   const [profileMenuOpen, setProfileMenuOpen] = useState(false)
@@ -337,12 +375,11 @@ function CommandCenter({ records, externalItems, onOpen, onCreate, onView, onSta
       <DashboardPanel title="时间分配" action="查看时间" onAction={() => onView('time')} className="span-5"><AllocationList items={allocated} empty="今天还没有时间记录。开始计时后，这里会显示时间真正花在哪里。" /></DashboardPanel>
       <DashboardPanel title="需要关注" action="查看决策" onAction={() => onView('decisions')} className="span-7"><AttentionList blockers={blockers} overdue={tasks.filter(isOverdue)} decisions={pendingDecisions} onOpen={onOpen} /></DashboardPanel>
       <DashboardPanel title="Financial Pulse" action="打开财务" onAction={() => onView('finance')} className="span-12"><FinancialPulse records={records} onView={() => onView('finance')} /></DashboardPanel>
-      <DashboardPanel title="外部信号" action="打开外部情报" onAction={() => onView('externalIntelligence')} className="span-12">{externalSignals.length ? <div className="external-signal-preview">{externalSignals.slice(0, 3).map((signal) => <button key={signal.key} onClick={() => onView('externalIntelligence')}><span>{signal.type === 'GROWTH' ? '↑' : '✦'}</span><div><strong>{signal.title}</strong><small>{signal.summary}</small></div></button>)}</div> : <p className="muted">尚无达到样本门槛的外部变化。快速采集和情报源积累数据后，这里只显示少量需要 CEO 关注的信号。</p>}</DashboardPanel>
+      <DashboardPanel title="外部信号" action="查看调研结果" onAction={() => onView('notebook')} className="span-12">{externalSignals.length ? <div className="external-signal-preview">{externalSignals.slice(0, 3).map((signal) => <button key={signal.key} onClick={() => onView('notebook')}><span>{signal.type === 'GROWTH' ? '↑' : '✦'}</span><div><strong>{signal.title}</strong><small>{signal.summary}</small></div></button>)}</div> : <p className="muted">尚无达到样本门槛的外部变化。快速采集和情报源积累数据后，这里只显示少量需要 CEO 关注的信号。</p>}</DashboardPanel>
       <DashboardPanel title="最近结果" action="记录结果" onAction={() => onCreate('results')} className="span-4">{results.length ? results.map((record) => <CompactRecord key={record.id} record={record} onOpen={onOpen} />) : <GuidedEmpty icon="✓" title="结果是现实层的核心资产" text="完成工作后记录预期与实际，而不是只勾选任务。" action="记录结果" onAction={() => onCreate('results')} />}</DashboardPanel>
       <DashboardPanel title="最近学习" action="开始复盘" onAction={() => onCreate('reviews')} className="span-4">{learning.length ? learning.map((record) => <CompactRecord key={record.id} record={record} onOpen={onOpen} />) : <GuidedEmpty icon="◑" title="把经历变成可复用经验" text="从一次结果或重要决策开始复盘。" action="创建复盘" onAction={() => onCreate('reviews')} />}</DashboardPanel>
       <DashboardPanel title="AI 洞察" action="打开 AI" onAction={() => onAi('根据我最近的目标、任务、时间、结果和决策，指出最值得关注的一个模式。')} className="span-4"><div className="ai-insight"><span>AI</span><p>让 AI 基于你的真实记录发现风险、重复模式和下一步，而不是凭空聊天。</p><button onClick={() => onAi('根据我最近的目标、任务、时间、结果和决策，指出最值得关注的一个模式。')}>分析最近上下文 →</button></div></DashboardPanel>
     </div>
-    <button className="capture-inline" onClick={() => onCreate('inbox')}><span>＋</span><div><strong>快速收集一个想法、问题或发现</strong><small>先记录，再分类。内容只保存在本机。</small></div><kbd>⌘ ⇧ Space</kbd></button>
   </div>
 }
 
@@ -506,7 +543,6 @@ function MentalModelsView({ records, onOpen, onCreate, onSaveDecision, decisionM
 }
 
 const noteTypeLabel = (value: unknown) => ({ NOTE: '笔记', IDEA: '想法', JOURNAL: '日记', OBSERVATION: '观察', LEARNING: '学习', DRAFT: '草稿' }[String(value || 'NOTE')] || '笔记')
-const formatFileSize = (bytes: number) => bytes < 1024 ? `${bytes} B` : bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)} KB` : bytes < 1024 * 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`
 const fileIcon = (record: RecordData) => {
   const extension = String(record.extension || '').toLowerCase()
   if (['jpg', 'jpeg', 'png', 'webp', 'gif', 'svg', 'heic'].includes(extension)) return '▧'
@@ -517,10 +553,11 @@ const fileIcon = (record: RecordData) => {
   return '⊞'
 }
 
-function NotebookView({ records, onOpen, onCreate, onRefresh, onNotice, onAi }: { records: RecordData[]; onOpen: (record: RecordData) => void; onCreate: (entity: Entity, initial?: Partial<RecordData>) => void; onRefresh: () => Promise<void>; onNotice: (text: string, tone?: Notice['tone']) => void; onAi: (question: string, context: Partial<AgentContext>) => void }) {
+function NotebookView({ records, externalItems, captureConfig, onOpen, onRefresh, onNotice, onAi }: { records: RecordData[]; externalItems: ExternalItem[]; captureConfig: CaptureProviderConfig | null; onOpen: (record: RecordData) => void; onRefresh: () => Promise<void>; onNotice: (text: string, tone?: Notice['tone']) => void; onAi: (question: string, context: Partial<AgentContext>) => void }) {
+  const [workspaceMode, setWorkspaceMode] = useState<'capture' | 'research'>('capture')
+  const notebookPanes = useThreePaneResize('jason-os-notebook-pane-sizes', { left: 250, right: 500 })
   const [scope, setScope] = useState<'inbox' | 'all' | 'favorites' | 'archive' | string>('inbox')
   const [folderId, setFolderId] = useState('')
-  const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState('')
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [archived, setArchived] = useState<RecordData[]>([])
@@ -529,31 +566,56 @@ function NotebookView({ records, onOpen, onCreate, onRefresh, onNotice, onAi }: 
   const [related, setRelated] = useState<RecordData[]>([])
   const [preview, setPreview] = useState<NotebookFilePreview | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
+  const [pdfPage, setPdfPage] = useState(0)
   const [movePickerOpen, setMovePickerOpen] = useState(false)
   const [moveCategoryId, setMoveCategoryId] = useState('')
-  const [restoreDestination, setRestoreDestination] = useState<'original' | 'inbox'>('original')
+  const [categoryMenuOpen, setCategoryMenuOpen] = useState(false)
+  const [categoryDialogOpen, setCategoryDialogOpen] = useState(false)
+  const [categoryDraft, setCategoryDraft] = useState('')
+  const [creatingCategory, setCreatingCategory] = useState(false)
+  const [captureDraft, setCaptureDraft] = useState('')
+  const [viewMode, setViewMode] = useState<'list' | 'grid'>('list')
+  const [sortMode, setSortMode] = useState<'recent' | 'oldest' | 'title'>('recent')
+  const [tagFilter, setTagFilter] = useState('')
+  const [editorFullscreen, setEditorFullscreen] = useState(false)
+  const [linkComposerOpen, setLinkComposerOpen] = useState(false)
+  const [linkDraft, setLinkDraft] = useState('')
+  const [linkSaving, setLinkSaving] = useState(false)
+  const [deleteIds, setDeleteIds] = useState<string[]>([])
+  const [deletingItems, setDeletingItems] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const folderInputRef = useRef<HTMLInputElement>(null)
-  useEffect(() => { folderInputRef.current?.setAttribute('webkitdirectory', ''); folderInputRef.current?.setAttribute('directory', '') }, [])
-  useEffect(() => { api.archived().then((items) => setArchived(items.filter((record) => ['notes', 'notebookFiles', 'notebookFolders'].includes(record.entity)))) }, [records])
+  useEffect(() => { api.archived().then((items) => setArchived(items.filter((record) => ['notes', 'notebookFiles', 'notebookFolders', 'inbox'].includes(record.entity)))) }, [records])
   const categories = records.filter((record) => record.entity === 'notebookCategories')
   const folders = records.filter((record) => record.entity === 'notebookFolders')
-  const activeItems = records.filter((record) => ['notes', 'notebookFiles', 'notebookFolders'].includes(record.entity))
-  const selectableItems = scope === 'archive' ? archived : activeItems
-  const selected = selectableItems.find((record) => record.id === selectedId) || selectableItems[0]
+  const activeItems = records.filter((record) => ['notes', 'notebookFiles', 'notebookFolders', 'inbox'].includes(record.entity))
+  const createdWithinDays = (record: RecordData, days: number) => Date.now() - new Date(String(record.createdAt || record.updatedAt || 0)).getTime() <= days * 86400000
+  const matchesScope = (record: RecordData) => {
+    if (scope === 'notes') return record.entity === 'notes'
+    if (scope === 'links') return record.entity === 'inbox' || Boolean(record.url || record.sourceUrl)
+    if (scope === 'files') return record.entity === 'notebookFiles'
+    if (scope === 'today') return String(record.createdAt || record.updatedAt || '').slice(0, 10) === today()
+    if (scope === 'week') return createdWithinDays(record, 7)
+    if (scope === 'attachments') return record.entity === 'notebookFiles' || Boolean(record.attachments)
+    if (scope === 'later') return ['LATER', 'SNOOZED'].includes(String(record.status || '').toUpperCase()) || Boolean(record.snoozedUntil)
+    if (scope === 'inbox') return record.entity === 'inbox' || (!record.notebookCategoryId && !record.notebookFolderId && (record.entity !== 'notes' || record.status === 'INBOX'))
+    return true
+  }
+  const selectableItems = scope === 'archive' ? archived : activeItems.filter(matchesScope)
+  const selected = selectedId === '__closed__' ? undefined : selectableItems.find((record) => record.id === selectedId) || selectableItems[0]
   const selectedRelationId = selected?.id || ''
   useEffect(() => { if (selectedRelationId) api.relations(selectedRelationId).then(setRelated); else setRelated([]) }, [selectedRelationId])
   const selectedFileId = selected?.entity === 'notebookFiles' ? selected.id : ''
   useEffect(() => {
     if (!selectedFileId) { setPreview(null); return }
-    let cancelled = false; setPreviewLoading(true); setPreview(null)
+    let cancelled = false; setPdfPage(0); setPreviewLoading(true); setPreview(null)
     api.previewNotebookFile(selectedFileId).then((value) => { if (!cancelled) setPreview(value) }).catch((error) => { if (!cancelled) setPreview({ kind: 'unsupported', reason: String(error) }) }).finally(() => { if (!cancelled) setPreviewLoading(false) })
     return () => { cancelled = true }
   }, [selectedFileId])
   const currentCategoryId = categories.some((category) => category.id === scope) ? scope : ''
   const visibleFolders = folders.filter((folder) => (currentCategoryId ? folder.notebookCategoryId === currentCategoryId : scope === 'all' || scope === 'inbox' ? !folder.notebookCategoryId : false) && String(folder.parentNotebookFolderId || '') === folderId)
-  const source = scope === 'archive' ? archived : activeItems.filter((record) => {
+  const source = scope === 'archive' ? archived : selectableItems.filter((record) => {
     if (record.entity === 'notebookFolders') return visibleFolders.some((folder) => folder.id === record.id)
+    if (['notes', 'links', 'files', 'today', 'week', 'attachments', 'later'].includes(scope)) return true
     if (scope === 'favorites' && String(record.favorite) !== 'true') return false
     if (scope === 'inbox' && record.entity === 'notes') return record.status === 'INBOX' && !record.notebookCategoryId && !record.notebookFolderId
     if (scope === 'inbox') return !record.notebookCategoryId && !record.notebookFolderId
@@ -562,21 +624,44 @@ function NotebookView({ records, onOpen, onCreate, onRefresh, onNotice, onAi }: 
     if (!folderId && record.notebookFolderId) return false
     return true
   })
-  const filtered = query.trim() ? source.filter((record) => JSON.stringify(record).toLowerCase().includes(query.trim().toLowerCase())) : source
+  const noteTags = [...new Set(activeItems.filter((record) => record.entity === 'notes').flatMap(tagsFor))].sort((a, b) => a.localeCompare(b, 'zh-CN'))
+  const filtered = [...source.filter((record) => !tagFilter || tagsFor(record).includes(tagFilter))].sort((a, b) => sortMode === 'title' ? titleFor(a).localeCompare(titleFor(b), 'zh-CN') : sortMode === 'oldest' ? String(a.createdAt || a.updatedAt || '').localeCompare(String(b.createdAt || b.updatedAt || '')) : String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || '')))
   const relationEntities: Entity[] = ['goals', 'projects', 'tasks', 'knowledge', 'insights', 'mentalModels', 'decisions', 'reviews', 'timeLogs', 'financialTransactions']
   const relationTargets = records.filter((record) => relationEntities.includes(record.entity))
   const relationSources = selectedIds.length ? selectedIds : selected ? [selected.id] : []
-  const inboxMoveSources = (selectedIds.length ? selectedIds.map((id) => records.find((record) => record.id === id)) : selected ? [selected] : []).filter((record): record is RecordData => record !== undefined && source.some((item) => item.id === record.id) && ['notes', 'notebookFiles'].includes(record.entity))
-  const createFolder = () => onCreate('notebookFolders', { notebookCategoryId: currentCategoryId, parentNotebookFolderId: folderId })
+  const categoryMoveSources = (selectedIds.length ? selectedIds.map((id) => records.find((record) => record.id === id)) : selected ? [selected] : []).filter((record): record is RecordData => record !== undefined && ['notes', 'notebookFiles', 'inbox'].includes(record.entity))
+  const captureIntoInbox = async () => {
+    const content = captureDraft.trim(); if (!content) return
+    try { const url = content.match(/https?:\/\/[^\s]+/)?.[0]; if (url) await api.captureLink(url); else await api.save('notes', { title: content.slice(0, 42), content, status: 'INBOX', type: 'NOTE' }); setCaptureDraft(''); await onRefresh(); onNotice('已收纳到未整理；不会自动关联项目、目标或任务。') }
+    catch (error) { onNotice(`收纳失败：${String(error)}`, 'danger') }
+  }
+  const createManualNote = async () => {
+    try {
+      const created = await api.save('notes', { title: '未命名笔记', content: '', status: 'INBOX', type: 'NOTE' })
+      setScope('inbox'); setFolderId(''); setSelectedId(created.id); await onRefresh(); onNotice('已新建空白笔记，可以直接记录。')
+    } catch (error) { onNotice(`新建笔记失败：${String(error)}`, 'danger') }
+  }
+  const addManualLink = async () => {
+    const input = linkDraft.trim()
+    if (!input) return
+    const url = /^https?:\/\//i.test(input) ? input : `https://${input}`
+    try {
+      new URL(url)
+      setLinkSaving(true)
+      const created = await api.save('inbox', { title: url, content: url, type: 'link', sourceUrl: url, canonicalUrl: url, captureStatus: 'manual_saved', captureProvider: 'manual' })
+      setScope('links'); setFolderId(''); setSelectedId(created.id); setLinkDraft(''); setLinkComposerOpen(false); await onRefresh(); onNotice('链接已添加到收纳箱。')
+    } catch (error) { onNotice(`添加链接失败：${String(error)}`, 'danger') }
+    finally { setLinkSaving(false) }
+  }
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null
-      if (event.key.toLowerCase() !== 'm' || !event.metaKey || !event.shiftKey || scope !== 'inbox' || target?.matches('input, textarea, select, [contenteditable="true"]') || !inboxMoveSources.length) return
+      if (event.key.toLowerCase() !== 'm' || !event.metaKey || !event.shiftKey || target?.matches('input, textarea, select, [contenteditable="true"]') || !categoryMoveSources.length) return
       event.preventDefault(); setMoveCategoryId(''); setMovePickerOpen(true)
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [scope, selectedIds.length, selected?.id, inboxMoveSources.length])
+  }, [selectedIds.length, selected?.id, categoryMoveSources.length])
   const toggleSelected = (id: string) => setSelectedIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id])
   const uploadFiles = async (fileList: FileList | null) => {
     const files = Array.from(fileList || [])
@@ -605,51 +690,475 @@ function NotebookView({ records, onOpen, onCreate, onRefresh, onNotice, onAi }: 
       onNotice(`已上传 ${files.length} 个文件；可搜索的内容已自动提取。`)
       await onRefresh()
     } catch (error) { onNotice(`上传失败：${String(error)}`, 'danger') }
-    finally { setUploading(false); if (fileInputRef.current) fileInputRef.current.value = ''; if (folderInputRef.current) folderInputRef.current.value = '' }
+    finally { setUploading(false); if (fileInputRef.current) fileInputRef.current.value = '' }
   }
   const addOptionalRelation = async () => {
     if (!relationTarget || !relationSources.length) return
     try { await Promise.all(relationSources.map((sourceId) => api.addRelation(sourceId, relationTarget, 'notebook:RELATED'))); setRelationTarget(''); if (selected) setRelated(await api.relations(selected.id)); onNotice(`已为 ${relationSources.length} 条 Notebook 内容建立可选关联。`) }
     catch (error) { onNotice(`关联失败：${String(error)}`, 'danger') }
   }
-  const removeOptionalRelation = async (item: RecordData) => {
-    if (!selected) return
-    const relationType = String(item.relationType || 'manual'); const fromId = item.relationDirection === 'incoming' ? item.id : selected.id; const toId = item.relationDirection === 'incoming' ? selected.id : item.id
-    try { await api.removeRelation(fromId, toId, relationType); setRelated(await api.relations(selected.id)); onNotice('已删除关系，原始内容保留。') }
-    catch (error) { onNotice(`删除关系失败：${String(error)}`, 'danger') }
-  }
-  const moveInboxToCategory = async (categoryId: string) => {
-    if (!inboxMoveSources.length) return
+  const moveToCategory = async (categoryId: string) => {
+    if (!categoryMoveSources.length) return
     try {
-      await Promise.all(inboxMoveSources.map((record) => api.save(record.entity, { ...record, notebookCategoryId: categoryId, notebookFolderId: undefined, ...(record.entity === 'notes' ? { status: 'ACTIVE' } : {}) })) )
-      setMovePickerOpen(false); setSelectedIds([]); setScope(categoryId); setFolderId(''); await onRefresh(); onNotice(`已将 ${inboxMoveSources.length} 项归类。`)
+      await Promise.all(categoryMoveSources.map((record) => api.save(record.entity, { ...record, notebookCategoryId: categoryId || undefined, notebookFolderId: undefined })) )
+      setMovePickerOpen(false); setSelectedIds([]); setScope(categoryId || 'inbox'); setFolderId(''); await onRefresh(); onNotice(`已将 ${categoryMoveSources.length} 项归类；不会自动关联 Jason OS 记录。`)
     } catch (error) { onNotice(`归类失败：${String(error)}`, 'danger') }
   }
+  const assignCategory = async (record: RecordData, categoryId: string) => {
+    try {
+      await api.save(record.entity, { ...record, notebookCategoryId: categoryId || undefined, notebookFolderId: undefined })
+      await onRefresh()
+      onNotice(categoryId ? '已放入收纳箱分类；不会自动关联 Jason OS 记录。' : '已移出收纳箱分类。')
+    } catch (error) { onNotice(`修改分类失败：${String(error)}`, 'danger') }
+  }
+  const createCategory = async () => {
+    const name = categoryDraft.trim()
+    if (!name) return
+    try {
+      setCreatingCategory(true)
+      const created = await api.save('notebookCategories', { name })
+      setCategoryDraft(''); setCategoryDialogOpen(false); await onRefresh(); setScope(created.id); setFolderId(''); onNotice('已创建收纳箱分类。')
+    } catch (error) { onNotice(`创建分类失败：${String(error)}`, 'danger') }
+    finally { setCreatingCategory(false) }
+  }
   const archiveSelection = async () => { const ids = selectedIds.length ? selectedIds : selected ? [selected.id] : []; if (!ids.length) return; await Promise.all(ids.map((id) => api.archive(id))); setSelectedIds([]); setSelectedId(''); await onRefresh(); onNotice('已 Archive，原始文件仍可恢复。') }
-  const restoreSelection = async (destination = restoreDestination) => {
+  const requestDeleteSelection = (ids?: string[]) => {
+    const targets = ids?.length ? ids : selectedIds.length ? selectedIds : selected ? [selected.id] : []
+    if (targets.length) setDeleteIds(targets)
+  }
+  const deleteSelection = async () => {
+    if (!deleteIds.length) return
+    const count = deleteIds.length
+    try { setDeletingItems(true); await Promise.all(deleteIds.map((id) => api.remove(id))); setDeleteIds([]); setSelectedIds([]); setSelectedId(''); await onRefresh(); onNotice(`已删除 ${count} 项。`) }
+    catch (error) { onNotice(`删除失败：${String(error)}`, 'danger') }
+    finally { setDeletingItems(false) }
+  }
+  const restoreSelection = async () => {
     const ids = selectedIds.length ? selectedIds : selected ? [selected.id] : []
     if (!ids.length) return
     try {
-      const restored = await Promise.all(ids.map((id) => api.restore(id)))
-      const inboxItems = restored.filter((record) => ['notes', 'notebookFiles'].includes(record.entity))
-      if (destination === 'inbox') {
-        await Promise.all(inboxItems.map((record) => api.save(record.entity, { ...record, notebookCategoryId: undefined, notebookFolderId: undefined, ...(record.entity === 'notes' ? { status: 'INBOX' } : {}) })))
-        setScope('inbox'); setFolderId('')
-      }
-      setSelectedIds([]); await onRefresh(); onNotice(destination === 'inbox' ? inboxItems.length ? `已将 ${inboxItems.length} 项还原到收集箱${inboxItems.length < restored.length ? '；文件夹已还原到原位置。' : '。'}` : '文件夹已还原到原位置。' : '已还原到原位置。')
+      await Promise.all(ids.map((id) => api.restore(id)))
+      setSelectedIds([]); await onRefresh(); onNotice('已还原到原位置。')
     } catch (error) { onNotice(`还原失败：${String(error)}`, 'danger') }
   }
-  const destroySelected = async () => { if (!selected || selected.entity !== 'notebookFiles' || !window.confirm('永久删除会移除原始文件、Metadata 与其关系，无法恢复。继续吗？')) return; try { await api.destroyNotebookFile(selected.id); setSelectedId(''); await onRefresh(); onNotice('文件已永久删除。') } catch (error) { onNotice(String(error), 'danger') } }
   const refreshExtractedContent = async () => { if (!selected || selected.entity !== 'notebookFiles') return; try { await api.extractNotebookFile(selected.id); await onRefresh(); onNotice('文件内容已重新提取并进入搜索索引。') } catch (error) { onNotice(`提取失败：${String(error)}`, 'danger') } }
   const copySelected = async () => { if (!selected || selected.entity !== 'notebookFiles') return; try { const copied = await api.copyNotebookFile(selected.id, currentCategoryId, folderId); await onRefresh(); setSelectedId(copied.id); onNotice('已创建文件副本。') } catch (error) { onNotice(`复制失败：${String(error)}`, 'danger') } }
   const openSelectedFile = async () => { if (!selected || selected.entity !== 'notebookFiles') return; try { await api.openNotebookFile(selected.id) } catch (error) { onNotice(String(error), 'danger') } }
   const revealSelectedFile = async () => { if (!selected || selected.entity !== 'notebookFiles') return; try { await api.revealNotebookFile(selected.id) } catch (error) { onNotice(String(error), 'danger') } }
   const askAiAboutFile = (mode: 'summary' | 'relations') => { if (!selected || selected.entity !== 'notebookFiles') return; onAi(mode === 'summary' ? `请只基于这份 Notebook 文件的已提取内容，给出结构化摘要、关键事实、待验证点与可沉淀的知识。不要修改任何内容。` : `请只基于这份 Notebook 文件的已提取内容和 Jason OS 现有记录，列出最多 5 个潜在关联及理由。不要创建关系；由用户决定是否关联。`, { currentRoute: 'notebook', currentEntityType: 'notebookFiles', currentEntityId: selected.id, selectedItems: [selected.id] }) }
-  const previewNode = !selected ? null : selected.entity === 'notes' ? <pre className="notebook-text-preview">{String(selected.content || '暂无正文。')}</pre> : selected.entity !== 'notebookFiles' ? <p>文件夹可包含 Note、File 与子文件夹。</p> : previewLoading ? <p>正在按需加载预览…</p> : preview?.kind === 'image' ? <img className="notebook-media-preview" src={preview.dataUrl} alt={titleFor(selected)} /> : preview?.kind === 'pdf' ? <><iframe className="notebook-pdf-preview" src={preview.dataUrl} title={titleFor(selected)} /><pre className="notebook-text-preview">{preview.text}</pre></> : preview?.kind === 'audio' ? <audio controls src={preview.dataUrl} /> : preview?.kind === 'video' ? <video className="notebook-media-preview" controls src={preview.dataUrl} /> : preview?.kind === 'text' ? <pre className="notebook-text-preview">{preview.text || String(selected.extractionError || '没有可预览的文本。')}</pre> : <p>{preview?.reason || String(selected.extractionError || '此文件没有可用的内嵌预览。')}</p>
-  return <div className="notebook-page notebook-space"><section className="section-intro notebook-hero"><span>✎</span><div><h2>你的信息空间</h2><p>随手记录、整理资料；需要时再关联到 Jason OS。</p></div><div className="notebook-actions"><button className="button primary" onClick={() => onCreate('notes', { status: 'INBOX', type: 'NOTE', notebookCategoryId: currentCategoryId, notebookFolderId: folderId })}>＋ 新建笔记</button><button className="button" onClick={createFolder}>＋ 新建文件夹</button><button className="button" disabled={uploading} onClick={() => fileInputRef.current?.click()}>{uploading ? '上传中…' : '上传文件'}</button><button className="button" disabled={uploading} onClick={() => folderInputRef.current?.click()}>上传文件夹</button><input ref={fileInputRef} className="hidden-file-input" type="file" multiple onChange={(event) => void uploadFiles(event.currentTarget.files)} /><input ref={folderInputRef} className="hidden-file-input" type="file" multiple onChange={(event) => void uploadFiles(event.currentTarget.files)} /></div></section>
-    <div className="notebook-layout"><aside className="notebook-sidebar"><button className={scope === 'inbox' ? 'active' : ''} onClick={() => { setScope('inbox'); setFolderId('') }}>收集箱 <span>{activeItems.filter((item) => !item.notebookCategoryId && !item.notebookFolderId).length}</span></button><button className={scope === 'all' ? 'active' : ''} onClick={() => { setScope('all'); setFolderId('') }}>全部 <span>{activeItems.length}</span></button><button className={scope === 'favorites' ? 'active' : ''} onClick={() => { setScope('favorites'); setFolderId('') }}>收藏 <span>{activeItems.filter((item) => String(item.favorite) === 'true').length}</span></button><button className={scope === 'archive' ? 'active' : ''} onClick={() => { setScope('archive'); setFolderId('') }}>归档 <span>{archived.length}</span></button><div className="notebook-sidebar-section"><header><strong>分类</strong><button onClick={() => onCreate('notebookCategories')}>＋</button></header>{categories.map((category) => <button key={category.id} className={scope === category.id ? 'active' : ''} onClick={() => { setScope(category.id); setFolderId('') }}>{titleFor(category)}<span>{activeItems.filter((item) => item.notebookCategoryId === category.id).length}</span></button>)}</div></aside>
-      <section className="notebook-main"><div className="notebook-toolbar"><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索笔记、文件与已提取内容…" />{scope === 'inbox' && categories.length > 0 && <button className="notebook-move-trigger" disabled={!inboxMoveSources.length} onClick={() => { setMoveCategoryId(''); setMovePickerOpen(true) }}>归类 <kbd>⌘⇧M</kbd></button>}{folderId && <button onClick={() => setFolderId(String(folders.find((folder) => folder.id === folderId)?.parentNotebookFolderId || ''))}>← 上级文件夹</button>}</div><div className="notebook-current-path"><span>{scope === 'inbox' ? '收集箱' : scope === 'all' ? '全部内容' : scope === 'favorites' ? '收藏' : scope === 'archive' ? '归档' : titleFor(categories.find((category) => category.id === scope) || {})}</span>{folderId && <><b>/</b><span>{titleFor(folders.find((folder) => folder.id === folderId) || {})}</span></>}</div>{selectedIds.length > 0 && <div className="notebook-batch-bar"><span>已选择 {selectedIds.length} 项</span><button onClick={() => setSelectedIds([])}>取消选择</button>{scope === 'inbox' && categories.length > 0 && <button onClick={() => { setMoveCategoryId(''); setMovePickerOpen(true) }}>归类 <kbd>⌘⇧M</kbd></button>}{scope === 'archive' && <select value={restoreDestination} onChange={(event) => setRestoreDestination(event.target.value as 'original' | 'inbox')}><option value="original">还原到原位置</option><option value="inbox">还原到收集箱</option></select>}<button onClick={() => void (scope === 'archive' ? restoreSelection() : archiveSelection())}>{scope === 'archive' ? '恢复所选' : '归档所选'}</button></div>}{movePickerOpen && <section className="notebook-move-picker"><header><div><strong>归类到用户分类</strong><small>将 {inboxMoveSources.length} 项移出收集箱</small></div><button onClick={() => setMovePickerOpen(false)}>×</button></header>{categories.length ? <div className="notebook-move-select-row"><label>目标分类<select value={moveCategoryId} onChange={(event) => setMoveCategoryId(event.target.value)}><option value="">选择用户创建的分类</option>{categories.map((category) => <option key={category.id} value={category.id}>{titleFor(category)}（{activeItems.filter((item) => item.notebookCategoryId === category.id).length} 项）</option>)}</select></label><button className="button primary" disabled={!moveCategoryId} onClick={() => void moveInboxToCategory(moveCategoryId)}>确认归类</button></div> : <p>先创建一个分类，再使用 ⌘⇧M 快速归类。</p>}</section>}{filtered.length ? <div className="notebook-content-list">{filtered.map((record) => <article key={record.id} className={selected?.id === record.id ? 'active' : ''} onClick={() => setSelectedId(record.id)} onDoubleClick={() => record.entity === 'notebookFolders' ? setFolderId(record.id) : onOpen(record)}><input type="checkbox" checked={selectedIds.includes(record.id)} onClick={(event) => event.stopPropagation()} onChange={() => toggleSelected(record.id)} aria-label={`选择 ${titleFor(record)}`} /><span className="notebook-item-icon">{record.entity === 'notebookFolders' ? '□' : record.entity === 'notebookFiles' ? fileIcon(record) : '✎'}</span><div><header><strong>{titleFor(record)}</strong><small>{record.entity === 'notes' ? noteTypeLabel(record.type) : record.entity === 'notebookFiles' ? `${String(record.extension || 'OTHER').toUpperCase()} · ${formatFileSize(Number(record.size || 0))} · ${record.extractStatus === 'READY' ? '可全文搜索' : '仅 Metadata'}` : 'Folder'}</small></header><p>{record.entity === 'notes' ? String(record.content || '暂无正文。') : record.entity === 'notebookFiles' ? String(record.extractedContent || record.relativePath || record.originalName || record.name || '') : `${activeItems.filter((item) => item.notebookFolderId === record.id).length} 个项目`}</p></div><time>{formatDate(record.updatedAt || record.createdAt)}</time></article>)}</div> : <GuidedEmpty icon="✎" title="这里还是空的" text="可以直接写笔记，也可以上传文件；不需要先选择项目、任务或目标。" action="新建笔记" onAction={() => onCreate('notes', { status: 'INBOX', type: 'NOTE', notebookCategoryId: currentCategoryId, notebookFolderId: folderId })} />}</section>
-      <aside className="notebook-preview"><header><strong>详情</strong>{selected && <button onClick={() => onOpen(selected)}>编辑</button>}</header>{selected ? <><div className="notebook-preview-card"><span>{selected.entity === 'notebookFiles' ? fileIcon(selected) : selected.entity === 'notebookFolders' ? '□' : '✎'}</span><h3>{titleFor(selected)}</h3><p>{descriptionFor(selected) || String(selected.originalName || selected.relativePath || '独立 Notebook 内容')}</p><small>{selected.entity === 'notes' ? '笔记' : selected.entity === 'notebookFiles' ? '文件' : '文件夹'} · {formatDate(selected.updatedAt)}{selected.entity === 'notebookFiles' && ` · ${String(selected.extractStatus || 'UNAVAILABLE')}`}</small></div><section className="notebook-inline-preview">{previewNode}</section>{selected.entity === 'notebookFiles' && <div className="notebook-file-actions"><button className="button" onClick={openSelectedFile}>在本机打开</button><button className="button" onClick={revealSelectedFile}>在 Finder 显示</button><button className="button" onClick={() => void copySelected()}>复制</button><button className="button" onClick={() => void refreshExtractedContent()}>重新提取文本</button><button className="button" onClick={() => askAiAboutFile('summary')}>AI 理解</button><button className="button" onClick={() => askAiAboutFile('relations')}>AI 建议关联</button></div>}<section className="notebook-relation-box"><h4>关联 Jason OS <span>可选</span></h4><p>{selectedIds.length ? `将为已选 ${selectedIds.length} 项建立关联。` : '仅在需要时关联到目标、项目或其他业务对象。'}</p><select value={relationTarget} onChange={(event) => setRelationTarget(event.target.value)}><option value="">选择要关联的对象</option>{relationTargets.map((target) => <option key={target.id} value={target.id}>{configFor(target.entity).label} · {titleFor(target)}</option>)}</select><button className="button primary" disabled={!relationTarget || !relationSources.length} onClick={() => void addOptionalRelation()}>关联{selectedIds.length ? `所选 ${selectedIds.length} 项` : ''}</button></section><section className="related-section compact"><h4>已有关系 <span>{related.length}</span></h4>{related.length ? related.map((item) => <button key={`${item.id}-${item.relationType}`} onClick={() => onOpen(item)}><span>{configFor(item.entity).icon}</span><div><strong>{titleFor(item)}</strong><small>{configFor(item.entity).label} · {String(item.relationType || '').replace('field:', '')}</small></div>{!String(item.relationType || '').startsWith('field:') && <em onClick={(event) => { event.stopPropagation(); void removeOptionalRelation(item) }}>×</em>}</button>) : <p>暂无关联</p>}</section><footer>{scope === 'archive' ? <><select className="notebook-restore-select" value={restoreDestination} onChange={(event) => setRestoreDestination(event.target.value as 'original' | 'inbox')}><option value="original">还原到原位置</option><option value="inbox">还原到收集箱</option></select><button className="button ghost" onClick={() => void restoreSelection()}>恢复</button>{selected.entity === 'notebookFiles' && <button className="button danger" onClick={() => void destroySelected()}>永久删除</button>}</> : <button className="button ghost" onClick={() => void archiveSelection()}>归档</button>}<button className="button primary" onClick={() => onOpen(selected)}>编辑 / 查看</button></footer></> : <p className="notebook-empty-detail">选择一条内容查看详情</p>}</aside></div></div>
+  const changePdfPage = async (page: number) => {
+    if (!selected || selected.entity !== 'notebookFiles') return
+    try { setPreviewLoading(true); setPreview(await api.previewNotebookPdfPage(selected.id, page)); setPdfPage(page) }
+    catch (error) { onNotice(`PDF 预览失败：${String(error)}`, 'danger') }
+    finally { setPreviewLoading(false) }
+  }
+  const previewNode = !selected ? null : selected.entity === 'notes' ? <pre className="notebook-text-preview">{String(selected.content || '暂无正文。')}</pre> : selected.entity !== 'notebookFiles' ? <p>文件夹可包含 Note、File 与子文件夹。</p> : previewLoading ? <p>正在按需加载预览…</p> : preview?.kind === 'image' ? <img className="notebook-media-preview" src={preview.dataUrl} alt={titleFor(selected)} /> : preview?.kind === 'pdf' ? <><div className="notebook-pdf-toolbar"><span>PDF 阅读 · 第 {(preview.page ?? pdfPage) + 1} / {preview.pageCount || 1} 页</span><div><button disabled={(preview.page ?? pdfPage) <= 0} onClick={() => void changePdfPage((preview.page ?? pdfPage) - 1)}>上一页</button><button disabled={(preview.page ?? pdfPage) >= (preview.pageCount || 1) - 1} onClick={() => void changePdfPage((preview.page ?? pdfPage) + 1)}>下一页</button></div></div>{preview.dataUrl ? <img className="notebook-pdf-preview" src={preview.dataUrl} alt={`${titleFor(selected)} 第 ${(preview.page ?? pdfPage) + 1} 页`} /> : <p>此 PDF 页面暂时无法渲染，可阅读下方已提取文本。</p>}<pre className="notebook-text-preview">{preview.text}</pre></> : preview?.kind === 'audio' ? <audio controls src={preview.dataUrl} /> : preview?.kind === 'video' ? <video className="notebook-media-preview" controls src={preview.dataUrl} /> : preview?.kind === 'text' ? <pre className="notebook-text-preview">{preview.text || String(selected.extractionError || '没有可预览的文本。')}</pre> : <p>{preview?.reason || String(selected.extractionError || '此文件没有可用的内嵌预览。')}</p>
+  if (workspaceMode === 'research') return <ResearchInboxView records={records} externalItems={externalItems} categories={categories} captureConfig={captureConfig} onBackToCapture={() => setWorkspaceMode('capture')} onRefresh={onRefresh} onNotice={onNotice} />
+  return <div className="notebook-page notebook-space">
+    <header className="notebook-page-title">
+      <div><h2>收纳箱</h2><p>收集、整理并沉淀你的内容</p></div>
+      <div className="research-mode-switch"><button className="active">收纳内容</button><button onClick={() => setWorkspaceMode('research')}>提出调研需求</button></div>
+    </header>
+
+    <section
+      className="notebook-capture"
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={(event) => { event.preventDefault(); void uploadFiles(event.dataTransfer.files) }}
+    >
+      <span className="notebook-capture-icon">⌁</span>
+      <textarea
+        value={captureDraft}
+        onChange={(event) => setCaptureDraft(event.target.value)}
+        onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void captureIntoInbox() } }}
+        placeholder="记录想法、粘贴链接，或拖入文件…"
+        aria-label="快速记录"
+      />
+      <button className="notebook-attach-button" title="添加附件" disabled={uploading} onClick={() => fileInputRef.current?.click()}>{uploading ? '…' : '📎'}</button>
+      <button className="button primary" disabled={!captureDraft.trim()} onClick={() => void captureIntoInbox()}>收纳</button>
+      <input ref={fileInputRef} className="hidden-file-input" type="file" multiple onChange={(event) => void uploadFiles(event.currentTarget.files)} />
+    </section>
+
+    <div ref={notebookPanes.layoutRef} className="notebook-layout notebook-resizable-layout" style={notebookPanes.style}>
+      <aside className="notebook-sidebar">
+        <div className="notebook-filter-group">
+          {[
+            { id: 'inbox', icon: '▱', label: '未整理', count: activeItems.filter((item) => item.entity === 'inbox' || (!item.notebookCategoryId && !item.notebookFolderId && (item.entity !== 'notes' || item.status === 'INBOX'))).length },
+            { id: 'notes', icon: '▤', label: '笔记', count: activeItems.filter((item) => item.entity === 'notes').length },
+            { id: 'links', icon: '⌁', label: '链接', count: activeItems.filter((item) => item.entity === 'inbox' || Boolean(item.url || item.sourceUrl)).length },
+            { id: 'files', icon: '□', label: '文件', count: activeItems.filter((item) => item.entity === 'notebookFiles').length },
+          ].map((item) => <button key={item.id} className={scope === item.id ? 'active' : ''} onClick={() => { setScope(item.id); setFolderId(''); setSelectedId(''); setSelectedIds([]) }}><i>{item.icon}</i><strong>{item.label}</strong><span>{item.count}</span></button>)}
+        </div>
+        <div className="notebook-filter-group archive">
+          <button className={scope === 'archive' ? 'active' : ''} onClick={() => { setScope('archive'); setFolderId(''); setSelectedId(''); setSelectedIds([]) }}><i>▱</i><strong>已归档</strong><span>{archived.length}</span></button>
+        </div>
+        <div className="notebook-category-filters"><button className={`notebook-category-trigger${currentCategoryId ? ' active' : ''}`} onClick={() => setCategoryMenuOpen(true)}><i>▦</i><strong>分类</strong><span>{categories.length}</span><b>⌄</b></button></div>
+        <div className="notebook-smart-views">
+          <header><span>✦</span><strong>智能视图</strong><b>⌄</b></header>
+          {[
+            { id: 'today', icon: '◉', label: '今天收集', count: activeItems.filter((item) => String(item.createdAt || item.updatedAt || '').slice(0, 10) === today()).length },
+            { id: 'week', icon: '◷', label: '本周收集', count: activeItems.filter((item) => createdWithinDays(item, 7)).length },
+            { id: 'attachments', icon: '⌕', label: '有附件', count: activeItems.filter((item) => item.entity === 'notebookFiles' || Boolean(item.attachments)).length },
+            { id: 'later', icon: '◴', label: '稍后处理', count: activeItems.filter((item) => ['LATER', 'SNOOZED'].includes(String(item.status || '').toUpperCase()) || Boolean(item.snoozedUntil)).length },
+          ].map((item) => <button key={item.id} className={scope === item.id ? 'active' : ''} onClick={() => { setScope(item.id); setFolderId(''); setSelectedId(''); setSelectedIds([]) }}><i>{item.icon}</i><strong>{item.label}</strong><span>{item.count}</span></button>)}
+        </div>
+        {noteTags.length > 0 && <div className="notebook-tag-filters"><header><span>◇</span><strong>标签</strong>{tagFilter && <button title="清除标签筛选" onClick={() => setTagFilter('')}>×</button>}</header><button className={!tagFilter ? 'active' : ''} onClick={() => { setTagFilter(''); setScope('notes'); setSelectedId('') }}>全部标签</button>{noteTags.map((tag) => <button key={tag} className={tagFilter === tag ? 'active' : ''} onClick={() => { setTagFilter(tag); setScope('notes'); setFolderId(''); setSelectedId(''); setSelectedIds([]) }}>#{tag}</button>)}</div>}
+      </aside>
+      <div className="notebook-pane-resizer" role="separator" title="拖动调整左侧栏宽度" aria-label="调整左侧栏宽度" aria-orientation="vertical" onPointerDown={notebookPanes.startResize('left')}><span aria-hidden="true">⋮</span></div>
+
+      <section className="notebook-main">
+        <div className="notebook-toolbar">
+          <label className="notebook-select-all">
+            <input
+              type="checkbox"
+              checked={filtered.length > 0 && filtered.every((record) => selectedIds.includes(record.id))}
+              onChange={(event) => setSelectedIds(event.currentTarget.checked ? filtered.map((record) => record.id) : [])}
+              aria-label="全选"
+            />
+          </label>
+          <select
+            aria-label="批量操作"
+            value=""
+            onChange={(event) => {
+              const action = event.currentTarget.value
+              if (action === 'archive') void archiveSelection()
+              if (action === 'delete') requestDeleteSelection()
+              if (action === 'restore') void restoreSelection()
+              if (action === 'move') { setMoveCategoryId(''); setMovePickerOpen(true) }
+            }}
+          >
+            <option value="">批量操作</option>
+            {scope === 'archive' ? <option value="restore">恢复所选</option> : <option value="archive">归档所选</option>}
+            {scope !== 'archive' && <option value="delete">删除所选</option>}
+            {scope !== 'archive' && categoryMoveSources.length > 0 && <option value="move">归类所选</option>}
+          </select>
+          <span className="notebook-toolbar-divider" />
+          <select aria-label="快速排序" value={sortMode} onChange={(event) => setSortMode(event.target.value as 'recent' | 'oldest' | 'title')}>
+            <option value="recent">快速排序</option>
+            <option value="oldest">最早创建</option>
+            <option value="title">按标题</option>
+          </select>
+          <span className="notebook-toolbar-divider" />
+          <div className="notebook-view-switch">
+            <button className={viewMode === 'list' ? 'active' : ''} onClick={() => setViewMode('list')} title="列表视图">▤</button>
+            <button className={viewMode === 'grid' ? 'active' : ''} onClick={() => setViewMode('grid')} title="网格视图">▦</button>
+          </div>
+        </div>
+
+        {selectedIds.length > 0 && <div className="notebook-batch-bar"><span>已选择 {selectedIds.length} 项</span>{scope !== 'archive' && <button className="notebook-batch-delete" onClick={() => requestDeleteSelection()}>删除所选</button>}<button onClick={() => setSelectedIds([])}>取消选择</button></div>}
+        {movePickerOpen && <section className="notebook-move-picker"><header><div><strong>归类到收纳箱分类</strong><small>分类只用于收纳箱整理，不会自动关联 Jason OS。</small></div><button onClick={() => setMovePickerOpen(false)}>×</button></header>{categories.length ? <div className="notebook-move-select-row"><label>目标分类<select value={moveCategoryId} onChange={(event) => setMoveCategoryId(event.target.value)}><option value="">选择分类</option>{categories.map((category) => <option key={category.id} value={category.id}>{titleFor(category)}</option>)}</select></label><button className="button primary" disabled={!moveCategoryId} onClick={() => void moveToCategory(moveCategoryId)}>确认归类</button></div> : <p>请先通过左侧“分类”旁的 ＋ 新建一个分类。</p>}</section>}
+
+        {filtered.length ? <div className={`notebook-content-list ${viewMode}`}>
+          {filtered.map((record) => {
+            const kind = record.entity === 'notes' ? '笔记' : record.entity === 'notebookFiles' ? String(record.extension || '文件').toUpperCase() : record.entity === 'notebookFolders' ? '文件夹' : '网页链接'
+            const summary = record.entity === 'notes' ? String(record.content || '暂无正文。') : record.entity === 'notebookFiles' ? String(record.extractedContent || record.originalName || record.relativePath || '') : String(record.description || record.summary || record.url || record.sourceUrl || '打开查看内容')
+            return <article key={record.id} className={selected?.id === record.id ? 'active' : ''} onClick={() => setSelectedId(record.id)} onDoubleClick={() => record.entity === 'notebookFolders' ? setFolderId(record.id) : onOpen(record)}>
+              <input type="checkbox" checked={selectedIds.includes(record.id)} onClick={(event) => event.stopPropagation()} onChange={() => toggleSelected(record.id)} aria-label={'选择 ' + titleFor(record)} />
+              <span className={`notebook-item-icon ${record.entity}`}>{record.entity === 'notebookFolders' ? '□' : record.entity === 'notebookFiles' ? fileIcon(record) : record.entity === 'inbox' ? '⌁' : '▤'}</span>
+              <div className="notebook-item-copy">
+                <header><strong>{titleFor(record)}</strong><time>{formatDate(record.updatedAt || record.createdAt)}</time></header>
+                <small>{kind}{record.entity === 'inbox' && record.sourceUrl ? ' · ' + String(record.sourceUrl).replace(/^https?:\/\//, '').split('/')[0] : ''}</small>
+                <p>{summary}</p>
+              </div>
+            </article>
+          })}
+        </div> : <GuidedEmpty icon="▤" title="这里还没有内容" text="记录想法、粘贴链接或添加文件，内容会先进入未整理。" action="新建笔记" onAction={() => void createManualNote()} />}
+      </section>
+      <div className="notebook-pane-resizer" role="separator" title="拖动调整右侧栏宽度" aria-label="调整右侧栏宽度" aria-orientation="vertical" onPointerDown={notebookPanes.startResize('right')}><span aria-hidden="true">⋮</span></div>
+
+      <aside className={`notebook-preview ${selected?.entity === 'notes' ? 'note-preview' : 'detail-preview'}${editorFullscreen && selected?.entity === 'notes' ? ' fullscreen' : ''}`}>
+        {selected?.entity === 'notes' ? <RichNotebookEditor note={selected} records={records} related={related} categories={categories} fullscreen={editorFullscreen} onOpen={onOpen} onCreateNote={() => void createManualNote()} onRefresh={onRefresh} onNotice={onNotice} onAi={onAi} onAssignCategory={assignCategory} onCreateCategory={() => { setCategoryDraft(''); setCategoryDialogOpen(true) }} onToggleFullscreen={() => setEditorFullscreen((current) => !current)} onClose={() => { setEditorFullscreen(false); setSelectedId('__closed__') }} onRelationsChanged={() => void api.relations(selected.id).then(setRelated)} /> : <>
+          <header><strong>{scope === 'files' || selected?.entity === 'notebookFiles' ? '文件' : scope === 'links' || selected?.entity === 'inbox' ? '链接' : '详情'}</strong><div>{scope === 'links' && <button className="notebook-preview-add" onClick={() => { setLinkDraft(''); setLinkComposerOpen(true) }}>＋ 添加链接</button>}{scope === 'files' && <button className="notebook-preview-add" onClick={() => fileInputRef.current?.click()}>＋ 添加文件</button>}{selected && scope !== 'archive' && <button className="notebook-preview-delete" onClick={() => requestDeleteSelection([selected.id])}>删除</button>}{selected && <button title="关闭" onClick={() => setSelectedId('__closed__')}>×</button>}</div></header>
+          {selected ? <>
+            <div className="notebook-preview-card"><span>{selected.entity === 'notebookFiles' ? fileIcon(selected) : selected.entity === 'notebookFolders' ? '□' : '⌁'}</span><h3>{titleFor(selected)}</h3><p>{descriptionFor(selected) || String(selected.originalName || selected.relativePath || selected.url || selected.sourceUrl || '独立收纳内容')}</p><small>{selected.entity === 'notebookFiles' ? '文件' : selected.entity === 'notebookFolders' ? '文件夹' : '链接'} · {formatDate(selected.updatedAt || selected.createdAt)}</small></div>
+            <section className="notebook-inline-preview">{previewNode}</section>
+            {['notebookFiles', 'inbox'].includes(selected.entity) && <NotebookCategoryControl record={selected} categories={categories} onChange={assignCategory} onCreate={() => { setCategoryDraft(''); setCategoryDialogOpen(true) }} />}
+            {selected.entity === 'notebookFiles' && <div className="notebook-file-actions"><button className="button" onClick={openSelectedFile}>在本机打开</button><button className="button" onClick={revealSelectedFile}>在 Finder 显示</button><button className="button" onClick={() => void copySelected()}>复制</button><button className="button" onClick={() => void refreshExtractedContent()}>重新提取</button><button className="button" onClick={() => askAiAboutFile('summary')}>AI 理解</button></div>}
+            <section className="notebook-relation-box"><h4>关联 Jason OS <span>可选</span></h4><p>只有你确认后才会建立关联。</p><select value={relationTarget} onChange={(event) => setRelationTarget(event.target.value)}><option value="">选择要关联的对象</option>{relationTargets.map((target) => <option key={target.id} value={target.id}>{configFor(target.entity).label} · {titleFor(target)}</option>)}</select><button className="button primary" disabled={!relationTarget} onClick={() => void addOptionalRelation()}>确认关联</button></section>
+            <footer>{scope === 'archive' ? <button className="button primary" onClick={() => void restoreSelection()}>恢复</button> : <button className="button" onClick={() => void archiveSelection()}>归档</button>}<button className="button" onClick={() => onOpen(selected)}>查看详情</button></footer>
+          </> : <div className="notebook-empty-detail"><span>▤</span><strong>选择一条内容</strong><p>右侧会显示完整内容和可用操作。</p></div>}
+        </>}
+      </aside>
+    </div>
+    {linkComposerOpen && <div className="overlay-backdrop notebook-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setLinkComposerOpen(false)}><form className="notebook-action-dialog" onSubmit={(event) => { event.preventDefault(); void addManualLink() }}><header><div><p>手动添加</p><h3>添加链接</h3></div><button type="button" onClick={() => setLinkComposerOpen(false)}>×</button></header><label><span>链接地址</span><input autoFocus value={linkDraft} onChange={(event) => setLinkDraft(event.target.value)} placeholder="https://example.com" /></label><small>链接只会进入收纳箱，不会自动关联项目、目标或任务。</small><footer><button type="button" className="button ghost" onClick={() => setLinkComposerOpen(false)}>取消</button><button className="button primary" type="submit" disabled={!linkDraft.trim() || linkSaving}>{linkSaving ? '正在添加…' : '确认添加'}</button></footer></form></div>}
+    {categoryMenuOpen && <div className="overlay-backdrop notebook-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setCategoryMenuOpen(false)}><section className="notebook-action-dialog notebook-category-menu"><header><div><p>收纳箱整理</p><h3>分类选项</h3></div><button onClick={() => setCategoryMenuOpen(false)}>×</button></header>{categories.length ? <div className="notebook-category-option-list">{categories.map((category) => <button key={category.id} className={scope === category.id ? 'active' : ''} onClick={() => { setScope(category.id); setFolderId(''); setSelectedId(''); setSelectedIds([]); setCategoryMenuOpen(false) }}><span>{titleFor(category)}</span><b>{activeItems.filter((item) => ['notes', 'notebookFiles', 'inbox'].includes(item.entity) && item.notebookCategoryId === category.id).length}</b></button>)}</div> : <p className="notebook-category-empty">还没有分类，请先新建一个分类。</p>}<footer><button className="button" onClick={() => { setCategoryMenuOpen(false); setCategoryDraft(''); setCategoryDialogOpen(true) }}>＋ 新建分类</button></footer></section></div>}
+    {categoryDialogOpen && <div className="overlay-backdrop notebook-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && !creatingCategory && setCategoryDialogOpen(false)}><form className="notebook-action-dialog" onSubmit={(event) => { event.preventDefault(); void createCategory() }}><header><div><p>收纳箱整理</p><h3>新建分类</h3></div><button type="button" disabled={creatingCategory} onClick={() => setCategoryDialogOpen(false)}>×</button></header><label><span>分类名称</span><input autoFocus value={categoryDraft} onChange={(event) => setCategoryDraft(event.target.value)} placeholder="例如：产品灵感、工作资料" /></label><small>分类只用于笔记、链接和文件的查找整理，不会关联 Jason OS 的项目、目标或任务。</small><footer><button type="button" className="button ghost" disabled={creatingCategory} onClick={() => setCategoryDialogOpen(false)}>取消</button><button className="button primary" type="submit" disabled={!categoryDraft.trim() || creatingCategory}>{creatingCategory ? '正在创建…' : '创建分类'}</button></footer></form></div>}
+    {deleteIds.length > 0 && <div className="overlay-backdrop notebook-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && !deletingItems && setDeleteIds([])}><section className="notebook-action-dialog danger"><header><div><p>删除内容</p><h3>确定删除选中的 {deleteIds.length} 项？</h3></div><button disabled={deletingItems} onClick={() => setDeleteIds([])}>×</button></header><small>笔记、文件和链接删除后不会进入已归档。只有你确认后才会执行。</small><footer><button className="button ghost" disabled={deletingItems} onClick={() => setDeleteIds([])}>取消</button><button className="button danger" disabled={deletingItems} onClick={() => void deleteSelection()}>{deletingItems ? '正在删除…' : '确认删除'}</button></footer></section></div>}
+  </div>
+}
+
+function ResearchInboxView({ records, externalItems, categories, captureConfig, onBackToCapture, onRefresh, onNotice }: { records: RecordData[]; externalItems: ExternalItem[]; categories: RecordData[]; captureConfig: CaptureProviderConfig | null; onBackToCapture: () => void; onRefresh: () => Promise<void>; onNotice: (text: string, tone?: Notice['tone']) => void }) {
+  const [requestDraft, setRequestDraft] = useState('')
+  const researchPanes = useThreePaneResize('jason-os-research-pane-sizes', { left: 210, right: 510 })
+  const [filter, setFilter] = useState<'requests' | 'pending' | 'results' | 'completed'>('requests')
+  const [selectedRequestId, setSelectedRequestId] = useState('')
+  const [selectedResultId, setSelectedResultId] = useState('')
+  const [selectedSourceKeys, setSelectedSourceKeys] = useState<string[] | null>(null)
+  const [sourceUrlDraft, setSourceUrlDraft] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [knowledgeDialogOpen, setKnowledgeDialogOpen] = useState(false)
+  const [knowledgeCategory, setKnowledgeCategory] = useState('')
+  const [knowledgeRelationId, setKnowledgeRelationId] = useState('')
+  const [relationDialogOpen, setRelationDialogOpen] = useState(false)
+  const [relationTargetId, setRelationTargetId] = useState('')
+  const requests = records.filter((record) => record.entity === 'researchRequests').sort((a, b) => String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || '')))
+  const results = records.filter((record) => record.entity === 'researchResults').sort((a, b) => String(b.completedAt || b.updatedAt || '').localeCompare(String(a.completedAt || a.updatedAt || '')))
+  const selectedRequest = requests.find((record) => record.id === selectedRequestId) || requests[0]
+  const selectedResult = results.find((record) => record.id === selectedResultId) || results.find((record) => record.researchRequestId === selectedRequest?.id) || results[0]
+  const plan = selectedRequest ? {
+    title: titleFor(selectedRequest), scope: String(selectedRequest.scope || '待确认范围'),
+    dimensions: String(selectedRequest.dimensions || '').split('、').filter(Boolean),
+    deliverables: String(selectedRequest.deliverables || '').split('、').filter(Boolean),
+    sources: resolveResearchSources(parseResearchSources(selectedRequest.sourcePlan), String(selectedRequest.request || ''), captureConfig), tags: tagsFor(selectedRequest),
+  } satisfies ResearchPlan : null
+  const relationTargets = records.filter((record) => ['goals', 'projects', 'tasks', 'knowledge', 'insights', 'mentalModels', 'decisions', 'reviews', 'timeLogs', 'financialTransactions'].includes(record.entity))
+  const selectedRequestSources = plan?.sources || []
+  const currentSelectedSources = selectedSourceKeys ?? selectedRequestSources.filter((source) => source.status === 'ready').map((source) => source.key)
+  const createPlan = async () => {
+    const request = requestDraft.trim()
+    if (!request) return
+    const generated = createResearchPlan(request, records, captureConfig)
+    try {
+      setBusy(true)
+      const created = await api.save('researchRequests', {
+        title: generated.title, request, status: 'DRAFT', scope: generated.scope, dimensions: generated.dimensions.join('、'), deliverables: generated.deliverables.join('、'),
+        sourcePlan: JSON.stringify(generated.sources), selectedSourceKeys: generated.sources.filter((source) => source.status === 'ready').map((source) => source.key).join(','), tags: generated.tags.join(','),
+      })
+      setRequestDraft(''); setSelectedRequestId(created.id); setSelectedResultId(''); setSelectedSourceKeys(generated.sources.filter((source) => source.status === 'ready').map((source) => source.key)); await onRefresh()
+      onNotice('已生成调研方案；确认前不会抓取数据或关联 Jason OS。')
+    } catch (error) { onNotice(`生成方案失败：${String(error)}`, 'danger') } finally { setBusy(false) }
+  }
+  const toggleSource = (key: string) => setSelectedSourceKeys((current) => { const base = current ?? selectedRequestSources.filter((source) => source.status === 'ready').map((source) => source.key); return base.includes(key) ? base.filter((item) => item !== key) : [...base, key] })
+  const addSourceUrl = async (sourceKey: string) => {
+    if (!selectedRequest || !plan) return
+    const url = sourceUrlDraft.trim()
+    if (!/^https?:\/\//i.test(url)) { onNotice('请粘贴以 http:// 或 https:// 开头的公开链接。', 'danger'); return }
+    const sources = plan.sources.map((source) => source.key === sourceKey ? { ...source, url, status: 'ready' as const, detail: `${source.label} · 已补充公开链接，可在确认后执行` } : source)
+    const selected = [...new Set([...currentSelectedSources, sourceKey])]
+    try {
+      setBusy(true)
+      await api.save('researchRequests', { ...selectedRequest, sourcePlan: JSON.stringify(sources), selectedSourceKeys: selected.join(',') })
+      setSelectedSourceKeys(selected); setSourceUrlDraft(''); await onRefresh(); onNotice('已添加公开链接；确认开始调研后才会读取。')
+    } catch (error) { onNotice(`添加公开链接失败：${String(error)}`, 'danger') } finally { setBusy(false) }
+  }
+  const runResearch = async () => {
+    if (!selectedRequest || !plan) return
+    const selectedSources = plan.sources.filter((source) => currentSelectedSources.includes(source.key))
+    const runnable = selectedSources.filter((source) => source.status === 'ready' && (source.mode === 'keyword_search' || source.url))
+    if (!runnable.length) { onNotice('请先选择一个可执行的情报源；未配置或未补充入口的来源不会被伪造执行。', 'danger'); return }
+    const readSource = async (source: ResearchSourcePlan) => {
+      if (source.mode === 'keyword_search') return api.searchTikTok(source.query || String(selectedRequest.request || ''), source.periodDays || 30)
+      await api.captureLink(source.url!, source.provider || 'auto')
+      return { items: 1, urls: [source.url!] }
+    }
+    try {
+      setBusy(true)
+      await api.save('researchRequests', { ...selectedRequest, status: 'RUNNING', startedAt: nowInput(), selectedSourceKeys: selectedSources.map((source) => source.key).join(',') })
+      const settled = await Promise.allSettled(runnable.map(readSource))
+      const fulfilled = settled.filter((result): result is PromiseFulfilledResult<{ items: number; urls: string[] }> => result.status === 'fulfilled').map((result) => result.value)
+      const successful = runnable.filter((_, index) => settled[index].status === 'fulfilled')
+      const failed = runnable.filter((_, index) => settled[index].status === 'rejected')
+      const evidenceUrls = fulfilled.flatMap((result) => result.urls).join('\n')
+      const itemCount = fulfilled.reduce((total, result) => total + result.items, 0)
+      const result = await api.save('researchResults', {
+        title: `${titleFor(selectedRequest)} · 调研结果`, researchRequestId: selectedRequest.id, status: failed.length ? 'PARTIAL' : 'COMPLETED', completedAt: nowInput(), tags: plan.tags.join(','),
+        summary: `本次已读取 ${successful.length} 个已确认的公开来源${itemCount ? `，获得 ${itemCount} 条可追溯内容` : ''}。\n\n调研范围：${plan.scope}\n研究维度：${plan.dimensions.join('、')}\n交付内容：${plan.deliverables.join('、')}\n\n未自动关联任何 Jason OS 项目、目标或任务。${failed.length ? `\n${failed.length} 个来源未完成，请检查来源或采集服务。` : ''}`,
+        evidenceUrls,
+      })
+      await api.save('researchRequests', { ...selectedRequest, status: failed.length ? 'FAILED' : 'COMPLETED', completedAt: nowInput(), selectedSourceKeys: selectedSources.map((source) => source.key).join(','), resultId: result.id })
+      setSelectedResultId(result.id); await onRefresh(); onNotice(failed.length ? '调研已部分完成；结果与未完成来源已保存。' : '调研完成；结果已保存到收纳箱的外部情报中。')
+    } catch (error) { await api.save('researchRequests', { ...selectedRequest, status: 'FAILED' }).catch(() => undefined); onNotice(`调研未完成：${String(error)}`, 'danger') } finally { setBusy(false) }
+  }
+  const updateResultCategory = async (categoryId: string) => {
+    if (!selectedResult) return
+    try { await api.save('researchResults', { ...selectedResult, notebookCategoryId: categoryId || undefined }); await onRefresh(); onNotice(categoryId ? '已为调研结果选择分类。' : '已移出收纳箱分类。') } catch (error) { onNotice(`分类失败：${String(error)}`, 'danger') }
+  }
+  const saveToKnowledge = async () => {
+    if (!selectedResult) return
+    try {
+      setBusy(true)
+      const knowledge = await api.save('knowledge', { title: titleFor(selectedResult), content: `${String(selectedResult.summary || '')}\n\n证据链接：\n${String(selectedResult.evidenceUrls || '无')}`, category: knowledgeCategory || '外部情报', status: 'ACTIVE' })
+      await api.addRelation(selectedResult.id, knowledge.id, 'research:STORED_AS_KNOWLEDGE')
+      if (knowledgeRelationId) await api.addRelation(knowledge.id, knowledgeRelationId, 'knowledge:RELATED')
+      setKnowledgeDialogOpen(false); setKnowledgeCategory(''); setKnowledgeRelationId(''); await onRefresh(); onNotice('已按你的确认存入知识。')
+    } catch (error) { onNotice(`存入知识失败：${String(error)}`, 'danger') } finally { setBusy(false) }
+  }
+  const addRelation = async () => {
+    if (!selectedResult || !relationTargetId) return
+    try { setBusy(true); await api.addRelation(selectedResult.id, relationTargetId, 'research:RELATED'); setRelationDialogOpen(false); setRelationTargetId(''); onNotice('已按你的确认建立关联。') } catch (error) { onNotice(`关联失败：${String(error)}`, 'danger') } finally { setBusy(false) }
+  }
+  const filteredRequests = requests.filter((record) => filter === 'pending' ? record.status === 'DRAFT' : filter === 'completed' ? record.status === 'COMPLETED' || record.status === 'FAILED' : true)
+  const resultCount = results.length
+  const intelligenceSignals = records.filter((record) => record.entity === 'signals')
+  const intelligenceSources = records.filter((record) => record.entity === 'externalSources')
+  const intelligenceOpportunities = records.filter((record) => record.entity === 'opportunities')
+  return <div className="notebook-page notebook-space research-inbox-page">
+    <header className="notebook-page-title"><div><h2>收纳箱</h2><p>收集、整理并沉淀你的内容</p></div><div className="research-mode-switch"><button onClick={onBackToCapture}>收纳内容</button><button className="active">提出调研需求</button></div></header>
+    <section className="research-request-composer">
+      <label>我想调研什么？<textarea value={requestDraft} onChange={(event) => setRequestDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void createPlan() } }} placeholder="例如：调研美国 TikTok 大码女装近30天的爆款、竞品和价格带" /></label>
+      <div><small>系统会先规划情报源；确认前不会抓取数据或关联 Jason OS。</small><button className="button primary" disabled={!requestDraft.trim() || busy} onClick={() => void createPlan()}>{busy ? '正在规划…' : '生成调研方案'}</button></div>
+    </section>
+    <div ref={researchPanes.layoutRef} className="research-workspace research-resizable-workspace" style={researchPanes.style}>
+      <aside className="research-sidebar"><header><strong>调研结果</strong></header><nav><button className={filter === 'requests' ? 'active' : ''} onClick={() => setFilter('requests')}>⌕ 调研需求 <span>{requests.length}</span></button><button className={filter === 'results' ? 'active' : ''} onClick={() => setFilter('results')}>◈ 调研结果 <span>{resultCount}</span></button><button className={filter === 'pending' ? 'active' : ''} onClick={() => setFilter('pending')}>◷ 待确认 <span>{requests.filter((record) => record.status === 'DRAFT').length}</span></button><button className={filter === 'completed' ? 'active' : ''} onClick={() => setFilter('completed')}>✓ 已完成 <span>{requests.filter((record) => ['COMPLETED', 'FAILED'].includes(String(record.status))).length}</span></button></nav><section><header><strong>分类</strong></header>{categories.length ? categories.map((category) => <button key={category.id} onClick={() => { setFilter('results'); setSelectedResultId(results.find((result) => result.notebookCategoryId === category.id)?.id || '') }}>▱ {titleFor(category)} <span>{results.filter((result) => result.notebookCategoryId === category.id).length}</span></button>) : <p>调研完成后可创建分类整理结果。</p>}</section></aside>
+      <div className="research-pane-resizer" role="separator" title="拖动调整左侧栏宽度" aria-label="调整调研左侧栏宽度" aria-orientation="vertical" onPointerDown={researchPanes.startResize('left')}><span aria-hidden="true">⋮</span></div>
+      <section className="research-thread">
+        {(filter === 'results' ? results : filteredRequests).length ? <div className="research-record-list">{(filter === 'results' ? results : filteredRequests).map((record) => <button key={record.id} className={(record.id === selectedRequest?.id || record.id === selectedResult?.id) ? 'active' : ''} onClick={() => { if (record.entity === 'researchResults') setSelectedResultId(record.id); else { setSelectedRequestId(record.id); setSelectedSourceKeys(String(record.selectedSourceKeys || '').split(',').filter(Boolean)) } }}><div><strong>{titleFor(record)}</strong><small>{record.entity === 'researchResults' ? '调研结果' : String(record.status === 'DRAFT' ? '方案待确认' : record.status === 'RUNNING' ? '调研中' : record.status === 'COMPLETED' ? '已完成' : '未完成')}</small></div><time>{formatDate(record.updatedAt || record.completedAt || record.createdAt, true)}</time></button>)}</div> : <div className="research-empty-list"><strong>还没有调研内容</strong><p>在上方写下需求，系统会先生成可确认的方案。</p></div>}
+      </section>
+      <div className="research-pane-resizer" role="separator" title="拖动调整右侧栏宽度" aria-label="调整调研右侧栏宽度" aria-orientation="vertical" onPointerDown={researchPanes.startResize('right')}><span aria-hidden="true">⋮</span></div>
+      <aside className="research-detail">
+        {filter === 'results' && selectedResult ? <><header><strong>调研结果</strong><span>{String(selectedResult.status) === 'PARTIAL' ? '部分完成' : '已完成'}</span></header><article className="research-result-card"><h3>{titleFor(selectedResult)}</h3><pre>{String(selectedResult.summary || '暂无摘要。')}</pre>{Boolean(selectedResult.evidenceUrls) && <section><strong>证据链接</strong>{String(selectedResult.evidenceUrls).split('\n').filter(Boolean).map((url) => <button key={url} onClick={() => void api.openExternal(url)}>{url.replace(/^https?:\/\//, '')}</button>)}</section>}</article><section className="research-intelligence-overview"><header><div><strong>已收纳情报</strong><small>所有调研内容均在收纳箱内查看与整理</small></div><span>{externalItems.length} 条内容</span></header><div className="research-intelligence-metrics"><span><b>{intelligenceSignals.length}</b>信号</span><span><b>{intelligenceSources.length}</b>来源</span><span><b>{intelligenceOpportunities.length}</b>机会</span></div>{[...intelligenceSignals, ...intelligenceOpportunities].slice(0, 3).map((item) => <article key={item.id}><strong>{titleFor(item)}</strong><p>{String(item.summary || item.description || item.content || '暂无摘要。')}</p></article>)}{!intelligenceSignals.length && !intelligenceOpportunities.length && <p className="research-intelligence-empty">调研产生的可追溯内容会保留在这里，不会自动进入项目、目标或任务。</p>}</section><NotebookCategoryControl record={selectedResult} categories={categories} onChange={async (_, categoryId) => updateResultCategory(categoryId)} onCreate={() => onNotice('请先切换到“收纳内容”，在左侧分类处新建分类。')} /><div className="research-result-actions"><button className="button" onClick={() => { setKnowledgeCategory(''); setKnowledgeRelationId(''); setKnowledgeDialogOpen(true) }}>▱ 存入知识</button><button className="button" onClick={() => { setRelationTargetId(''); setRelationDialogOpen(true) }}>□ 关联 Jason OS</button></div></> : selectedRequest && plan ? <><header><strong>调研方案</strong><span className="research-status">{selectedRequest.status === 'DRAFT' ? '尚未执行' : selectedRequest.status === 'RUNNING' ? '调研中' : selectedRequest.status === 'COMPLETED' ? '已完成' : '未完成'}</span></header><article className="research-plan-card"><div className="research-user-message">{String(selectedRequest.request || '')}</div><h3>已为你生成调研方案</h3><dl><div><dt>范围</dt><dd>{plan.scope}</dd></div><div><dt>维度</dt><dd>{plan.dimensions.join('、')}</dd></div><div><dt>情报源</dt><dd>{plan.sources.map((source) => <div className="research-source-choice" key={source.key}><label className={source.status}><input type="checkbox" checked={currentSelectedSources.includes(source.key)} disabled={source.status !== 'ready' || selectedRequest.status !== 'DRAFT'} onChange={() => toggleSource(source.key)} /><span><b>{source.label}</b><small>{source.detail}</small></span><em>{source.status === 'ready' ? '可执行' : source.status === 'needs_input' ? '需入口' : '需配置'}</em></label>{source.status === 'needs_input' && selectedRequest.status === 'DRAFT' && <div className="research-source-input"><input value={sourceUrlDraft} onChange={(event) => setSourceUrlDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void addSourceUrl(source.key) } }} placeholder="粘贴公开链接后执行" /><button className="button" disabled={busy || !sourceUrlDraft.trim()} onClick={() => void addSourceUrl(source.key)}>添加入口</button></div>}</div>)}</dd></div><div><dt>交付内容</dt><dd>{plan.deliverables.join('、')}</dd></div></dl>{selectedRequest.status === 'DRAFT' ? <footer><button className="button" onClick={() => { setRequestDraft(String(selectedRequest.request || '')); onNotice('已将需求放回输入框，可补充后重新生成方案。') }}>修改方案</button><button className="button primary" disabled={busy} onClick={() => void runResearch()}>{busy ? '正在执行…' : '确认并开始调研'}</button></footer> : <p className="research-plan-note">{selectedRequest.status === 'RUNNING' ? '正在读取你确认的公开来源。' : '调研记录已保留；结果可在“调研结果”中查看。'}</p>}</article><p className="research-safety-note">⌑ 确认前不会抓取数据，也不会关联 Jason OS。</p></> : <div className="research-result-empty"><span>⌕</span><strong>选择一条调研需求</strong><p>右侧会显示方案、来源与结果操作。</p></div>}
+      <section className="research-followup"><span>📎</span><input value={requestDraft} onChange={(event) => setRequestDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void createPlan() }} placeholder="继续补充调研要求…" /><button aria-label="发送调研需求" disabled={!requestDraft.trim() || busy} onClick={() => void createPlan()}>➤</button></section>
+      </aside>
+    </div>
+    {knowledgeDialogOpen && selectedResult && <div className="overlay-backdrop notebook-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && !busy && setKnowledgeDialogOpen(false)}><section className="notebook-action-dialog notebook-knowledge-dialog"><header><div><p>知识沉淀</p><h3>确认存入知识</h3></div><button disabled={busy} onClick={() => setKnowledgeDialogOpen(false)}>×</button></header><label><span>知识分类</span><input autoFocus value={knowledgeCategory} onChange={(event) => setKnowledgeCategory(event.target.value)} placeholder="例如：行业研究、竞品资料" /></label><label><span>可选关联</span><select value={knowledgeRelationId} onChange={(event) => setKnowledgeRelationId(event.target.value)}><option value="">不关联其他记录</option>{relationTargets.map((target) => <option key={target.id} value={target.id}>{configFor(target.entity).label} · {titleFor(target)}</option>)}</select></label><small>确认后才会创建知识记录。项目、目标、任务等只会按你在这里的选择关联。</small><footer><button className="button ghost" disabled={busy} onClick={() => setKnowledgeDialogOpen(false)}>取消</button><button className="button primary" disabled={busy} onClick={() => void saveToKnowledge()}>{busy ? '正在存入…' : '确认存入知识'}</button></footer></section></div>}
+    {relationDialogOpen && selectedResult && <div className="overlay-backdrop notebook-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && !busy && setRelationDialogOpen(false)}><section className="notebook-action-dialog"><header><div><p>可选关联</p><h3>关联 Jason OS</h3></div><button disabled={busy} onClick={() => setRelationDialogOpen(false)}>×</button></header><label><span>选择要关联的对象</span><select autoFocus value={relationTargetId} onChange={(event) => setRelationTargetId(event.target.value)}><option value="">暂不选择</option>{relationTargets.map((target) => <option key={target.id} value={target.id}>{configFor(target.entity).label} · {titleFor(target)}</option>)}</select></label><small>仅在你确认后建立关联；不选择则不会写入任何 Jason OS 关系。</small><footer><button className="button ghost" disabled={busy} onClick={() => setRelationDialogOpen(false)}>取消</button><button className="button primary" disabled={!relationTargetId || busy} onClick={() => void addRelation()}>确认关联</button></footer></section></div>}
+  </div>
+}
+
+function NotebookCategoryControl({ record, categories, compact = false, onChange, onCreate }: { record: RecordData; categories: RecordData[]; compact?: boolean; onChange: (record: RecordData, categoryId: string) => Promise<void>; onCreate: () => void }) {
+  return <section className={`notebook-category-control${compact ? ' compact' : ''}`}><label>收纳箱分类<select value={String(record.notebookCategoryId || '')} onChange={(event) => void onChange(record, event.target.value)}><option value="">未分类</option>{categories.map((category) => <option key={category.id} value={category.id}>{titleFor(category)}</option>)}</select></label><button className="button" onClick={onCreate}>＋ 新建分类</button></section>
+}
+
+function RichNotebookEditor({ note, records, related, categories, fullscreen, onOpen, onCreateNote, onRefresh, onNotice, onAi, onAssignCategory, onCreateCategory, onToggleFullscreen, onClose, onRelationsChanged }: { note: RecordData; records: RecordData[]; related: RecordData[]; categories: RecordData[]; fullscreen: boolean; onOpen: (record: RecordData) => void; onCreateNote: () => void; onRefresh: () => Promise<void>; onNotice: (text: string, tone?: Notice['tone']) => void; onAi: (question: string, context: Partial<AgentContext>) => void; onAssignCategory: (record: RecordData, categoryId: string) => Promise<void>; onCreateCategory: () => void; onToggleFullscreen: () => void; onClose: () => void; onRelationsChanged: () => void }) {
+  const editorRef = useRef<HTMLDivElement>(null)
+  const imageInputRef = useRef<HTMLInputElement>(null)
+  const relationPickerRef = useRef<HTMLDivElement>(null)
+  const [title, setTitle] = useState(String(note.title || ''))
+  const [tags, setTags] = useState<string[]>(tagsFor(note))
+  const [tagDialogOpen, setTagDialogOpen] = useState(false)
+  const [tagDraft, setTagDraft] = useState('')
+  const [relationPickerOpen, setRelationPickerOpen] = useState(false)
+  const [relationTarget, setRelationTarget] = useState('')
+  const [knowledgeDialogOpen, setKnowledgeDialogOpen] = useState(false)
+  const [knowledgeCategory, setKnowledgeCategory] = useState('')
+  const [knowledgeRelationTarget, setKnowledgeRelationTarget] = useState('')
+  const [archivingToKnowledge, setArchivingToKnowledge] = useState(false)
+  const [imagePickerOpen, setImagePickerOpen] = useState(false)
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  useEffect(() => { setTitle(String(note.title || '')); setTags(Array.isArray(note.tags) ? note.tags.map(String).map((tag) => tag.trim()).filter(Boolean) : String(note.tags || '').split(',').map((tag) => tag.trim()).filter(Boolean)); setRelationPickerOpen(false); setKnowledgeDialogOpen(false); if (editorRef.current) { const html = String(note.contentHtml || ''); if (html) editorRef.current.innerHTML = html; else editorRef.current.textContent = String(note.content || '') } }, [note.id, note.updatedAt, note.content, note.contentHtml, note.tags, note.title])
+  useEffect(() => {
+    if (!fullscreen) return
+    const exitFullscreen = (event: KeyboardEvent) => { if (event.key === 'Escape') onToggleFullscreen() }
+    window.addEventListener('keydown', exitFullscreen)
+    return () => window.removeEventListener('keydown', exitFullscreen)
+  }, [fullscreen, onToggleFullscreen])
+  useEffect(() => {
+    if (!relationPickerOpen) return
+    const closeOutside = (event: PointerEvent) => {
+      if (!relationPickerRef.current?.contains(event.target as Node)) { setRelationPickerOpen(false); setRelationTarget('') }
+    }
+    window.addEventListener('pointerdown', closeOutside)
+    return () => window.removeEventListener('pointerdown', closeOutside)
+  }, [relationPickerOpen])
+  const html = () => editorRef.current?.innerHTML || ''
+  const text = () => editorRef.current?.innerText.trim() || ''
+  const command = (name: string, value?: string) => { editorRef.current?.focus(); document.execCommand(name, false, value) }
+  const save = async () => { try { await api.save('notes', { ...note, title: title.trim() || '未命名笔记', content: text(), contentHtml: html(), tags }); await onRefresh(); onNotice('笔记已保存。') } catch (error) { onNotice(`保存失败：${String(error)}`, 'danger') } }
+  const existingTags = [...new Set(records.filter((record) => record.entity === 'notes').flatMap(tagsFor))].sort((a, b) => a.localeCompare(b, 'zh-CN'))
+  const relationEntities: Entity[] = ['goals', 'projects', 'tasks', 'results', 'knowledge', 'insights', 'mentalModels', 'decisions', 'reviews', 'events', 'people']
+  const relationTargets = records.filter((record) => record.id !== note.id && relationEntities.includes(record.entity))
+  const addTag = () => {
+    const tag = tagDraft.trim()
+    if (!tag) return
+    if (!tags.includes(tag)) setTags((current) => [...current, tag])
+    setTagDraft(''); setTagDialogOpen(false)
+  }
+  const addLink = () => { const url = window.prompt('输入链接地址'); if (url) command('createLink', url) }
+  const inboxImages = records.filter((record) => record.entity === 'notebookFiles' && (String(record.mimeType || '').startsWith('image/') || /\.(jpe?g|png|webp|gif|svg|heic)$/i.test(String(record.originalName || record.name || record.relativePath || record.extension || ''))))
+  const addLocalImage = (files: FileList | null) => {
+    const file = files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => { command('insertImage', String(reader.result || '')); setImagePickerOpen(false); if (imageInputRef.current) imageInputRef.current.value = '' }
+    reader.onerror = () => onNotice('图片读取失败。', 'danger')
+    reader.readAsDataURL(file)
+  }
+  const addInboxImage = async (record: RecordData) => {
+    try {
+      const image = await api.previewNotebookFile(record.id)
+      if (image.kind !== 'image' || !image.dataUrl) throw new Error('这张图片暂时无法预览')
+      command('insertImage', image.dataUrl); setImagePickerOpen(false)
+    } catch (error) { onNotice(`图片插入失败：${String(error)}`, 'danger') }
+  }
+  const archiveToKnowledge = async () => {
+    try {
+      setArchivingToKnowledge(true)
+      const created = await api.save('knowledge', { title: title.trim() || titleFor(note), content: text(), sourceNoteId: note.id, category: knowledgeCategory.trim(), tags })
+      if (knowledgeRelationTarget) await api.addRelation(created.id, knowledgeRelationTarget, 'knowledge:RELATED')
+      await api.save('notes', { ...note, title: title.trim() || titleFor(note), content: text(), contentHtml: html(), tags, status: 'ARCHIVED' })
+      setKnowledgeDialogOpen(false); setKnowledgeCategory(''); setKnowledgeRelationTarget(''); await onRefresh(); onNotice('已按你的确认存入知识并归档原笔记。')
+    } catch (error) { onNotice(`存入知识失败：${String(error)}`, 'danger') }
+    finally { setArchivingToKnowledge(false) }
+  }
+  const associate = async () => {
+    const target = relationTargets.find((record) => record.id === relationTarget)
+    if (!target) return
+    try { await api.addRelation(note.id, target.id, 'notebook:RELATED'); setRelationTarget(''); setRelationPickerOpen(false); onRelationsChanged(); onNotice(`已关联到${configFor(target.entity).label}“${titleFor(target)}”。`) } catch (error) { onNotice(`关联失败：${String(error)}`, 'danger') }
+  }
+  const askAi = () => onAi('请仅基于这条收纳箱笔记给出摘要、要点、Notebook 分类建议、建议标签和潜在关联建议。不要创建、修改、关联、归档或写入标签；所有建议必须由用户确认后才可应用。', { currentRoute: 'notebook', currentEntityType: 'notes', currentEntityId: note.id, selectedItems: [note.id] })
+  const deleteNote = async () => {
+    try { setDeleting(true); await api.remove(note.id); setDeleteConfirmOpen(false); await onRefresh(); onClose(); onNotice('笔记已按你的确认删除。') }
+    catch (error) { onNotice(`删除笔记失败：${String(error)}`, 'danger') }
+    finally { setDeleting(false) }
+  }
+  return <>
+    <header className="notebook-editor-header">
+      <div><span>▤</span><strong>笔记</strong></div>
+      <div className="notebook-editor-header-actions">
+        <button className="notebook-new-note" title="手动新建笔记" onClick={onCreateNote}>＋ 新建</button>
+        <button title="置顶 / 收藏" onClick={() => void api.save('notes', { ...note, favorite: String(note.favorite) === 'true' ? 'false' : 'true' }).then(onRefresh)}>⚑</button>
+        <button className="notebook-ai-note" title="AI 整理建议" onClick={askAi}>AI</button>
+        <button className="notebook-fullscreen-note" title={fullscreen ? '缩小笔记栏' : '放大笔记栏'} aria-label={fullscreen ? '缩小笔记栏' : '放大笔记栏'} onClick={onToggleFullscreen}>{fullscreen ? '↙ 缩小' : '⛶ 放大'}</button>
+        <button className="notebook-save-note" title="保存笔记" onClick={() => void save()}>保存</button>
+        <button className="notebook-delete-note" title="删除笔记" onClick={() => setDeleteConfirmOpen(true)}>删除</button>
+        <button title="关闭编辑器" onClick={onClose}>×</button>
+      </div>
+    </header>
+    <div className="notebook-editor">
+      <input className="notebook-editor-title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="未命名笔记" />
+      <div className="notebook-editor-toolbar" role="toolbar" aria-label="笔记格式">
+        <button title="粗体" onClick={() => command('bold')}><b>B</b></button>
+        <button title="斜体" onClick={() => command('italic')}><i>I</i></button>
+        <button title="删除线" onClick={() => command('strikeThrough')}><s>S</s></button>
+        <i />
+        <button title="项目符号列表" onClick={() => command('insertUnorderedList')}>☷</button>
+        <button title="编号列表" onClick={() => command('insertOrderedList')}>☰</button>
+        <button title="待办事项" onClick={() => command('insertHTML', '<div>☐&nbsp;</div>')}>☑</button>
+        <button title="引用" onClick={() => command('formatBlock', 'blockquote')}>❝</button>
+        <button title="代码块" onClick={() => command('formatBlock', 'pre')}>‹›</button>
+        <button title="插入链接" onClick={addLink}>⌁</button>
+        <button className="notebook-image-button" title="添加图片（电脑 / 收纳箱）" onClick={() => setImagePickerOpen((open) => !open)}><span>▧</span>图片</button>
+        <span />
+        <button title="撤销" onClick={() => command('undo')}>↶</button>
+        <button title="重做" onClick={() => command('redo')}>↷</button>
+      </div>
+      {imagePickerOpen && <div className="notebook-image-picker"><header><strong>添加图片</strong><button onClick={() => setImagePickerOpen(false)}>×</button></header><button className="notebook-image-local" onClick={() => imageInputRef.current?.click()}><span>＋</span><div><strong>从电脑添加</strong><small>选择本地 JPG、PNG、WebP 等图片</small></div></button><input ref={imageInputRef} className="hidden-file-input" type="file" accept="image/*" onChange={(event) => addLocalImage(event.currentTarget.files)} /><div className="notebook-image-library"><strong>从收纳箱选择</strong>{inboxImages.length ? inboxImages.map((record) => <button key={record.id} onClick={() => void addInboxImage(record)}><span>▧</span><div><strong>{titleFor(record)}</strong><small>{String(record.extension || '图片').toUpperCase()}</small></div></button>) : <p>收纳箱里还没有图片。</p>}</div></div>}
+      <div ref={editorRef} className="notebook-rich-editor" contentEditable suppressContentEditableWarning data-placeholder="开始记录…" />
+      <div className="notebook-editor-rule">— — —</div>
+    </div>
+    <div className="notebook-editor-tags">
+      <span>◇</span><strong>标签</strong>
+      {tags.map((tag) => <em key={tag}>{tag}<button onClick={() => setTags((current) => current.filter((item) => item !== tag))}>×</button></em>)}
+      <button title="添加标签" onClick={() => { setTagDraft(''); setTagDialogOpen(true) }}>＋</button>
+      <button className="notebook-tag-ai" title="让 AI 建议标签" onClick={askAi}>AI 建议</button>
+      <NotebookCategoryControl compact record={note} categories={categories} onChange={onAssignCategory} onCreate={onCreateCategory} />
+    </div>
+    <footer className="notebook-editor-actions">
+      <button className="button primary" onClick={() => void save()}>◉ 保存</button>
+      <button className="button" onClick={() => { setKnowledgeCategory(''); setKnowledgeRelationTarget(''); setKnowledgeDialogOpen(true) }}>▱ 存入知识</button>
+      <button className="button" onClick={() => { setRelationTarget(''); setRelationPickerOpen(true) }}>□ 关联记录</button>
+    </footer>
+    <div className="notebook-editor-meta">
+      <span>来源 · 收纳箱</span>
+      <span>创建 · {formatDate(note.createdAt, true)}</span>
+      <span>更新 · {formatDate(note.updatedAt, true)}</span>
+    </div>
+    {related.length > 0 && <div className="notebook-editor-relations">已关联：{related.map((record) => <button key={record.id} onClick={() => onOpen(record)}>{configFor(record.entity).icon} {titleFor(record)}</button>)}</div>}
+    {relationPickerOpen && <section ref={relationPickerRef} className="notebook-relation-popover"><header><div><strong>关联 Jason OS 记录</strong><small>可选择项目、目标、任务等；点击其他任意位置即可取消。</small></div><button onClick={() => { setRelationPickerOpen(false); setRelationTarget('') }}>×</button></header><label>选择对象<select autoFocus value={relationTarget} onChange={(event) => setRelationTarget(event.target.value)}><option value="">暂不选择</option>{relationTargets.map((target) => <option key={target.id} value={target.id}>{configFor(target.entity).label} · {titleFor(target)}</option>)}</select></label><footer><button className="button ghost" onClick={() => { setRelationPickerOpen(false); setRelationTarget('') }}>取消</button><button className="button primary" disabled={!relationTarget} onClick={() => void associate()}>确认关联</button></footer></section>}
+    {tagDialogOpen && <div className="overlay-backdrop notebook-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setTagDialogOpen(false)}><form className="notebook-action-dialog" onSubmit={(event) => { event.preventDefault(); addTag() }}><header><div><p>笔记标签</p><h3>创建标签</h3></div><button type="button" onClick={() => setTagDialogOpen(false)}>×</button></header><label><span>标签名称</span><input autoFocus value={tagDraft} onChange={(event) => setTagDraft(event.target.value)} placeholder="例如：产品灵感" list="notebook-existing-tags" /><datalist id="notebook-existing-tags">{existingTags.map((tag) => <option key={tag} value={tag} />)}</datalist></label><small>标签会保存到当前笔记，并可在收纳箱左侧按标签筛选。需要 AI 协助时，可先点击“AI 建议”，再由你确认添加。</small><footer><button className="button ghost" type="button" onClick={() => setTagDialogOpen(false)}>取消</button><button className="button primary" type="submit" disabled={!tagDraft.trim()}>添加标签</button></footer></form></div>}
+    {knowledgeDialogOpen && <div className="overlay-backdrop notebook-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && !archivingToKnowledge && setKnowledgeDialogOpen(false)}><section className="notebook-action-dialog notebook-knowledge-dialog"><header><div><p>知识沉淀</p><h3>确认存入知识</h3></div><button disabled={archivingToKnowledge} onClick={() => setKnowledgeDialogOpen(false)}>×</button></header><label><span>知识分类</span><input autoFocus value={knowledgeCategory} onChange={(event) => setKnowledgeCategory(event.target.value)} placeholder="例如：产品、方法、行业研究" list="notebook-knowledge-categories" /><datalist id="notebook-knowledge-categories">{[...new Set(records.filter((record) => record.entity === 'knowledge').map((record) => String(record.category || '').trim()).filter(Boolean))].map((category) => <option key={category} value={category} />)}</datalist></label><label><span>可选关联</span><select value={knowledgeRelationTarget} onChange={(event) => setKnowledgeRelationTarget(event.target.value)}><option value="">不关联其他记录</option>{relationTargets.map((target) => <option key={target.id} value={target.id}>{configFor(target.entity).label} · {titleFor(target)}</option>)}</select></label><small>确认后会创建一条知识记录并归档当前笔记；项目、目标、任务等只会按你在这里的选择关联。</small><footer><button className="button ghost" disabled={archivingToKnowledge} onClick={() => setKnowledgeDialogOpen(false)}>取消</button><button className="button primary" disabled={archivingToKnowledge} onClick={() => void archiveToKnowledge()}>{archivingToKnowledge ? '正在存入…' : '确认存入知识'}</button></footer></section></div>}
+    {deleteConfirmOpen && <div className="overlay-backdrop notebook-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setDeleteConfirmOpen(false)}><section className="notebook-action-dialog danger"><header><div><p>删除笔记</p><h3>确定删除“{title.trim() || titleFor(note)}”？</h3></div><button onClick={() => setDeleteConfirmOpen(false)}>×</button></header><small>删除后不会进入已归档，也不会影响其他笔记。</small><footer><button className="button ghost" onClick={() => setDeleteConfirmOpen(false)}>取消</button><button className="button danger" disabled={deleting} onClick={() => void deleteNote()}>{deleting ? '正在删除…' : '确认删除'}</button></footer></section></div>}
+  </>
 }
 
 function MemoryView({ entity, records, onOpen, onCreate }: { entity: Entity; records: RecordData[]; onOpen: (record: RecordData) => void; onCreate: (entity: Entity, initial?: Partial<RecordData>) => void }) {
@@ -733,31 +1242,15 @@ function RadarStoryCard({ story, rank, featured = false }: { story: RadarStory; 
   return <a className={`radar-story ${featured ? 'featured' : ''}`} href={story.url} target="_blank" rel="noreferrer" onClick={(event) => { event.preventDefault(); void api.openExternal(story.url) }}><div className="radar-story-meta"><span>#{rank}</span><span className={`radar-kind kind-${story.category}`}>{categoryLabel}</span>{story.score && <span>AI {story.score}分</span>}<time>{publishedAt}</time></div><h4>{story.title}</h4>{story.titleEn && !story.title.includes(story.titleEn) && <p className="radar-title-en">{story.titleEn}</p>}<p className="radar-why"><b>为什么值得关注</b>{story.reason}</p><footer><div>{story.sourceNames.slice(0, 3).map((source) => <span key={source}>{source}</span>)}</div><strong>{story.sourceCount} 个来源 ↗</strong></footer></a>
 }
 
-function ExternalIntelligenceView({ records, items, onOpen, onCreate, onSave, onRefresh, onAi, onNotice }: { records: RecordData[]; items: ExternalItem[]; onOpen: (record: RecordData) => void; onCreate: (entity: Entity, initial?: Partial<RecordData>) => void; onSave: (entity: Entity, data: Partial<RecordData>) => Promise<void>; onRefresh: () => Promise<void>; onAi: (prompt: string) => void; onNotice: (text: string, tone?: Notice['tone']) => void }) {
-  const [tab, setTab] = useState<'briefing' | 'signals' | 'opportunities' | 'sources' | 'explorer'>('briefing')
-  const autoSynced = useRef(new Set<string>())
-  const detected = detectExternalSignals(items); const briefing = briefingSignals(detected)
-  const savedSignals = records.filter((record) => record.entity === 'signals'); const opportunities = records.filter((record) => record.entity === 'opportunities'); const sources = records.filter((record) => record.entity === 'externalSources')
-  const saveDetected = async (signal: DetectedSignal, status = 'WATCHING') => { await onSave('signals', { title: signal.title, type: signal.type, summary: signal.summary, status, platform: signal.platform, baselineValue: String(signal.baselineValue), currentValue: String(signal.currentValue), baselineStart: signal.baselineStart, baselineEnd: signal.baselineEnd, currentStart: signal.currentStart, currentEnd: signal.currentEnd, changeRate: String(signal.changeRate), sampleSize: String(signal.sampleSize), independentAuthorCount: String(signal.independentAuthorCount), calculationMethod: signal.calculationMethod, evidenceItemIds: signal.evidenceItemIds, detectedAt: signal.detectedAt, evidenceLevel: 'REALITY', timelineImportance: 'key' }); await onRefresh() }
-  const syncSource = useCallback(async (source: RecordData) => { const url = String(source.url || ''); if (!url) { onNotice('当前版本只对带公开链接的情报源执行同步；关键词和账号接口将在确认对应 Provider endpoint 后启用。', 'danger'); return } const provider = source.providerPreference === 'apify' ? 'apify' : source.providerPreference === 'tikhub' ? 'tikhub' : source.providerPreference === 'scrapecreators' ? 'scrapecreators' : 'auto'; try { await api.captureLink(url, provider); await api.save('externalSources', { ...source, lastPolledAt: new Date().toISOString(), status: 'active' }); await onRefresh(); onNotice(`${provider === 'apify' ? 'Apify' : 'External Intelligence'} 情报源已同步。`) } catch (error) { onNotice(`同步失败：${String(error)}`, 'danger') } }, [onNotice, onRefresh])
-  useEffect(() => { sources.filter((source) => source.status === 'active' && source.pollInterval === 'daily' && source.url && !isToday(source.lastPolledAt) && !autoSynced.current.has(source.id)).forEach((source) => { autoSynced.current.add(source.id); void syncSource(source) }) }, [sources, syncSource])
-  return <div className="external-intelligence-page"><section className="external-intelligence-hero"><div><span>JASON OS · SENSE LAYER</span><h2>External Intelligence</h2><p>感知外部变化，而不是把海量社媒内容堆进 Jason OS。只有可追溯的信号、机会和风险才进入 CEO 决策层。</p></div><div><button onClick={() => onAi('基于当前 External Intelligence 的真实 Signal、样本量、计算口径和数据缺口，为 CEO 生成一份只读外部情报简报。不要创建项目或修改财务。')}>AI 分析信号</button><button className="primary" onClick={() => onCreate('externalSources', { status: 'active', pollInterval: 'manual', providerPreference: 'auto', type: 'LINK' })}>＋ 新建情报源</button></div></section><div className="metric-strip four"><Metric label="标准化内容" value={`${items.length}`} hint="Raw Data 不进入主搜索" /><Metric label="检测信号" value={`${detected.length}`} hint="确定性规则" /><Metric label="观察中信号" value={`${savedSignals.filter((signal) => signal.status === 'WATCHING').length}`} /><Metric label="机会" value={`${opportunities.length}`} hint="必须进入决策" /></div><nav className="external-tabs">{([['briefing','CEO Briefing'],['signals','Signals'],['opportunities','Opportunities'],['sources','Sources'],['explorer','Explorer']] as const).map(([key,label]) => <button key={key} className={tab === key ? 'active' : ''} onClick={() => setTab(key)}>{label}</button>)}</nav>
-    {tab === 'briefing' && <section className="external-panel"><PanelHeader title="今日 CEO 外部简报" />{briefing.length ? <div className="briefing-list">{briefing.map((signal) => <article key={signal.key}><header><span>{signal.type}</span><b>{Math.round(signal.changeRate * 100)}%</b></header><h3>{signal.title}</h3><p>{signal.summary}</p><div><span>样本 {signal.sampleSize}</span><span>独立作者 {signal.independentAuthorCount}</span><span>{signal.platform}</span></div><small>{signal.calculationMethod}</small><footer><button onClick={() => saveDetected(signal)}>继续观察</button><button onClick={() => saveDetected(signal, 'DISMISSED')}>忽略</button></footer></article>)}</div> : <GuidedEmpty icon="✺" title="还没有达到证据门槛的外部信号" text="第一版不会为了填满简报而制造趋势。采集足够的独立内容和作者后，确定性 Signal Engine 才会生成变化。" />}</section>}
-    {tab === 'signals' && <section className="external-panel"><PanelHeader title="外部信号" />{savedSignals.length ? <div className="signal-record-list">{savedSignals.map((signal) => <article key={signal.id}><button onClick={() => onOpen(signal)}><span>{String(signal.type || 'SIGNAL')}</span><strong>{titleFor(signal)}</strong><small>{String(signal.summary || signal.calculationMethod || '')}</small></button><div><button onClick={() => onCreate('opportunities', { title: titleFor(signal), signalIds: [signal.id], evidence: signal.summary, growthEvidence: signal.calculationMethod, status: 'draft' })}>创建机会</button><button onClick={() => onCreate('decisions', { title: `判断：${titleFor(signal)}`, signalIds: [signal.id], evidence: signal.summary, context: signal.calculationMethod, status: 'pending', date: today() })}>创建决策</button></div></article>)}</div> : <GuidedEmpty icon="⌁" title="还没有保存的信号" text="自动检测的信号需要先选择“继续观察”，才会进入长期业务记录和 AI Context。" />}</section>}
-    {tab === 'opportunities' && <section className="external-panel"><PanelHeader title="机会评估" action="创建机会" onAction={() => onCreate('opportunities', { status: 'draft' })} />{opportunities.length ? <div className="opportunity-grid">{opportunities.map((opportunity) => <article key={opportunity.id} onClick={() => onOpen(opportunity)}><span>{statusLabel(opportunity.status)}</span><h3>{titleFor(opportunity)}</h3><p>{String(opportunity.hypothesis || opportunity.problem || '尚未记录机会假设。')}</p><footer><span>{Array.isArray(opportunity.signalIds) ? opportunity.signalIds.length : 0} 个信号</span><b>进入 CEO 判断 →</b></footer></article>)}</div> : <GuidedEmpty icon="◇" title="Signal 不会自动变成商业机会" text="只有 CEO 确认值得进一步判断的信号，才进入 Opportunity。第一版不生成综合机会分数。" />}</section>}
-    {tab === 'sources' && <section className="external-panel"><PanelHeader title="监控源" action="新增情报源" onAction={() => onCreate('externalSources', { status: 'active', pollInterval: 'manual', providerPreference: 'auto', type: 'LINK' })} />{sources.length ? <div className="source-list">{sources.map((source) => <article key={source.id}><button onClick={() => onOpen(source)}><span>{String(source.platform || '平台待定')}</span><strong>{titleFor(source)}</strong><small>{String(source.url || source.query || '尚未填写公开链接或关键词')}</small></button><div><span>{source.status === 'active' ? '● 启用' : '○ 暂停'}</span><button onClick={() => syncSource(source)}>立即同步</button></div></article>)}</div> : <GuidedEmpty icon="◉" title="只监控真正影响决策的对象" text="第一版建议从少量竞品账号、固定主题和公开链接开始，而不是抓取整个互联网。" action="新建第一个情报源" onAction={() => onCreate('externalSources', { status: 'active', pollInterval: 'manual', providerPreference: 'auto', type: 'LINK' })} />}</section>}
-    {tab === 'explorer' && <section className="external-panel"><PanelHeader title="Data Explorer" />{items.length ? <div className="external-item-list">{items.map((item) => <article key={item.id}><div><span>{item.platform}</span><strong>{item.title}</strong><small>{item.author || '作者未知'} · {formatDate(item.publishedAt || item.capturedAt, true)}</small><p>{item.content}</p></div><aside><b>{item.metrics.views} views</b><span>{item.metrics.likes} 赞 · {item.metrics.comments} 评 · {item.metrics.saves} 藏</span><button onClick={() => api.openExternal(item.canonicalUrl)}>打开原文 →</button></aside></article>)}</div> : <GuidedEmpty icon="⌕" title="外部数据层还没有标准化内容" text="在快速采集粘贴公众号、抖音或小红书完整链接；配置 RedFox 后会优先使用远程 API，失败时自动回退本地采集链。" />}</section>}
-  </div>
-}
 
-function SettingsView({ config, captureConfig, onSaveAiProvider, onSaveCaptureProvider, onExport, onBackup, backups, onRestoreBackup, onRestoreRecord }: { config: HackStartConfig | null; captureConfig: CaptureProviderConfig | null; onSaveAiProvider: (provider: AiProviderId, key: string, model: string) => void; onSaveCaptureProvider: (provider: CaptureProviderId, key: string) => void; onExport: (format: 'json' | 'markdown' | 'csv') => void; onBackup: () => void; backups: BackupInfo[]; onRestoreBackup: (path: string) => void; onRestoreRecord: (id: string) => Promise<void> }) {
+function SettingsView({ themePreference, activeTheme, onThemeChange, config, captureConfig, onSaveAiProvider, onSaveCaptureProvider, onExport, onBackup, backups, onRestoreBackup, onRestoreRecord }: { themePreference: ThemePreference; activeTheme: 'dark' | 'light'; onThemeChange: (theme: ThemePreference) => void; config: HackStartConfig | null; captureConfig: CaptureProviderConfig | null; onSaveAiProvider: (provider: AiProviderId, key: string, model: string) => void; onSaveCaptureProvider: (provider: CaptureProviderId, key: string) => void; onExport: (format: 'json' | 'markdown' | 'csv') => void; onBackup: () => void; backups: BackupInfo[]; onRestoreBackup: (path: string) => void; onRestoreRecord: (id: string) => Promise<void> }) {
   const [provider, setProvider] = useState<AiProviderId>(config?.provider || 'hackstart')
   const selectedProvider = config?.providers.find((item) => item.id === provider)
   const [key, setKey] = useState(''); const [redfoxKey, setRedfoxKey] = useState(''); const [apifyKey, setApifyKey] = useState(''); const [tikhubKey, setTikhubKey] = useState(''); const [scrapeCreatorsKey, setScrapeCreatorsKey] = useState(''); const [model, setModel] = useState(selectedProvider?.model || 'gpt-5.5'); const [archived, setArchived] = useState<RecordData[]>([])
   useEffect(() => { if (config?.provider) setProvider(config.provider) }, [config?.provider])
   useEffect(() => { const selected = config?.providers.find((item) => item.id === provider); setKey(''); if (selected) setModel(selected.model || selected.models[0]?.id || '') }, [provider, config])
   useEffect(() => { api.archived().then(setArchived) }, [])
-  return <div className="settings-page"><section className="settings-section"><header><div><h2>AI 服务商与模型</h2><p>每个服务商使用独立 API Key，并分别保存在 应用私有凭据文件（权限 0600）。</p></div><span className={`connection-badge ${selectedProvider?.configured ? 'connected' : ''}`}>{selectedProvider?.configured ? '已配置' : '未配置'}</span></header><div className="provider-tabs">{config?.providers.map((item) => <button key={item.id} className={provider === item.id ? 'active' : ''} onClick={() => setProvider(item.id)}><span className={`provider-light ${item.configured ? 'connected' : ''}`} /><strong>{item.label}</strong><small>{item.model}</small></button>)}</div><div className="model-catalog">{selectedProvider?.models.map((item) => <button key={item.id} className={model === item.id ? 'active' : ''} onClick={() => setModel(item.id)}><span>{model === item.id ? '●' : '○'}</span><div><strong>{item.label}</strong><small>{item.description}</small></div></button>)}</div><div className="settings-fields provider-settings"><label>{selectedProvider?.label || 'AI'} API Key<input type="password" autoComplete="off" placeholder={selectedProvider?.configured ? '已配置；留空保留当前 Key' : `粘贴 ${selectedProvider?.label || ''} API Key`} value={key} onChange={(event) => setKey(event.target.value)} /></label><label>当前模型<select value={model} onChange={(event) => setModel(event.target.value)}>{selectedProvider?.models.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label><button className="button primary" onClick={() => onSaveAiProvider(provider, key, model)}>保存、测试并启用</button></div><p className="provider-endpoint">API Endpoint：{selectedProvider?.baseUrl}{provider === 'minimax' ? ' · 中国大陆 Token Plan（Anthropic Messages）' : ''}</p></section><section className="settings-section capture-provider-section"><header><div><h2>采集服务与 External Intelligence Provider</h2><p>Provider 只负责读取外部数据，原始响应进入本机 External Intelligence 缓存；API 凭据保存在应用私有凭据文件（权限 0600），不会进入 SQLite、导出或 AI Prompt。</p></div><span className={`connection-badge ${captureConfig?.providers.some((item) => item.configured) ? 'connected' : ''}`}>{captureConfig?.providers.some((item) => item.configured) ? '已有 Provider' : '未配置'}</span></header>{captureConfig?.providers.map((item) => { if (item.id === 'redfox') return <div className="capture-provider-card" key={item.id}><div><strong>RedFoxHub</strong><small>微信公众号 · 抖音 · 小红书</small></div><label>RedFox API Key<input type="password" autoComplete="off" value={redfoxKey} onChange={(event) => setRedfoxKey(event.target.value)} placeholder={item.configured ? '已配置；留空保留当前 Key' : '粘贴 RedFox API Key'} /></label><button className="button primary" onClick={() => { onSaveCaptureProvider('redfox', redfoxKey); setRedfoxKey('') }}>保存并测试</button></div>; if (item.id === 'apify') return <div className="capture-provider-card" key={item.id}><div><strong>Apify</strong><small>网页 · 公众号 · 抖音 · 小红书 · X · Instagram · Facebook · Reddit · TikTok · YouTube</small></div><label>Apify API Token<input type="password" autoComplete="off" value={apifyKey} onChange={(event) => setApifyKey(event.target.value)} placeholder={item.configured ? '已配置；留空保留当前 Token' : '粘贴 Apify API Token'} /></label><button className="button primary" onClick={() => { onSaveCaptureProvider('apify', apifyKey); setApifyKey('') }}>保存并测试</button></div>; if (item.id === 'tikhub') return <div className="capture-provider-card" key={item.id}><div><strong>TikHub</strong><small>抖音 · TikTok · 小红书 · X · Instagram · Reddit · YouTube · 微信公众号</small></div><label>TikHub API Key<input type="password" autoComplete="off" value={tikhubKey} onChange={(event) => setTikhubKey(event.target.value)} placeholder={item.configured ? '已配置；留空保留当前 Key' : '粘贴 TikHub API Key'} /></label><button className="button primary" onClick={() => { onSaveCaptureProvider('tikhub', tikhubKey); setTikhubKey('') }}>保存并测试</button></div>; return <div className="capture-provider-card" key={item.id}><div><strong>Scrape Creators</strong><small>TikTok · Instagram · YouTube · Facebook · X · Reddit</small></div><label>Scrape Creators API Key<input type="password" autoComplete="off" value={scrapeCreatorsKey} onChange={(event) => setScrapeCreatorsKey(event.target.value)} placeholder={item.configured ? '已配置；留空保留当前 Key' : '粘贴 Scrape Creators API Key'} /></label><button className="button primary" onClick={() => { onSaveCaptureProvider('scrapecreators', scrapeCreatorsKey); setScrapeCreatorsKey('') }}>保存并测试</button></div>})}</section><section className="settings-section"><header><div><h2>数据所有权</h2><p>核心数据保存在本机 SQLite，可完整导出、备份和恢复。</p></div></header><div className="settings-actions"><button onClick={() => onExport('json')}>导出 JSON</button><button onClick={() => onExport('markdown')}>导出 Markdown</button><button onClick={() => onExport('csv')}>导出 CSV</button><button className="primary" onClick={onBackup}>创建 SQLite 快照</button></div></section><section className="settings-section"><header><div><h2>本地备份</h2><p>恢复前会自动保存当前数据库，避免覆盖错误。</p></div></header>{backups.length ? <div className="backup-list">{backups.slice(0, 8).map((backup) => <div key={backup.path}><div><strong>{backup.name}</strong><small>{formatDate(backup.modified, true)} · {(backup.size / 1024).toFixed(1)} KB</small></div><button onClick={() => onRestoreBackup(backup.path)}>恢复</button></div>)}</div> : <GuidedEmpty icon="↺" title="还没有本地备份" text="创建 SQLite 快照后，可以随时恢复到这个状态。" action="创建第一个备份" onAction={onBackup} />}</section><section className="settings-section"><header><div><h2>归档</h2><p>重要记录不会直接永久删除。归档后可随时恢复。</p></div><span>{archived.length} 条</span></header>{archived.length ? <div className="archive-list">{archived.map((record) => <div key={record.id}><div><span>{configFor(record.entity).icon}</span><strong>{titleFor(record)}</strong><small>{configFor(record.entity).label}</small></div><button onClick={async () => { await onRestoreRecord(record.id); setArchived(await api.archived()) }}>恢复</button></div>)}</div> : <p className="muted">归档箱为空。</p>}</section></div>
+  return <div className="settings-page"><section className="settings-section appearance-section"><header><div><h2>界面外观</h2><p>选择深色、白色，或按本机时间自动切换。</p></div><span className="connection-badge connected">当前：{activeTheme === 'light' ? '白色' : '深色'}</span></header><div className="theme-options">{([{ value: 'light', label: '白色' }, { value: 'dark', label: '深色' }, { value: 'auto', label: '自动' }] as { value: ThemePreference; label: string }[]).map((option) => <button key={option.value} className={themePreference === option.value ? 'active' : ''} onClick={() => onThemeChange(option.value)}><strong>{option.label}</strong><small>{option.value === 'auto' ? '07:00–19:00 白色' : option.value === 'light' ? '清爽白色界面' : '保留深色界面'}</small>{themePreference === option.value && <b>✓</b>}</button>)}</div></section><section className="settings-section"><header><div><h2>AI 服务商与模型</h2><p>每个服务商使用独立 API Key，并分别保存在 应用私有凭据文件（权限 0600）。</p></div><span className={`connection-badge ${selectedProvider?.configured ? 'connected' : ''}`}>{selectedProvider?.configured ? '已配置' : '未配置'}</span></header><div className="provider-tabs">{config?.providers.map((item) => <button key={item.id} className={provider === item.id ? 'active' : ''} onClick={() => setProvider(item.id)}><span className={`provider-light ${item.configured ? 'connected' : ''}`} /><strong>{item.label}</strong><small>{item.model}</small></button>)}</div><div className="model-catalog">{selectedProvider?.models.map((item) => <button key={item.id} className={model === item.id ? 'active' : ''} onClick={() => setModel(item.id)}><span>{model === item.id ? '●' : '○'}</span><div><strong>{item.label}</strong><small>{item.description}</small></div></button>)}</div><div className="settings-fields provider-settings"><label>{selectedProvider?.label || 'AI'} API Key<input type="password" autoComplete="off" placeholder={selectedProvider?.configured ? '已配置；留空保留当前 Key' : `粘贴 ${selectedProvider?.label || ''} API Key`} value={key} onChange={(event) => setKey(event.target.value)} /></label><label>当前模型<select value={model} onChange={(event) => setModel(event.target.value)}>{selectedProvider?.models.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label><button className="button primary" onClick={() => onSaveAiProvider(provider, key, model)}>保存、测试并启用</button></div><p className="provider-endpoint">API Endpoint：{selectedProvider?.baseUrl}{provider === 'minimax' ? ' · 中国大陆 Token Plan（Anthropic Messages）' : ''}</p></section><section className="settings-section capture-provider-section"><header><div><h2>采集服务与 External Intelligence Provider</h2><p>Provider 只负责读取外部数据，原始响应进入本机 External Intelligence 缓存；API 凭据保存在应用私有凭据文件（权限 0600），不会进入 SQLite、导出或 AI Prompt。</p></div><span className={`connection-badge ${captureConfig?.providers.some((item) => item.configured) ? 'connected' : ''}`}>{captureConfig?.providers.some((item) => item.configured) ? '已有 Provider' : '未配置'}</span></header>{captureConfig?.providers.map((item) => { if (item.id === 'redfox') return <div className="capture-provider-card" key={item.id}><div><strong>RedFoxHub</strong><small>微信公众号 · 抖音 · 小红书</small></div><label>RedFox API Key<input type="password" autoComplete="off" value={redfoxKey} onChange={(event) => setRedfoxKey(event.target.value)} placeholder={item.configured ? '已配置；留空保留当前 Key' : '粘贴 RedFox API Key'} /></label><button className="button primary" onClick={() => { onSaveCaptureProvider('redfox', redfoxKey); setRedfoxKey('') }}>保存并测试</button></div>; if (item.id === 'apify') return <div className="capture-provider-card" key={item.id}><div><strong>Apify</strong><small>网页 · 公众号 · 抖音 · 小红书 · X · Instagram · Facebook · Reddit · TikTok · YouTube</small></div><label>Apify API Token<input type="password" autoComplete="off" value={apifyKey} onChange={(event) => setApifyKey(event.target.value)} placeholder={item.configured ? '已配置；留空保留当前 Token' : '粘贴 Apify API Token'} /></label><button className="button primary" onClick={() => { onSaveCaptureProvider('apify', apifyKey); setApifyKey('') }}>保存并测试</button></div>; if (item.id === 'tikhub') return <div className="capture-provider-card" key={item.id}><div><strong>TikHub</strong><small>抖音 · TikTok · 小红书 · X · Instagram · Reddit · YouTube · 微信公众号</small></div><label>TikHub API Key<input type="password" autoComplete="off" value={tikhubKey} onChange={(event) => setTikhubKey(event.target.value)} placeholder={item.configured ? '已配置；留空保留当前 Key' : '粘贴 TikHub API Key'} /></label><button className="button primary" onClick={() => { onSaveCaptureProvider('tikhub', tikhubKey); setTikhubKey('') }}>保存并测试</button></div>; return <div className="capture-provider-card" key={item.id}><div><strong>Scrape Creators</strong><small>TikTok · Instagram · YouTube · Facebook · X · Reddit</small></div><label>Scrape Creators API Key<input type="password" autoComplete="off" value={scrapeCreatorsKey} onChange={(event) => setScrapeCreatorsKey(event.target.value)} placeholder={item.configured ? '已配置；留空保留当前 Key' : '粘贴 Scrape Creators API Key'} /></label><button className="button primary" onClick={() => { onSaveCaptureProvider('scrapecreators', scrapeCreatorsKey); setScrapeCreatorsKey('') }}>保存并测试</button></div>})}</section><section className="settings-section"><header><div><h2>数据所有权</h2><p>核心数据保存在本机 SQLite，可完整导出、备份和恢复。</p></div></header><div className="settings-actions"><button onClick={() => onExport('json')}>导出 JSON</button><button onClick={() => onExport('markdown')}>导出 Markdown</button><button onClick={() => onExport('csv')}>导出 CSV</button><button className="primary" onClick={onBackup}>创建 SQLite 快照</button></div></section><section className="settings-section"><header><div><h2>本地备份</h2><p>恢复前会自动保存当前数据库，避免覆盖错误。</p></div></header>{backups.length ? <div className="backup-list">{backups.slice(0, 8).map((backup) => <div key={backup.path}><div><strong>{backup.name}</strong><small>{formatDate(backup.modified, true)} · {(backup.size / 1024).toFixed(1)} KB</small></div><button onClick={() => onRestoreBackup(backup.path)}>恢复</button></div>)}</div> : <GuidedEmpty icon="↺" title="还没有本地备份" text="创建 SQLite 快照后，可以随时恢复到这个状态。" action="创建第一个备份" onAction={onBackup} />}</section><section className="settings-section"><header><div><h2>归档</h2><p>重要记录不会直接永久删除。归档后可随时恢复。</p></div><span>{archived.length} 条</span></header>{archived.length ? <div className="archive-list">{archived.map((record) => <div key={record.id}><div><span>{configFor(record.entity).icon}</span><strong>{titleFor(record)}</strong><small>{configFor(record.entity).label}</small></div><button onClick={async () => { await onRestoreRecord(record.id); setArchived(await api.archived()) }}>恢复</button></div>)}</div> : <p className="muted">归档箱为空。</p>}</section></div>
 }
 
 function SearchOverlay({ query, results, selectedEntities, onToggleEntity, onOpen, onClose }: { query: string; results: RecordData[]; selectedEntities: Entity[]; onToggleEntity: (entity: Entity) => void; onOpen: (record: RecordData) => void; onClose: () => void }) {
@@ -995,6 +1488,6 @@ function priorityRank(value: unknown) { return ({ high: 0, medium: 1, low: 2 }[S
 function greeting() { const hour = new Date().getHours(); return hour < 6 ? '夜深了' : hour < 11 ? '早上好' : hour < 14 ? '中午好' : hour < 18 ? '下午好' : '晚上好' }
 function groupBy<T>(items: T[], key: (item: T) => string) { return items.reduce<Record<string, T[]>>((groups, item) => { const value = key(item); (groups[value] ||= []).push(item); return groups }, {}) }
 function conversionInitial(source: RecordData, target: Entity): Partial<RecordData> { const common = { projectId: source.projectId, goalId: source.goalId }; if (target === 'reviews') return { ...common, resultId: source.id, title: `复盘：${titleFor(source)}`, whatHappened: source.actual || source.actualResult }; if (source.entity === 'reviews') { const content = source.lesson || source.doDifferently || source.whatHappened; if (target === 'insights') return { ...common, reviewId: source.id, statement: content, explanation: source.whyItHappened }; if (target === 'principles') return { statement: content, evidence: source.whatHappened, reviewIds: [source.id] }; if (target === 'knowledge') return { ...common, title: titleFor(source), content, reviewIds: [source.id] }; if (target === 'tasks') return { ...common, title: source.nextAction, status: 'todo' }; if (target === 'decisions') return { ...common, title: source.nextAction || titleFor(source), context: source.lesson, status: 'pending' } } if (source.entity === 'notes') { const noteContent = String(source.content || source.title || ''); if (target === 'knowledge') return { title: titleFor(source), content: noteContent, sourceNoteId: source.id }; if (target === 'insights') return { statement: noteContent, explanation: String(source.title || ''), sourceNoteId: source.id }; if (target === 'mentalModels') return { name: titleFor(source), definition: noteContent, coreIdea: noteContent, sourceNoteId: source.id }; if (target === 'decisions') return { title: titleFor(source), context: noteContent, sourceNoteId: source.id, status: 'pending' }; if (target === 'tasks') return { title: titleFor(source), description: noteContent, status: 'todo' }; if (target === 'projects') return { title: titleFor(source), description: noteContent, status: 'active' } } if (source.entity === 'inbox') return { ...common, title: source.content, content: source.content, statement: source.content, description: source.content }; return common }
-function paletteActions({ setSearchOpen, setPaletteOpen, openCreate, startTimer, setAiOpen, setView }: { setSearchOpen: (value: boolean) => void; setPaletteOpen: (value: boolean) => void; openCreate: (entity: Entity, initial?: Partial<RecordData>) => void; startTimer: () => void; setAiOpen: (value: boolean) => void; setView: (view: View) => void }) { const run = (action: () => void) => () => { setPaletteOpen(false); action() }; return [{ label: '全局搜索', hint: '搜索所有本地记录', icon: '⌕', run: run(() => setSearchOpen(true)) }, { label: '快速收集', hint: '保存到收集箱', icon: '＋', run: run(() => openCreate('inbox')) }, { label: '创建任务', hint: '添加下一步行动', icon: '□', run: run(() => openCreate('tasks')) }, { label: '创建项目', hint: '建立工作空间', icon: '◈', run: run(() => openCreate('projects')) }, { label: '开始计时', hint: '记录现实投入', icon: '▶', run: run(startTimer) }, { label: '创建决策', hint: '记录预测和理由', icon: '◆', run: run(() => openCreate('decisions', { date: today() })) }, { label: '创建复盘', hint: '从现实提炼学习', icon: '◑', run: run(() => openCreate('reviews')) }, { label: '创建知识', hint: '沉淀长期资产', icon: '⌘', run: run(() => openCreate('knowledge')) }, { label: '打开 AI 助理', hint: '基于当前上下文分析', icon: 'AI', run: run(() => setAiOpen(true)) }, { label: '打开今天', hint: '进入 Focus 工作视图', icon: '◉', run: run(() => setView('today')) }] }
+function paletteActions({ setSearchOpen, setPaletteOpen, openCreate, startTimer, setAiOpen, setView }: { setSearchOpen: (value: boolean) => void; setPaletteOpen: (value: boolean) => void; openCreate: (entity: Entity, initial?: Partial<RecordData>) => void; startTimer: () => void; setAiOpen: (value: boolean) => void; setView: (view: View) => void }) { const run = (action: () => void) => () => { setPaletteOpen(false); action() }; return [{ label: '全局搜索', hint: '搜索所有本地记录', icon: '⌕', run: run(() => setSearchOpen(true)) }, { label: '打开收纳箱', hint: '收集、整理与笔记', icon: '▱', run: run(() => setView('notebook')) }, { label: '创建任务', hint: '添加下一步行动', icon: '□', run: run(() => openCreate('tasks')) }, { label: '创建项目', hint: '建立工作空间', icon: '◈', run: run(() => openCreate('projects')) }, { label: '开始计时', hint: '记录现实投入', icon: '▶', run: run(startTimer) }, { label: '创建决策', hint: '记录预测和理由', icon: '◆', run: run(() => openCreate('decisions', { date: today() })) }, { label: '创建复盘', hint: '从现实提炼学习', icon: '◑', run: run(() => openCreate('reviews')) }, { label: '创建知识', hint: '沉淀长期资产', icon: '⌘', run: run(() => openCreate('knowledge')) }, { label: '打开 AI 助理', hint: '基于当前上下文分析', icon: 'AI', run: run(() => setAiOpen(true)) }, { label: '打开今天', hint: '进入 Focus 工作视图', icon: '◉', run: run(() => setView('today')) }] }
 
 export default App

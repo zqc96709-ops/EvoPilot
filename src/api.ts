@@ -16,7 +16,7 @@ export type FinanceSummary = { baseCurrency: string; incomeMinor: string; expens
 export type CaptureProviderId = 'redfox' | 'apify' | 'tikhub' | 'scrapecreators'
 export type CaptureProviderConfig = { providers: { id: CaptureProviderId; label: string; configured: boolean; supportedPlatforms: string[]; automaticSync: boolean; mediaDownload: boolean }[] }
 export type NotebookUploadInput = { file: File; notebookCategoryId?: string; notebookFolderId?: string; relativePath?: string }
-export type NotebookFilePreview = { kind: 'text' | 'pdf' | 'image' | 'audio' | 'video' | 'unsupported'; text?: string; dataUrl?: string; reason?: string; extractStatus?: string }
+export type NotebookFilePreview = { kind: 'text' | 'pdf' | 'image' | 'audio' | 'video' | 'unsupported'; text?: string; dataUrl?: string; page?: number; pageCount?: number; reason?: string; extractStatus?: string }
 export type NotebookStorageConfig = { maxFileSize: number; chunkSize: number }
 
 const key = 'jason-os-browser-records'
@@ -37,7 +37,7 @@ export const api = {
     write([...records.filter((item) => item.id !== id), record]); return record
   },
   async archive(id: string) { if (!browser()) return invoke('archive_record', { id }); write(read().map((record) => record.id === id ? { ...record, archivedAt: stamp() } : record)) },
-  async remove(id: string) { return this.archive(id) },
+  async remove(id: string) { if (!browser()) return invoke('delete_record', { id }); write(read().map((record) => record.id === id ? { ...record, archivedAt: undefined, deletedAt: stamp() } : record)) },
   async restore(id: string): Promise<RecordData> { if (!browser()) return invoke('restore_record', { id }); const record = read().find((item) => item.id === id)!; const restored = { ...record, archivedAt: undefined, deletedAt: undefined, updatedAt: stamp() }; write([...read().filter((item) => item.id !== id), restored]); return restored },
   async archived(): Promise<RecordData[]> { return browser() ? read().filter((record) => record.archivedAt && !record.deletedAt) : invoke('list_archived') },
   async search(query: string, entities: Entity[] = []): Promise<RecordData[]> { return browser() ? read().filter(active).filter((record) => (!entities.length || entities.includes(record.entity)) && JSON.stringify(record).toLowerCase().includes(query.toLowerCase())) : entities.length ? invoke('search_records_filtered', { query, entities }) : invoke('search_records', { query }) },
@@ -61,6 +61,7 @@ export const api = {
   async openNotebookFile(id: string): Promise<void> { if (browser()) throw new Error('浏览器模式没有本地 Storage 文件可打开。'); return invoke('open_notebook_file', { id }) },
   async revealNotebookFile(id: string): Promise<void> { if (browser()) throw new Error('浏览器模式没有本地 Storage 文件可显示。'); return invoke('reveal_notebook_file', { id }) },
   async previewNotebookFile(id: string): Promise<NotebookFilePreview> { if (browser()) return { kind: 'unsupported', reason: '浏览器模式不会保存原始文件。' }; return invoke('get_notebook_file_preview', { id }) },
+  async previewNotebookPdfPage(id: string, page: number): Promise<NotebookFilePreview> { if (browser()) return { kind: 'unsupported', reason: '浏览器模式不会保存原始文件。' }; return invoke('get_notebook_pdf_page', { id, page }) },
   async extractNotebookFile(id: string): Promise<RecordData> { if (browser()) throw new Error('浏览器模式不能提取本地文件内容。'); return invoke('extract_notebook_file_content', { id }) },
   async copyNotebookFile(id: string, notebookCategoryId?: string, notebookFolderId?: string): Promise<RecordData> { if (browser()) throw new Error('浏览器模式不能复制本地文件。'); return invoke('copy_notebook_file', { id, notebookCategoryId, notebookFolderId }) },
   async destroyNotebookFile(id: string): Promise<void> { if (browser()) throw new Error('浏览器模式不能永久删除本地文件。'); return invoke('destroy_notebook_file', { id }) },
@@ -77,6 +78,7 @@ export const api = {
   async getCaptureProviderConfig(): Promise<CaptureProviderConfig> { return browser() ? { providers: [{ id: 'redfox', label: 'RedFoxHub', configured: false, supportedPlatforms: ['微信公众号', '抖音', '小红书'], automaticSync: false, mediaDownload: false }, { id: 'apify', label: 'Apify', configured: false, supportedPlatforms: ['网页', '微信公众号', '抖音', '小红书', 'X', 'Instagram', 'Facebook', 'Reddit', 'TikTok', 'YouTube'], automaticSync: false, mediaDownload: false }, { id: 'tikhub', label: 'TikHub', configured: false, supportedPlatforms: ['抖音', 'TikTok', '小红书', 'X', 'Instagram', 'Reddit', 'YouTube', '微信公众号'], automaticSync: false, mediaDownload: false }, { id: 'scrapecreators', label: 'Scrape Creators', configured: false, supportedPlatforms: ['TikTok', 'Instagram', 'YouTube', 'Facebook', 'X', 'Reddit'], automaticSync: false, mediaDownload: false }] } : invoke('get_capture_provider_config') },
   async configureCaptureProvider(provider: CaptureProviderId, apiKey: string): Promise<CaptureProviderConfig> { if (browser()) throw new Error('浏览器模式不能保存采集凭据。请使用桌面应用。'); return invoke('configure_capture_provider', { provider, apiKey }) },
   async testCaptureProvider(provider: CaptureProviderId, url: string): Promise<{ ok: boolean; provider: string; latencyMs: number; content: Record<string, unknown> }> { if (browser()) throw new Error('浏览器模式不能测试真实采集 API。'); return invoke('test_capture_provider', { provider, url }) },
+  async searchTikTok(query: string, periodDays = 30): Promise<{ items: number; urls: string[] }> { if (browser()) throw new Error('浏览器模式不能运行真实调研。请使用桌面应用。'); return invoke('search_tiktok_research', { query, periodDays }) },
   async listExternalItems(limit = 80): Promise<ExternalItem[]> { return browser() ? [] : invoke('list_external_items', { limit }) },
   async cleanupExternalCache(): Promise<{ ok: boolean; removed: number }> { return browser() ? { ok: true, removed: 0 } : invoke('cleanup_external_cache') },
   async captureLink(url: string, provider: CaptureProviderId | 'auto' = 'auto'): Promise<RecordData> { if (browser()) return this.save('inbox', { content: url, type: 'link', sourceUrl: url, captureStatus: 'link_saved', captureProvider: provider }); return invoke('capture_link', { url, provider }) },

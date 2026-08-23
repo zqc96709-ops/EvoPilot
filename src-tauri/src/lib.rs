@@ -33,7 +33,6 @@ const NOTEBOOK_ENTITIES: &[&str] = &[
 ];
 const NOTEBOOK_MAX_FILE_SIZE: u64 = 1024 * 1024 * 1024;
 const NOTEBOOK_CHUNK_SIZE: usize = 2 * 1024 * 1024;
-const NOTEBOOK_PREVIEW_LIMIT: u64 = 24 * 1024 * 1024;
 const NOTEBOOK_EXTRACT_LIMIT: usize = 1_500_000;
 const WORKSPACE_DOCUMENT_LIMIT: u64 = 2 * 1024 * 1024;
 
@@ -69,6 +68,8 @@ const ENTITIES: &[&str] = &[
     "signals",
     "opportunities",
     "intelligenceBriefs",
+    "researchRequests",
+    "researchResults",
     "financialAccounts",
     "financialCategories",
     "financialTransactions",
@@ -756,6 +757,7 @@ fn expected_entity(key: &str) -> Option<&'static str> {
         "signalId" => Some("signals"),
         "opportunityId" => Some("opportunities"),
         "briefId" => Some("intelligenceBriefs"),
+        "researchRequestId" => Some("researchRequests"),
         "sourceDecisionId" => Some("decisions"),
         "sourceOpportunityId" => Some("opportunities"),
         "sourceSignalId" => Some("signals"),
@@ -1218,7 +1220,44 @@ fn save_record(app: AppHandle, entity: String, mut data: Value) -> Result<Value,
 
 #[tauri::command]
 fn delete_record(app: AppHandle, id: String) -> Result<(), String> {
-    archive_record(app, id)
+    let connection = db(&app)?;
+    let Some(mut data) = record_by_id(&connection, &id)? else {
+        return Err("记录不存在".into());
+    };
+    if data["entity"].as_str() == Some("financialTransactions")
+        && data["status"].as_str().unwrap_or("POSTED") != "DRAFT"
+    {
+        return Err("已入账财务流水不能删除；请将状态改为 VOIDED 并填写作废原因".into());
+    }
+    let entity = data["entity"].as_str().unwrap_or("").to_string();
+    if NOTEBOOK_ENTITIES.contains(&entity.as_str())
+        && data["ownerId"].as_str().unwrap_or(LOCAL_NOTEBOOK_OWNER) != LOCAL_NOTEBOOK_OWNER
+    {
+        return Err("无权删除其他用户的 Notebook 内容".into());
+    }
+    let deleted_at = now();
+    if let Some(object) = data.as_object_mut() {
+        object.remove("archivedAt");
+        object.insert("deletedAt".into(), Value::String(deleted_at.clone()));
+    }
+    let created = data["createdAt"].as_str().map(str::to_string);
+    write_record(&connection, &entity, &id, &data, created.as_deref())?;
+    connection
+        .execute(
+            "UPDATE records SET archived_at=NULL, deleted_at=?2 WHERE id=?1",
+            params![id, deleted_at],
+        )
+        .map_err(|e| e.to_string())?;
+    connection
+        .execute("DELETE FROM records_fts WHERE id=?1", params![id])
+        .map_err(|e| e.to_string())?;
+    connection
+        .execute(
+            "DELETE FROM relations WHERE from_id=?1 OR to_id=?1",
+            params![id],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1563,6 +1602,54 @@ for index in 0..<document.pageCount {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn render_pdf_page(path: &Path, page: usize) -> Result<(usize, Vec<u8>), String> {
+    let script = r#"import AppKit
+import Foundation
+import PDFKit
+let url = URL(fileURLWithPath: CommandLine.arguments[1])
+let index = Int(CommandLine.arguments[2]) ?? 0
+guard let document = PDFDocument(url: url), index >= 0, index < document.pageCount,
+      let page = document.page(at: index) else { exit(1) }
+let bounds = page.bounds(for: .mediaBox)
+let width: CGFloat = 1200
+let scale = width / bounds.width
+let size = NSSize(width: width, height: max(1, bounds.height * scale))
+let image = NSImage(size: size)
+image.lockFocus()
+NSColor.white.setFill()
+NSBezierPath(rect: NSRect(origin: .zero, size: size)).fill()
+guard let context = NSGraphicsContext.current?.cgContext else { exit(1) }
+context.saveGState()
+context.translateBy(x: 0, y: size.height)
+context.scaleBy(x: scale, y: -scale)
+page.draw(with: .mediaBox, to: context)
+context.restoreGState()
+image.unlockFocus()
+guard let tiff = image.tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff),
+      let png = bitmap.representation(using: .png, properties: [:]) else { exit(1) }
+print("\(document.pageCount)")
+FileHandle.standardOutput.write(png)
+"#;
+    let output = Command::new("/usr/bin/swift")
+        .arg("-e")
+        .arg(script)
+        .arg(path)
+        .arg(page.to_string())
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    let Some(separator) = output.stdout.iter().position(|byte| *byte == b'\n') else {
+        return Err("PDF 页面渲染未返回页数".into());
+    };
+    let page_count = String::from_utf8_lossy(&output.stdout[..separator])
+        .trim()
+        .parse::<usize>()
+        .map_err(|error| error.to_string())?;
+    Ok((page_count, output.stdout[separator + 1..].to_vec()))
 }
 
 fn extract_office_xml(path: &Path, extension: &str) -> Result<String, String> {
@@ -1931,44 +2018,38 @@ fn get_notebook_file_preview(app: AppHandle, id: String) -> Result<Value, String
             .as_str()
             .unwrap_or("")
             .to_string();
-        if extension == "pdf"
-            && fs::metadata(&path)
-                .map_err(|error| error.to_string())?
-                .len()
-                <= NOTEBOOK_PREVIEW_LIMIT
-        {
-            let bytes = fs::read(path).map_err(|error| error.to_string())?;
-            return Ok(
-                json!({"kind":"pdf", "dataUrl": format!("data:application/pdf;base64,{}", base64_encode(&bytes)), "text": truncate_notebook_text(content, 24_000).0}),
-            );
+        if extension == "pdf" {
+            let (page_count, png) = render_pdf_page(&path, 0)?;
+            return Ok(json!({"kind":"pdf", "page": 0, "pageCount": page_count, "dataUrl": format!("data:image/png;base64,{}", base64_encode(&png)), "text": truncate_notebook_text(content, 24_000).0}));
         }
         return Ok(
             json!({"kind":"text", "text": truncate_notebook_text(content, 24_000).0, "extractStatus": record["extractStatus"]}),
         );
     }
-    let size = fs::metadata(&path)
-        .map_err(|error| error.to_string())?
-        .len();
-    if size > NOTEBOOK_PREVIEW_LIMIT {
-        return Ok(json!({"kind":"unsupported", "reason":"文件过大，请在本机打开预览"}));
-    }
-    let bytes = fs::read(path).map_err(|error| error.to_string())?;
     if mime_type.starts_with("image/") {
-        return Ok(
-            json!({"kind":"image", "dataUrl": format!("data:{mime_type};base64,{}", base64_encode(&bytes))}),
-        );
+        let bytes = fs::read(path).map_err(|error| error.to_string())?;
+        return Ok(json!({"kind":"image", "dataUrl": format!("data:{mime_type};base64,{}", base64_encode(&bytes))}));
     }
     if mime_type.starts_with("audio/") {
-        return Ok(
-            json!({"kind":"audio", "dataUrl": format!("data:{mime_type};base64,{}", base64_encode(&bytes))}),
-        );
+        let bytes = fs::read(path).map_err(|error| error.to_string())?;
+        return Ok(json!({"kind":"audio", "dataUrl": format!("data:{mime_type};base64,{}", base64_encode(&bytes))}));
     }
     if mime_type.starts_with("video/") {
-        return Ok(
-            json!({"kind":"video", "dataUrl": format!("data:{mime_type};base64,{}", base64_encode(&bytes))}),
-        );
+        let bytes = fs::read(path).map_err(|error| error.to_string())?;
+        return Ok(json!({"kind":"video", "dataUrl": format!("data:{mime_type};base64,{}", base64_encode(&bytes))}));
     }
     Ok(json!({"kind":"unsupported", "reason":"该类型暂不支持内嵌预览，可在本机打开"}))
+}
+
+#[tauri::command]
+fn get_notebook_pdf_page(app: AppHandle, id: String, page: usize) -> Result<Value, String> {
+    let record = record_by_id(&db(&app)?, &id)?.ok_or("文件不存在")?;
+    if record["extension"].as_str().unwrap_or("").to_lowercase() != "pdf" {
+        return Err("当前文件不是 PDF".into());
+    }
+    let path = notebook_file_path(&app, &record)?;
+    let (page_count, png) = render_pdf_page(&path, page)?;
+    Ok(json!({"kind":"pdf", "page": page, "pageCount": page_count, "dataUrl": format!("data:image/png;base64,{}", base64_encode(&png)), "text": truncate_notebook_text(record["extractedContent"].as_str().unwrap_or("").to_string(), 24_000).0}))
 }
 
 #[tauri::command]
@@ -2408,6 +2489,24 @@ async fn test_capture_provider(provider: String, url: String) -> Result<Value, S
         if provider == "scrapecreators" { let result = scrapecreators::test_token(&scrapecreators_key()?)?; return Ok(json!({"ok":true,"provider":"scrapecreators","latencyMs":result["latencyMs"],"content":result})); }
         Err("当前只支持测试 RedFoxHub、Apify、TikHub 或 Scrape Creators".into())
     }).await.map_err(|error| format!("采集服务后台任务失败：{error}"))?
+}
+
+#[tauri::command]
+async fn search_tiktok_research(app: AppHandle, query: String, period_days: Option<i64>) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let captured_at = now();
+        let search = tikhub::search_videos(&tikhub_key()?, query.trim(), period_days.unwrap_or(30))?;
+        let raw_path = data_dir(&app)?.join("external-intelligence/raw").join(format!("{}.json", new_id("tikhub-search")));
+        fs::write(&raw_path, serde_json::to_vec_pretty(&search.raw).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
+        let connection = db(&app)?;
+        let mut urls = Vec::new();
+        for item in &search.items {
+            external_intelligence::upsert_item(&connection, &new_id("external-item"), item, &captured_at, &timestamp_after_days(&captured_at, 30), &raw_path.to_string_lossy())?;
+            if let Some(url) = item.get("canonicalUrl").and_then(Value::as_str) { urls.push(url.to_string()); }
+        }
+        external_intelligence::record_provider_call(&connection, &new_id("provider-call"), "tikhub", &search.endpoint, None, &captured_at, true, Some(search.status_code), search.items.len() as i64, None)?;
+        Ok(json!({"items":search.items.len(),"urls":urls}))
+    }).await.map_err(|error| format!("TikHub 调研后台任务失败：{error}"))?
 }
 
 #[tauri::command]
@@ -4509,6 +4608,7 @@ pub fn run() {
             get_capture_provider_config,
             configure_capture_provider,
             test_capture_provider,
+            search_tiktok_research,
             list_external_items,
             cleanup_external_cache,
             list_records,
@@ -4532,6 +4632,7 @@ pub fn run() {
             open_notebook_file,
             reveal_notebook_file,
             get_notebook_file_preview,
+            get_notebook_pdf_page,
             extract_notebook_file_content,
             copy_notebook_file,
             destroy_notebook_file,
