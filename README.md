@@ -46,6 +46,10 @@ cd .. && pnpm tauri build --debug
 
 HackStart API Key 保存于 应用私有凭据文件（权限 0600），不写入 SQLite 或导出文件。
 
+## 网页端与跨设备同步
+
+Jason OS 采用 Local-first：Mac 的 SQLite 始终是本地副本，云端只用于用户确认后的跨设备同步。网页/PWA 部署、Supabase RLS、域名绑定和验收步骤见 [`docs/WEB_AND_SYNC_SETUP.md`](docs/WEB_AND_SYNC_SETUP.md)。
+
 ## 构建产物
 
 ```text

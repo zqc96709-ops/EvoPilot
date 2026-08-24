@@ -401,6 +401,8 @@ html[data-theme='light'] { background: #fafaf7; color-scheme: light; }
   background: var(--bg);
   color: var(--text);
 }
+
+.cloud-sync-panel{max-width:980px}.cloud-sync-fields{grid-template-columns:2fr 2fr auto auto}.cloud-sync-panel .muted{font-size:10px}
 .light-theme .global-header { border-color: var(--line); background: rgba(255,255,253,.92); }
 .light-theme .sidebar { border-color: var(--line); background: #fff; }
 .light-theme .global-search input,
@@ -1297,3 +1299,5 @@ html[data-theme='light'] { background: #fafaf7; color-scheme: light; }
     overflow: visible;
   }
 }
+
+@media(max-width:760px){.cloud-sync-fields{grid-template-columns:1fr}.cloud-sync-fields .button{width:100%}}

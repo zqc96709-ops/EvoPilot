@@ -5,6 +5,7 @@ import type { AgentActionResult, AgentContext, AgentResponse, ChatMessage } from
 import type { Entity, RecordData } from './model'
 import type { ExternalItem } from './externalIntelligence'
 import { projectEconomics } from './finance'
+import { cloudSync, type CloudSyncStatus } from './cloudSync'
 export type { ChatMessage } from './agent/types'
 
 export type AiModelOption = { id: string; label: string; description: string }
@@ -25,20 +26,32 @@ const read = (): RecordData[] => JSON.parse(localStorage.getItem(key) || '[]')
 const write = (records: RecordData[]) => localStorage.setItem(key, JSON.stringify(records))
 const stamp = () => new Date().toISOString()
 const active = (record: RecordData) => !record.archivedAt && !record.deletedAt
+const syncRecords = async () => {
+  if (!cloudSync.status().signedIn) return
+  const local = browser() ? read() : await invoke<RecordData[]>('list_sync_records')
+  const merged = await cloudSync.sync(local)
+  if (browser()) write(merged)
+  else await invoke('merge_remote_records', { records: merged })
+}
 
 export const api = {
-  async initialize() { return browser() ? { ok: true } : invoke('initialize_database') },
+  async initialize() { const result = browser() ? { ok: true } : await invoke('initialize_database'); await syncRecords(); return result },
   async list(entity: Entity | 'all'): Promise<RecordData[]> { return browser() ? read().filter((record) => active(record) && (entity === 'all' || record.entity === entity)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)) : invoke('list_records', { entity }) },
   async get(id: string): Promise<RecordData | null> { return browser() ? read().find((record) => record.id === id && !record.deletedAt) || null : invoke('get_record', { id }) },
   async save(entity: Entity, data: Partial<RecordData>): Promise<RecordData> {
-    if (!browser()) return invoke('save_record', { entity, data })
+    if (!browser()) { const saved = await invoke<RecordData>('save_record', { entity, data }); await syncRecords(); return saved }
     const records = read(); const id = data.id || `${entity}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`; const old = records.find((record) => record.id === id)
     const record = { ...old, ...data, id, entity, createdAt: old?.createdAt || stamp(), updatedAt: stamp() } as RecordData
-    write([...records.filter((item) => item.id !== id), record]); return record
+    write([...records.filter((item) => item.id !== id), record]); await syncRecords(); return record
   },
-  async archive(id: string) { if (!browser()) return invoke('archive_record', { id }); write(read().map((record) => record.id === id ? { ...record, archivedAt: stamp() } : record)) },
-  async remove(id: string) { if (!browser()) return invoke('delete_record', { id }); write(read().map((record) => record.id === id ? { ...record, archivedAt: undefined, deletedAt: stamp() } : record)) },
-  async restore(id: string): Promise<RecordData> { if (!browser()) return invoke('restore_record', { id }); const record = read().find((item) => item.id === id)!; const restored = { ...record, archivedAt: undefined, deletedAt: undefined, updatedAt: stamp() }; write([...read().filter((item) => item.id !== id), restored]); return restored },
+  async archive(id: string) { if (!browser()) { await invoke('archive_record', { id }); await syncRecords(); return }; write(read().map((record) => record.id === id ? { ...record, archivedAt: stamp(), updatedAt: stamp() } : record)); await syncRecords() },
+  async remove(id: string) { if (!browser()) { await invoke('delete_record', { id }); await syncRecords(); return }; write(read().map((record) => record.id === id ? { ...record, archivedAt: undefined, deletedAt: stamp(), updatedAt: stamp() } : record)); await syncRecords() },
+  async restore(id: string): Promise<RecordData> { if (!browser()) { const restored = await invoke<RecordData>('restore_record', { id }); await syncRecords(); return restored }; const record = read().find((item) => item.id === id)!; const restored = { ...record, archivedAt: undefined, deletedAt: undefined, updatedAt: stamp() }; write([...read().filter((item) => item.id !== id), restored]); await syncRecords(); return restored },
+  cloudStatus(): CloudSyncStatus { return cloudSync.status() },
+  async signInToCloud(email: string, password: string): Promise<CloudSyncStatus> { const status = await cloudSync.signIn(email, password); await syncRecords(); return status },
+  async signUpForCloud(email: string, password: string): Promise<CloudSyncStatus> { const status = await cloudSync.signUp(email, password); if (status.signedIn) await syncRecords(); return status },
+  async signOutFromCloud() { await cloudSync.signOut() },
+  async syncNow(): Promise<CloudSyncStatus> { await syncRecords(); return cloudSync.status() },
   async archived(): Promise<RecordData[]> { return browser() ? read().filter((record) => record.archivedAt && !record.deletedAt) : invoke('list_archived') },
   async search(query: string, entities: Entity[] = []): Promise<RecordData[]> { return browser() ? read().filter(active).filter((record) => (!entities.length || entities.includes(record.entity)) && JSON.stringify(record).toLowerCase().includes(query.toLowerCase())) : entities.length ? invoke('search_records_filtered', { query, entities }) : invoke('search_records', { query }) },
   async relations(id: string): Promise<RecordData[]> {

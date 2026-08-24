@@ -1148,6 +1148,69 @@ fn list_records(app: AppHandle, entity: String) -> Result<Vec<Value>, String> {
 }
 
 #[tauri::command]
+fn list_sync_records(app: AppHandle) -> Result<Vec<Value>, String> {
+    let connection = db(&app)?;
+    let mut statement = connection
+        .prepare("SELECT id, entity, data_json, created_at, updated_at FROM records ORDER BY updated_at ASC")
+        .map_err(|e| e.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(value_to_record(
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+fn write_synced_record(connection: &Connection, data: &Value) -> Result<(), String> {
+    let object = data.as_object().ok_or("同步记录必须是对象")?;
+    let id = object.get("id").and_then(Value::as_str).filter(|value| !value.is_empty()).ok_or("同步记录缺少 id")?;
+    let entity = object.get("entity").and_then(Value::as_str).filter(|value| is_entity(value)).ok_or("同步记录实体无效")?;
+    let created_at = object.get("createdAt").and_then(Value::as_str).filter(|value| !value.is_empty()).ok_or("同步记录缺少 createdAt")?;
+    let updated_at = object.get("updatedAt").and_then(Value::as_str).filter(|value| !value.is_empty()).ok_or("同步记录缺少 updatedAt")?;
+    let raw = serde_json::to_string(data).map_err(|e| e.to_string())?;
+    let (title, body) = title_body(data);
+    let archived_at = object.get("archivedAt").and_then(Value::as_str);
+    let deleted_at = object.get("deletedAt").and_then(Value::as_str);
+    connection.execute(
+        "INSERT INTO records (id, entity, data_json, title, body, created_at, updated_at, archived_at, deleted_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(id) DO UPDATE SET entity=excluded.entity, data_json=excluded.data_json, title=excluded.title,
+           body=excluded.body, created_at=excluded.created_at, updated_at=excluded.updated_at,
+           archived_at=excluded.archived_at, deleted_at=excluded.deleted_at",
+        params![id, entity, raw, title, body, created_at, updated_at, archived_at, deleted_at],
+    ).map_err(|e| e.to_string())?;
+    connection.execute("DELETE FROM records_fts WHERE id=?1", params![id]).map_err(|e| e.to_string())?;
+    if archived_at.is_none() && deleted_at.is_none() {
+        connection.execute("INSERT INTO records_fts (id, entity, title, body) VALUES (?1, ?2, ?3, ?4)", params![id, entity, title, body]).map_err(|e| e.to_string())?;
+    } else {
+        connection.execute("DELETE FROM relations WHERE from_id=?1 OR to_id=?1", params![id]).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn merge_remote_records(app: AppHandle, records: Vec<Value>) -> Result<usize, String> {
+    let connection = db(&app)?;
+    let mut merged = 0;
+    for record in &records {
+        write_synced_record(&connection, record)?;
+        merged += 1;
+    }
+    for record in records.iter().filter(|record| record.get("deletedAt").is_none() && record.get("archivedAt").is_none()) {
+        if let Some(id) = record.get("id").and_then(Value::as_str) {
+            sync_relations(&connection, id, record)?;
+        }
+    }
+    Ok(merged)
+}
+
+#[tauri::command]
 fn get_record(app: AppHandle, id: String) -> Result<Option<Value>, String> {
     record_by_id(&db(&app)?, &id)
 }
@@ -4612,6 +4675,8 @@ pub fn run() {
             list_external_items,
             cleanup_external_cache,
             list_records,
+            list_sync_records,
+            merge_remote_records,
             get_record,
             save_record,
             delete_record,

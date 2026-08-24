@@ -1,0 +1,10 @@
+{
+  "name": "Jason OS",
+  "short_name": "Jason OS",
+  "description": "Local-first personal operating system",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#10120f",
+  "theme_color": "#10120f",
+  "icons": [{ "src": "/jason-os-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}
