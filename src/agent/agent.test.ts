@@ -9,7 +9,7 @@ const record = (entity: RecordData['entity'], id: string, data: Record<string, u
 describe('Jason OS Agent registries and context', () => {
   it('describes the MentalModel schema and save tool', () => {
     expect(schemaFor('mentalModels')?.requiredFields).toContain('name')
-    expect(toolFor('createMentalModel')).toMatchObject({ entity: 'mentalModels', riskLevel: 'LOW_WRITE', requiresConfirmation: true })
+    expect(toolFor('createMentalModel')).toMatchObject({ entity: 'mentalModels', riskLevel: 'LOW_WRITE', requiresConfirmation: false })
     expect(toolRegistry.length).toBeGreaterThanOrEqual(30)
     expect(toolFor('readWorkspaceDocument')).toMatchObject({ entity: 'dataRecords', actionType: 'READ', riskLevel: 'READ', requiresConfirmation: false })
     expect(toolFor('importWorkspaceDocumentToNotebook')).toMatchObject({ entity: 'notebookFiles', actionType: 'CREATE', riskLevel: 'MEDIUM_WRITE', requiresConfirmation: true })
@@ -21,7 +21,7 @@ describe('Jason OS Agent registries and context', () => {
     expect(schemaFor('externalSources')?.requiredFields).toContain('name')
     expect(schemaFor('decisions')?.relations).toMatchObject({ signalIds: 'signals', opportunityId: 'opportunities' })
     expect(toolFor('createExternalSource')).toMatchObject({ entity: 'externalSources', riskLevel: 'MEDIUM_WRITE', requiresConfirmation: true })
-    expect(toolFor('createOpportunity')).toMatchObject({ entity: 'opportunities', requiresConfirmation: true })
+    expect(toolFor('createOpportunity')).toMatchObject({ entity: 'opportunities', riskLevel: 'LOW_WRITE', requiresConfirmation: false })
   })
 
   it('guards Outcome and financial writes while exposing read schemas', () => {

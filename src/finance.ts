@@ -71,7 +71,9 @@ export function accountBalanceMinor(records: RecordData[], accountId: string) {
 }
 
 export function projectEconomics(records: RecordData[], projectId?: string | null): ProjectEconomics {
-  const transactions = records.filter((record) => record.entity === 'financialTransactions' && String(record.status || 'POSTED') === 'POSTED' && (!projectId || linkedTo(record, projectId)))
+  const taskIds = projectId ? new Set(records.filter((record) => record.entity === 'tasks' && linkedTo(record, projectId)).map((record) => record.id)) : new Set<string>()
+  const belongsToProject = (record: RecordData) => !projectId || linkedTo(record, projectId) || (typeof record.taskId === 'string' && taskIds.has(record.taskId))
+  const transactions = records.filter((record) => record.entity === 'financialTransactions' && String(record.status || 'POSTED') === 'POSTED' && belongsToProject(record))
   let income = 0n; let expense = 0n; let cashNet = 0n
   transactions.forEach((transaction) => {
     const amount = transactionBaseMinor(transaction)
@@ -84,8 +86,8 @@ export function projectEconomics(records: RecordData[], projectId?: string | nul
       case 'ADJUSTMENT': cashNet += transaction.adjustmentDirection === 'DECREASE' ? -amount : amount; break
     }
   })
-  const timeMinutes = records.filter((record) => record.entity === 'timeLogs' && (!projectId || linkedTo(record, projectId))).reduce((total, record) => total + durationMinutes(record), 0)
-  const outcomes = records.filter((record) => record.entity === 'results' && (!projectId || linkedTo(record, projectId)))
+  const timeMinutes = records.filter((record) => record.entity === 'timeLogs' && belongsToProject(record)).reduce((total, record) => total + durationMinutes(record), 0)
+  const outcomes = records.filter((record) => record.entity === 'results' && belongsToProject(record))
   const verified = outcomes.filter((record) => record.evidenceStatus === 'VERIFIED').length
   const contribution = income - expense
   const required = [transactions.length > 0, timeMinutes > 0, outcomes.length > 0, verified > 0]

@@ -45,6 +45,16 @@ const ENTITIES: &[&str] = &[
     "experiments",
     "timeLogs",
     "results",
+    "deliverables",
+    "resultPackages",
+    "workflows",
+    "workflowVersions",
+    "workflowSteps",
+    "workflowGates",
+    "workflowRuns",
+    "workflowRunSteps",
+    "workflowMetricDefinitions",
+    "workflowImprovementProposals",
     "reviews",
     "knowledge",
     "insights",
@@ -117,6 +127,15 @@ const TIMELINE_SOURCE_ENTITIES: &[&str] = &[
     "timeLogs",
     "events",
     "results",
+    "deliverables",
+    "resultPackages",
+    "workflows",
+    "workflowVersions",
+    "workflowSteps",
+    "workflowGates",
+    "workflowRuns",
+    "workflowRunSteps",
+    "workflowImprovementProposals",
     "reviews",
     "insights",
     "decisions",
@@ -162,6 +181,18 @@ fn timeline_semantics(
         "results" => (
             first_timeline_value(data, &["date", "completedAt"])
                 .unwrap_or_else(|| created_at.into()),
+            "actual",
+        ),
+        "deliverables" => (
+            first_timeline_value(data, &["finalizedAt", "createdAt"]).unwrap_or_else(|| created_at.into()),
+            "actual",
+        ),
+        "workflowRuns" => (
+            first_timeline_value(data, &["startedAt", "completedAt"]).unwrap_or_else(|| created_at.into()),
+            "actual",
+        ),
+        "workflowRunSteps" => (
+            first_timeline_value(data, &["startedAt", "completedAt"]).unwrap_or_else(|| created_at.into()),
             "actual",
         ),
         "signals" => (
@@ -216,6 +247,10 @@ fn timeline_importance(entity: &str, data: &Value) -> &'static str {
     if [
         "decisions",
         "results",
+        "deliverables",
+        "resultPackages",
+        "workflowRuns",
+        "workflowImprovementProposals",
         "reviews",
         "insights",
         "signals",
@@ -357,6 +392,21 @@ fn timeline_change_specs(entity: &str, before: &Value, after: &Value) -> Vec<Val
                 "normal",
             );
         }
+        "workflowRuns" => {
+            add("status", "workflow_run_status_changed", "工作链运行状态发生变化", "key");
+        }
+        "workflowRunSteps" => {
+            add("status", "workflow_step_status_changed", "工作链步骤状态发生变化", "normal");
+        }
+        "workflowVersions" => {
+            add("maturity", "workflow_version_maturity_changed", "工作链版本成熟度发生变化", "key");
+        }
+        "deliverables" => {
+            add("status", "deliverable_status_changed", "成果资产版本状态发生变化", "key");
+        }
+        "workflowImprovementProposals" => {
+            add("status", "workflow_improvement_status_changed", "工作链改进提案状态发生变化", "key");
+        }
         "decisions" => add(
             "status",
             "decision_status_changed",
@@ -415,7 +465,15 @@ fn write_timeline_change_events(
             "beforeValue": change["beforeValue"], "afterValue": change["afterValue"]
         });
         if let Some(object) = event.as_object_mut() {
-            for field in ["goalId", "projectId", "taskId"] {
+            for field in [
+                "goalId",
+                "projectId",
+                "taskId",
+                "workflowRunId",
+                "workflowVersionId",
+                "resultId",
+                "deliverableId",
+            ] {
                 if let Some(value) = after.get(field).and_then(Value::as_str) {
                     object.insert(field.into(), Value::String(value.into()));
                 }
@@ -607,6 +665,10 @@ fn db(app: &AppHandle) -> Result<Connection, String> {
     mental_models::migrate(&connection, &now())?;
     mental_models::migrate_followups(&connection, &now())?;
     decision_intelligence::migrate(&connection, &now())?;
+    connection.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_records_work_chain ON records(entity, updated_at DESC);
+         INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (7, strftime('%s','now'));",
+    ).map_err(|error| error.to_string())?;
     Ok(connection)
 }
 
@@ -744,6 +806,14 @@ fn expected_entity(key: &str) -> Option<&'static str> {
         "taskId" | "dependencyId" => Some("tasks"),
         "timeLogId" => Some("timeLogs"),
         "resultId" => Some("results"),
+        "deliverableId" | "previousDeliverableId" => Some("deliverables"),
+        "fileId" => Some("notebookFiles"),
+        "evidenceId" => Some("results"),
+        "resultPackageId" => Some("resultPackages"),
+        "workflowId" => Some("workflows"),
+        "workflowVersionId" | "sourceWorkflowVersionId" | "createdFromVersionId" | "currentVersionId" => Some("workflowVersions"),
+        "workflowStepId" => Some("workflowSteps"),
+        "workflowRunId" | "sourceWorkflowRunId" => Some("workflowRuns"),
         "reviewId" => Some("reviews"),
         "insightId" => Some("insights"),
         "knowledgeId" => Some("knowledge"),
@@ -914,6 +984,22 @@ fn normalize_record(
             &["taskId", "projectId", "goalId"],
             strict,
         )?;
+    }
+
+    if entity == "workflowRuns" {
+        if let Some(project_id) = string_field(&normalized, "projectId") {
+            if let Some(project) = valid_reference(connection, &project_id, "projects", strict)? {
+                set_optional_id(normalized.as_object_mut().unwrap(), "goalId", string_field(&project, "goalId"));
+            }
+        }
+    }
+
+    if entity == "deliverables" {
+        align_context_from_reference(connection, &mut normalized, "resultId", "results", &["projectId", "goalId", "taskId"], strict)?;
+    }
+
+    if entity == "resultPackages" {
+        align_context_from_reference(connection, &mut normalized, "workflowRunId", "workflowRuns", &["projectId", "goalId"], strict)?;
     }
 
     if entity == "insights" {
@@ -3461,45 +3547,66 @@ fn configure_hackstart(app: AppHandle, api_key: String, model: String) -> Result
 
 fn agent_tool_metadata(tool: &str) -> Option<(&'static str, &'static str, bool, &'static str)> {
     match tool {
-        "createMentalModel" => Some(("mentalModels", "LOW_WRITE", true, "CREATE")),
+        "createMentalModel" => Some(("mentalModels", "LOW_WRITE", false, "CREATE")),
         "updateMentalModel" => Some(("mentalModels", "MEDIUM_WRITE", true, "UPDATE")),
-        "createNote" => Some(("notes", "LOW_WRITE", true, "CREATE")),
+        "createNote" => Some(("notes", "LOW_WRITE", false, "CREATE")),
         "updateNote" => Some(("notes", "MEDIUM_WRITE", true, "UPDATE")),
-        "createNotebookCategory" => Some(("notebookCategories", "LOW_WRITE", true, "CREATE")),
+        "createNotebookCategory" => Some(("notebookCategories", "LOW_WRITE", false, "CREATE")),
         "updateNotebookCategory" => Some(("notebookCategories", "MEDIUM_WRITE", true, "UPDATE")),
-        "createNotebookFolder" => Some(("notebookFolders", "LOW_WRITE", true, "CREATE")),
+        "createNotebookFolder" => Some(("notebookFolders", "LOW_WRITE", false, "CREATE")),
         "updateNotebookFolder" => Some(("notebookFolders", "MEDIUM_WRITE", true, "UPDATE")),
         "updateNotebookFile" => Some(("notebookFiles", "MEDIUM_WRITE", true, "UPDATE")),
         "updateProfile" => Some(("profiles", "MEDIUM_WRITE", true, "UPDATE")),
         "importWorkspaceDocumentToNotebook" => {
             Some(("notebookFiles", "MEDIUM_WRITE", true, "CREATE"))
         }
-        "createKnowledge" => Some(("knowledge", "LOW_WRITE", true, "CREATE")),
+        "createKnowledge" => Some(("knowledge", "LOW_WRITE", false, "CREATE")),
         "updateKnowledge" => Some(("knowledge", "MEDIUM_WRITE", true, "UPDATE")),
-        "createGoal" => Some(("goals", "LOW_WRITE", true, "CREATE")),
+        "createGoal" => Some(("goals", "LOW_WRITE", false, "CREATE")),
         "updateGoal" => Some(("goals", "MEDIUM_WRITE", true, "UPDATE")),
-        "createProject" => Some(("projects", "LOW_WRITE", true, "CREATE")),
+        "createProject" => Some(("projects", "LOW_WRITE", false, "CREATE")),
         "updateProject" => Some(("projects", "MEDIUM_WRITE", true, "UPDATE")),
-        "createTask" => Some(("tasks", "LOW_WRITE", true, "CREATE")),
+        "createTask" => Some(("tasks", "LOW_WRITE", false, "CREATE")),
         "updateTask" => Some(("tasks", "MEDIUM_WRITE", true, "UPDATE")),
         "completeTask" => Some(("tasks", "MEDIUM_WRITE", true, "COMPLETE")),
-        "startTimer" => Some(("timeLogs", "LOW_WRITE", true, "START_TIMER")),
+        "startTimer" => Some(("timeLogs", "LOW_WRITE", false, "START_TIMER")),
         "stopTimer" => Some(("timeLogs", "MEDIUM_WRITE", true, "STOP_TIMER")),
-        "createTimeRecord" => Some(("timeLogs", "LOW_WRITE", true, "CREATE")),
+        "createTimeRecord" => Some(("timeLogs", "LOW_WRITE", false, "CREATE")),
         "createDecision" => Some(("decisions", "MEDIUM_WRITE", true, "CREATE")),
         "updateDecision" => Some(("decisions", "MEDIUM_WRITE", true, "UPDATE")),
-        "createReview" => Some(("reviews", "LOW_WRITE", true, "CREATE")),
-        "createInsight" => Some(("insights", "LOW_WRITE", true, "CREATE")),
-        "createPrinciple" => Some(("principles", "LOW_WRITE", true, "CREATE")),
+        "createReview" => Some(("reviews", "LOW_WRITE", false, "CREATE")),
+        "createInsight" => Some(("insights", "LOW_WRITE", false, "CREATE")),
+        "createPrinciple" => Some(("principles", "LOW_WRITE", false, "CREATE")),
         "createExternalSource" => Some(("externalSources", "MEDIUM_WRITE", true, "CREATE")),
         "updateExternalSource" => Some(("externalSources", "MEDIUM_WRITE", true, "UPDATE")),
         "updateExternalSignal" => Some(("signals", "MEDIUM_WRITE", true, "UPDATE")),
-        "createOpportunity" => Some(("opportunities", "LOW_WRITE", true, "CREATE")),
+        "createOpportunity" => Some(("opportunities", "LOW_WRITE", false, "CREATE")),
         "updateOpportunity" => Some(("opportunities", "MEDIUM_WRITE", true, "UPDATE")),
         "createOutcome" => Some(("results", "MEDIUM_WRITE", true, "CREATE")),
         "updateOutcome" => Some(("results", "MEDIUM_WRITE", true, "UPDATE")),
         "createFinancialAccount" => Some(("financialAccounts", "MEDIUM_WRITE", true, "CREATE")),
-        "createFinancialCategory" => Some(("financialCategories", "LOW_WRITE", true, "CREATE")),
+        "createFinancialCategory" => Some(("financialCategories", "LOW_WRITE", false, "CREATE")),
+        "createDeliverable" => Some(("deliverables", "MEDIUM_WRITE", true, "CREATE")),
+        "updateDeliverable" => Some(("deliverables", "MEDIUM_WRITE", true, "UPDATE")),
+        "createResultPackage" => Some(("resultPackages", "MEDIUM_WRITE", true, "CREATE")),
+        "updateResultPackage" => Some(("resultPackages", "MEDIUM_WRITE", true, "UPDATE")),
+        "createWorkflow" => Some(("workflows", "MEDIUM_WRITE", true, "CREATE")),
+        "updateWorkflow" => Some(("workflows", "MEDIUM_WRITE", true, "UPDATE")),
+        "createWorkflowVersion" => Some(("workflowVersions", "MEDIUM_WRITE", true, "CREATE")),
+        "updateWorkflowVersion" => Some(("workflowVersions", "MEDIUM_WRITE", true, "UPDATE")),
+        "promoteWorkflowVersion" | "rollbackWorkflowVersion" => Some(("workflowVersions", "HIGH_RISK", true, "UPDATE")),
+        "createWorkflowStep" => Some(("workflowSteps", "LOW_WRITE", false, "CREATE")),
+        "updateWorkflowStep" => Some(("workflowSteps", "MEDIUM_WRITE", true, "UPDATE")),
+        "createWorkflowGate" => Some(("workflowGates", "MEDIUM_WRITE", true, "CREATE")),
+        "updateWorkflowGate" => Some(("workflowGates", "MEDIUM_WRITE", true, "UPDATE")),
+        "createWorkflowRun" => Some(("workflowRuns", "MEDIUM_WRITE", true, "CREATE")),
+        "updateWorkflowRun" => Some(("workflowRuns", "MEDIUM_WRITE", true, "UPDATE")),
+        "createWorkflowRunStep" => Some(("workflowRunSteps", "LOW_WRITE", false, "CREATE")),
+        "updateWorkflowRunStep" => Some(("workflowRunSteps", "MEDIUM_WRITE", true, "UPDATE")),
+        "createWorkflowMetric" => Some(("workflowMetricDefinitions", "MEDIUM_WRITE", true, "CREATE")),
+        "updateWorkflowMetric" => Some(("workflowMetricDefinitions", "MEDIUM_WRITE", true, "UPDATE")),
+        "createWorkflowImprovementProposal" => Some(("workflowImprovementProposals", "MEDIUM_WRITE", true, "CREATE")),
+        "updateWorkflowImprovementProposal" => Some(("workflowImprovementProposals", "MEDIUM_WRITE", true, "UPDATE")),
         "createFinancialTransaction" => {
             Some(("financialTransactions", "HIGH_RISK", true, "CREATE"))
         }
@@ -3529,7 +3636,11 @@ fn required_agent_fields(entity: &str) -> &'static [&'static str] {
         "notes" => &["title"],
         "notebookCategories" | "notebookFolders" | "notebookFiles" => &["name"],
         "knowledge" => &["title", "content"],
-        "goals" | "projects" | "tasks" | "decisions" | "reviews" => &["title"],
+        "goals" | "projects" | "tasks" | "decisions" | "reviews" | "deliverables"
+        | "resultPackages" | "workflowRuns" | "workflowSteps" | "workflowGates"
+        | "workflowImprovementProposals" => &["title"],
+        "workflows" | "workflowVersions" => &["name"],
+        "workflowMetricDefinitions" => &["name", "workflowVersionId"],
         "insights" | "principles" => &["statement"],
         "externalSources" => &["name"],
         "signals" | "opportunities" | "intelligenceBriefs" | "results" => &["title"],
@@ -4437,8 +4548,21 @@ fn ask_chief_blocking(
     let key = provider_key(&provider)?;
     let model = selected_model(&connection, &provider)?;
     let page_context = compact_for_ai(&context.unwrap_or_else(|| json!({})), 0);
+    let global_context = page_context.get("globalContext").cloned().unwrap_or_else(|| json!({}));
+    let include_inbox = global_context
+        .get("includeInbox")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let relation_budget = global_context
+        .get("contextBudget")
+        .and_then(|budget| budget.get("maxRelatedEntities"))
+        .and_then(Value::as_u64)
+        .unwrap_or(24) as usize;
     let mut local_context = search_filtered(&connection, &question, &[])?;
     local_context.retain(|record| record["entity"].as_str() != Some("profiles"));
+    if !include_inbox {
+        local_context.retain(|record| record["entity"].as_str() != Some("inbox"));
+    }
     let mut context_ids = page_context
         .get("selectedItems")
         .and_then(Value::as_array)
@@ -4468,7 +4592,8 @@ fn ask_chief_blocking(
                 local_context.insert(0, record);
             }
         }
-        for record in list_relations(app.clone(), id)? {
+        let available = relation_budget.saturating_sub(local_context.len());
+        for record in list_relations(app.clone(), id)?.into_iter().take(available) {
             if !local_context
                 .iter()
                 .any(|existing| existing["id"] == record["id"])
@@ -4479,56 +4604,6 @@ fn ask_chief_blocking(
     }
     if let Some(profile_context) = profile_context_for_question(&connection, &question)? {
         local_context.push(profile_context);
-    }
-    for record in list_records(app.clone(), "mentalModels".into())?
-        .into_iter()
-        .take(12)
-    {
-        if !local_context
-            .iter()
-            .any(|existing| existing["id"] == record["id"])
-        {
-            local_context.push(record);
-        }
-    }
-    let external_question = page_context.get("currentRoute").and_then(Value::as_str)
-        == Some("externalIntelligence")
-        || [
-            "市场",
-            "竞品",
-            "外部信号",
-            "机会",
-            "趋势",
-            "RedFox",
-            "抖音",
-            "小红书",
-            "公众号",
-        ]
-        .iter()
-        .any(|keyword| question.contains(keyword));
-    if external_question {
-        for entity in [
-            "intelligenceBriefs",
-            "signals",
-            "opportunities",
-            "externalSources",
-        ] {
-            for record in list_records(app.clone(), entity.into())?
-                .into_iter()
-                .take(12)
-            {
-                if !local_context
-                    .iter()
-                    .any(|existing| existing["id"] == record["id"])
-                {
-                    local_context.push(record);
-                }
-            }
-        }
-        local_context.push(json!({
-            "id":"verified-external-items", "entity":"dataRecords", "type":"VERIFIED_EXTERNAL_TOOL_RESULT",
-            "title":"外部情报已验证内容样本", "items":external_intelligence::list_items(&connection, 30)?, "evidenceLevel":"REALITY"
-        }));
     }
     if let Some(path) = workspace_document_path_in_question(&question) {
         match read_workspace_document_file(&app, &path) {
@@ -4568,7 +4643,7 @@ fn ask_chief_blocking(
 3. 从最近对话完整提取思维模型：name, category, corePrinciple, problem, framework, steps, keyQuestions, useCases, examples, outputTemplate, source, tags。多项内容可整理为换行文本。
 4. 当前页面是思维模型且用户说“保存这个”时，目标就是思维模型库。
 5. 创建 Project/Task/Time/Decision 时不要编造关系 ID；缺省关系由 Action System 根据当前上下文继承。
-6. 需要写入时只生成 Action 预览，绝不能声称已经保存。真正写入发生在用户确认后。
+6. 写入遵循 Action Guard：READ 直接分析；用户明确、字段完整且 Tool 标记为 LOW_WRITE 的创建操作可直接执行；MEDIUM_WRITE 与 HIGH_RISK 必须只生成预览并等待确认。绝不能声称尚未执行的操作已经保存。
 7. 删除、批量修改或批量删除不要生成 Action，只说明影响并要求明确确认；当前阶段没有删除 Tool。
 8. 如果缺少真正必要字段，将 mode=chat，missingFields 列出并只问最少问题。
 9. 普通分析/搜索问题 mode=chat，依据本地记录回答；可以明确说明正在调用找到的思维模型。
@@ -4585,7 +4660,9 @@ fn ask_chief_blocking(
 20. 当相关本地记录中存在 type=WORKSPACE_DOCUMENT 时，其 content 是用户明确授权读取的 Jason OS docs 文档。必须直接基于该内容回答，不得声称“没有直接读取本地文件的工具”。如果存在 WORKSPACE_DOCUMENT_ERROR，则说明错误原因和允许的 docs/ 路径范围。
 21. 用户明确要求把 WORKSPACE_DOCUMENT 保存、导入或复制到 Notebook 时，使用 importWorkspaceDocumentToNotebook 生成 Action 预览，input 必须包含 name 和 sourcePath。该操作只复制 docs 文件到 Notebook Inbox，不修改源文件；必须等待用户确认后执行。
 22. type=PROFILE_CONTEXT 是用户主动保存的长期个人与 AI 上下文。只在它与当前问题直接相关时使用，不能机械复述、不能暴露无关私人资料；当前用户问题和当前页面上下文优先于 Profile。
-23. AI 默认只能读取 Profile。用户明确要求更新我的档案时，只有在存在真实 Profile ID 且字段明确时，才使用 updateProfile 生成 Action 预览；绝不能声称已更新，必须等待用户确认后才写入。"#;
+23. AI 默认只能读取 Profile。用户明确要求更新我的档案时，只有在存在真实 Profile ID 且字段明确时，才使用 updateProfile 生成 Action 预览；绝不能声称已更新，必须等待用户确认后才写入。
+24. Global Context Package 是本次回答的事实边界：优先使用其中 current 与 relation 来源，再使用 search 来源；缺少 Time、Finance、Result、Review 或 Workflow 事实时必须明确说数据缺失，不能估算。除非 Global Context Package 的 includeInbox=true，禁止引用 Inbox。
+25. 用户要求根据成果或复盘优化工作链时，只能使用 createWorkflowImprovementProposal 生成改进提案，不能直接修改 Workflow、Promote 或 Rollback。"#;
     let mut messages = Vec::new();
     let recent_history = history.unwrap_or_default();
     let skip = recent_history.len().saturating_sub(10);
@@ -4626,18 +4703,33 @@ fn ask_chief_blocking(
                     .get("status")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                answer = if status == "SUCCESS" {
-                    "相同操作已经执行成功，为避免重复，没有再次创建。".into()
+                if status == "PENDING" {
+                    let action_id = saved_action
+                        .get("actionId")
+                        .and_then(Value::as_str)
+                        .ok_or("AI Action 缺少 actionId")?
+                        .to_string();
+                    let executed = execute_ai_action(app.clone(), action_id)?;
+                    let record = executed.get("record").cloned().unwrap_or(Value::Null);
+                    let label = record
+                        .get("entity")
+                        .and_then(Value::as_str)
+                        .unwrap_or("记录");
+                    answer = format!("已按你的明确指令保存{label}。可在对应模块继续查看或修改。");
+                    action = executed.get("action").cloned();
+                } else if status == "SUCCESS" {
+                    answer = "相同操作已经执行成功，为避免重复，没有再次创建。".into();
+                    action = Some(saved_action);
                 } else {
-                    format!(
+                    answer = format!(
                         "{}。请确认后执行。",
                         saved_action
                             .get("previewTitle")
                             .and_then(Value::as_str)
                             .unwrap_or("我已整理好本次操作")
-                    )
-                };
-                action = Some(saved_action);
+                    );
+                    action = Some(saved_action);
+                }
             }
             Err(error) => {
                 answer = format!("我理解了你的操作意图，但当前还不能安全执行：{error}");
@@ -4787,6 +4879,28 @@ mod tests {
     }
 
     #[test]
+    fn work_chain_and_results_center_entities_reuse_declared_relations() {
+        for entity in [
+            "results",
+            "deliverables",
+            "resultPackages",
+            "workflows",
+            "workflowVersions",
+            "workflowSteps",
+            "workflowGates",
+            "workflowRuns",
+            "workflowRunSteps",
+            "workflowMetricDefinitions",
+            "workflowImprovementProposals",
+        ] {
+            assert!(is_entity(entity));
+        }
+        assert_eq!(expected_entity("fileId"), Some("notebookFiles"));
+        assert_eq!(expected_entity("evidenceId"), Some("results"));
+        assert_eq!(expected_entity("workflowRunId"), Some("workflowRuns"));
+    }
+
+    #[test]
     fn outcome_and_finance_entities_and_agent_tools_are_registered() {
         for entity in [
             "results",
@@ -4809,6 +4923,14 @@ mod tests {
             expected_entity("refundOfTransactionId"),
             Some("financialTransactions")
         );
+    }
+
+    #[test]
+    fn action_guard_keeps_low_writes_direct_and_material_changes_confirmed() {
+        assert_eq!(agent_tool_metadata("createTask"), Some(("tasks", "LOW_WRITE", false, "CREATE")));
+        assert_eq!(agent_tool_metadata("updateProject"), Some(("projects", "MEDIUM_WRITE", true, "UPDATE")));
+        assert_eq!(agent_tool_metadata("promoteWorkflowVersion"), Some(("workflowVersions", "HIGH_RISK", true, "UPDATE")));
+        assert!(agent_tool_metadata("getProject").is_none());
     }
 
     #[test]

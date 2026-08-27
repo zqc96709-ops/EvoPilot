@@ -28,7 +28,7 @@ export type TimelineCausalEdge = {
   target: RecordData
 }
 
-export const timelineEntityTypes: Entity[] = ['goals', 'projects', 'tasks', 'timeLogs', 'events', 'results', 'reviews', 'insights', 'principles', 'mentalModels', 'decisions', 'signals', 'opportunities', 'intelligenceBriefs', 'financialTransactions', 'timelineEvents']
+export const timelineEntityTypes: Entity[] = ['goals', 'projects', 'tasks', 'timeLogs', 'events', 'results', 'deliverables', 'resultPackages', 'workflowRuns', 'workflowRunSteps', 'workflowImprovementProposals', 'reviews', 'insights', 'principles', 'mentalModels', 'decisions', 'signals', 'opportunities', 'intelligenceBriefs', 'financialTransactions', 'timelineEvents']
 
 const text = (value: unknown) => typeof value === 'string' && value.trim() ? value.trim() : ''
 const first = (...values: unknown[]) => values.map(text).find(Boolean) || ''
@@ -61,6 +61,8 @@ export function timelineOccurredAt(record: Partial<RecordData>): string {
   if (record.entity === 'financialTransactions') return first(record.occurredAt, record.createdAt)
   if (record.entity === 'decisions') return first(record.date, record.decisionDate, record.createdAt)
   if (record.entity === 'results') return first(record.date, record.completedAt, record.createdAt)
+  if (record.entity === 'deliverables') return first(record.finalizedAt, record.createdAt)
+  if (record.entity === 'workflowRuns' || record.entity === 'workflowRunSteps') return first(record.startedAt, record.completedAt, record.createdAt)
   if (record.entity === 'signals') return first(record.detectedAt, record.createdAt)
   if (record.entity === 'intelligenceBriefs') return first(record.generatedAt, record.createdAt)
   if (record.entity === 'tasks') {
@@ -73,14 +75,14 @@ export function timelineOccurredAt(record: Partial<RecordData>): string {
 export function timelineTimeMeaning(record: Partial<RecordData>): TimelineTimeMeaning {
   if (record.timeMeaning === 'planned' || record.timeMeaning === 'actual' || record.timeMeaning === 'recorded') return record.timeMeaning
   if (record.entity === 'tasks') return record.status === 'completed' ? 'actual' : record.dueAt || record.dueDate ? 'planned' : 'recorded'
-  if (record.entity === 'timeLogs' || record.entity === 'results' || record.entity === 'financialTransactions' || record.entity === 'timelineEvents') return 'actual'
+  if (record.entity === 'timeLogs' || record.entity === 'results' || record.entity === 'deliverables' || record.entity === 'workflowRuns' || record.entity === 'workflowRunSteps' || record.entity === 'financialTransactions' || record.entity === 'timelineEvents') return 'actual'
   if (record.entity === 'events') return 'planned'
   return 'recorded'
 }
 
 export function timelineImportance(record: Partial<RecordData>): TimelineImportance {
   if (record.timelineImportance === 'key' || record.timelineImportance === 'normal') return record.timelineImportance
-  if (['decisions', 'results', 'reviews', 'insights', 'principles', 'mentalModels', 'signals', 'opportunities', 'intelligenceBriefs'].includes(String(record.entity))) return 'key'
+  if (['decisions', 'results', 'deliverables', 'resultPackages', 'workflowRuns', 'workflowImprovementProposals', 'reviews', 'insights', 'principles', 'mentalModels', 'signals', 'opportunities', 'intelligenceBriefs'].includes(String(record.entity))) return 'key'
   if (record.entity === 'projects' && ['blocked', 'completed'].includes(String(record.status))) return 'key'
   if (record.entity === 'projects' && ['at_risk', 'blocked'].includes(String(record.health))) return 'key'
   if (record.entity === 'goals' && ['completed', 'paused'].includes(String(record.status))) return 'key'
@@ -90,7 +92,7 @@ export function timelineImportance(record: Partial<RecordData>): TimelineImporta
 
 export function timelineEvidenceLevel(record: Partial<RecordData>): TimelineEvidenceLevel {
   if (['REALITY', 'USER_CONFIRMED', 'AI_CONFIRMED', 'AI_SUGGESTION'].includes(String(record.evidenceLevel))) return record.evidenceLevel as TimelineEvidenceLevel
-  if (record.entity === 'timeLogs' || record.entity === 'results' || record.entity === 'financialTransactions' || record.entity === 'timelineEvents') return 'REALITY'
+  if (record.entity === 'timeLogs' || record.entity === 'results' || record.entity === 'deliverables' || record.entity === 'workflowRuns' || record.entity === 'workflowRunSteps' || record.entity === 'financialTransactions' || record.entity === 'timelineEvents') return 'REALITY'
   return record.agentActionId ? 'AI_CONFIRMED' : 'USER_CONFIRMED'
 }
 

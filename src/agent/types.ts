@@ -27,6 +27,26 @@ export type AgentContext = {
     causalCount: number
     sampledRecordCount: number
   }
+  globalContext?: GlobalContextPackage
+}
+
+export type GlobalContextIntent = 'EXECUTION' | 'RETRIEVAL' | 'PROJECT_ANALYSIS' | 'CEO_ANALYSIS' | 'DECISION_ANALYSIS' | 'WORKFLOW_ANALYSIS' | 'REVIEW_ANALYSIS' | 'KNOWLEDGE_RETRIEVAL' | 'PERSONAL_CONTEXT'
+export type ContextBudget = { maxRelationDepth: number; maxRelatedEntities: number; maxSearchResults: number; usedRelatedEntities: number; usedSearchResults: number }
+export type ContextReference = { id: string; entity: Entity; title: string; status?: string; summary?: string; source: 'current' | 'relation' | 'search' }
+export type ContextGap = { id: string; kind: 'PROJECT_WITHOUT_RESULT' | 'RESULT_WITHOUT_REVIEW' | 'DECISION_WITHOUT_RESULT' | 'WORKFLOW_WITHOUT_EVALUATION' | 'IMPROVEMENT_WITHOUT_VALIDATION' | 'DELIVERABLE_WITHOUT_SOURCE'; title: string; detail: string; entityId: string; entity: Entity; priority: number }
+export type GlobalContextPackage = {
+  userQuery: string
+  intent: GlobalContextIntent
+  includeInbox: boolean
+  primaryContext?: ContextReference
+  relatedEntities: ContextReference[]
+  retrievedEntities: ContextReference[]
+  personalContext?: Record<string, string>
+  goalAlignment?: { aligned: number; weaklyAligned: number; unknown: number; unaligned: number; examples: ContextReference[] }
+  summaries: Record<string, unknown>
+  gaps: ContextGap[]
+  confidence: 'LOW' | 'MEDIUM' | 'HIGH'
+  contextBudget: ContextBudget
 }
 
 export type AgentAction = {
