@@ -1,6 +1,6 @@
-use reqwest::blocking::Client;
 use serde_json::{json, Value};
 use std::time::Duration;
+use crate::provider_http;
 
 const API_BASE: &str = "https://api.apify.com/v2";
 const ACTOR: &str = "apify~website-content-crawler";
@@ -44,10 +44,8 @@ fn find_text(value: &Value, keys: &[&str]) -> String {
         .unwrap_or_default()
 }
 
-fn client() -> Result<Client, String> {
-    Client::builder()
-        .timeout(Duration::from_secs(75))
-        .build()
+fn client() -> Result<reqwest::blocking::Client, String> {
+    provider_http::client(Duration::from_secs(75), None)
         .map_err(|error| format!("Apify HTTP 客户端初始化失败：{error}"))
 }
 

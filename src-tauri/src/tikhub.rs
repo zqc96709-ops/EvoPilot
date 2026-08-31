@@ -1,6 +1,6 @@
-use reqwest::blocking::Client;
 use serde_json::{json, Value};
 use std::time::Duration;
+use crate::provider_http;
 
 const BASE: &str = "https://api.tikhub.io";
 
@@ -11,11 +11,8 @@ pub struct TikHubCapture {
     pub status_code: u16,
 }
 
-fn client() -> Result<Client, String> {
-    Client::builder()
-        .timeout(Duration::from_secs(60))
-        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36")
-        .build()
+fn client() -> Result<reqwest::blocking::Client, String> {
+    provider_http::client(Duration::from_secs(60), Some("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36"))
         .map_err(|e| format!("TikHub HTTP 客户端初始化失败：{e}"))
 }
 fn err(status: reqwest::StatusCode, body: &str) -> String {

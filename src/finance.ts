@@ -1,106 +1,27 @@
 import { durationMinutes, linkedTo, type RecordData } from './model'
 
-export type ProjectEconomics = {
-  incomeMinor: bigint
-  expenseMinor: bigint
-  cashNetMinor: bigint
-  managementContributionMinor: bigint
-  timeMinutes: number
-  unitTimeContributionMinor?: bigint
-  postedTransactions: number
-  outcomeCount: number
-  verifiedOutcomeCount: number
-  dataCoverage: number
-}
+export type ProjectEconomics = { incomeMinor: bigint; expenseMinor: bigint; cashNetMinor: bigint; managementContributionMinor: bigint; timeMinutes: number; unitTimeContributionMinor?: bigint; postedTransactions: number; outcomeCount: number; verifiedOutcomeCount: number; dataCoverage: number }
+export type FinanceFact = { transaction: RecordData; amountMinor: bigint }
+export type FinanceFilters = { projectId?: string; from?: string; to?: string; accountId?: string; categoryId?: string }
+export type FinanceBudgetComparison = { budget: RecordData; plannedMinor: bigint; actualExpenseMinor: bigint; varianceMinor: bigint; observedTransactions: number }
+export type FinanceDashboard = { economics: ProjectEconomics; trends: { key: string; incomeMinor: bigint; expenseMinor: bigint }[]; categories: { categoryId: string; amountMinor: bigint }[]; projects: { projectId: string; economics: ProjectEconomics }[]; budgets: FinanceBudgetComparison[]; unallocatedMinor: bigint; unassignedTransactions: number; unverifiedTransactions: number; missingCategoryTransactions: number }
 
-const integer = (value: unknown) => {
-  const raw = String(value ?? '').trim()
-  return /^-?\d+$/.test(raw) ? BigInt(raw) : 0n
-}
-
+const integer = (value: unknown) => { const raw = String(value ?? '').trim(); return /^-?\d+$/.test(raw) ? BigInt(raw) : 0n }
 export const currencyDecimals = (currency: unknown) => ['JPY', 'KRW'].includes(String(currency || '').toUpperCase()) ? 0 : 2
+export function decimalToMinor(value: unknown, currency = 'CNY') { const raw = String(value ?? '').trim().replace(/,/g, ''); if (!raw) return ''; const match = raw.match(/^(-?)(\d+)(?:\.(\d+))?$/); if (!match) return raw; const decimals = currencyDecimals(currency); const enteredFraction = match[3] || ''; if (enteredFraction.length > decimals && /[1-9]/.test(enteredFraction.slice(decimals))) return raw; const fraction = `${enteredFraction}${'0'.repeat(decimals)}`.slice(0, decimals); const minor = BigInt(match[2]) * (10n ** BigInt(decimals)) + BigInt(fraction || '0'); return `${match[1] ? '-' : ''}${minor}` }
+export function minorToDecimal(value: unknown, currency = 'CNY') { const raw = String(value ?? '').trim(); if (!/^-?\d+$/.test(raw)) return raw; const decimals = currencyDecimals(currency); if (!decimals) return raw; const negative = raw.startsWith('-'); const digits = raw.replace('-', '').padStart(decimals + 1, '0'); const whole = digits.slice(0, -decimals); const fraction = digits.slice(-decimals).replace(/0+$/, ''); return `${negative ? '-' : ''}${whole}${fraction ? `.${fraction}` : ''}` }
+export function formatMoneyMinor(value: bigint | string | number | undefined, currency = 'CNY') { const decimal = minorToDecimal(value ?? '0', currency); try { return new Intl.NumberFormat('zh-CN', { style: 'currency', currency, minimumFractionDigits: currencyDecimals(currency), maximumFractionDigits: currencyDecimals(currency) }).format(Number(decimal)) } catch { return `${currency} ${decimal}` } }
+export function transactionBaseMinor(record: Partial<RecordData>) { return integer(record.baseAmountMinor || record.amountMinor) }
 
-export function decimalToMinor(value: unknown, currency = 'CNY') {
-  const raw = String(value ?? '').trim().replace(/,/g, '')
-  if (!raw) return ''
-  const match = raw.match(/^(-?)(\d+)(?:\.(\d+))?$/)
-  if (!match) return raw
-  const decimals = currencyDecimals(currency)
-  const enteredFraction = match[3] || ''
-  if (enteredFraction.length > decimals && /[1-9]/.test(enteredFraction.slice(decimals))) return raw
-  const fraction = `${enteredFraction}${'0'.repeat(decimals)}`.slice(0, decimals)
-  const minor = BigInt(match[2]) * (10n ** BigInt(decimals)) + BigInt(fraction || '0')
-  return `${match[1] ? '-' : ''}${minor}`
-}
+export function accountBalanceMinor(records: RecordData[], accountId: string) { const account = records.find((record) => record.entity === 'financialAccounts' && record.id === accountId); let balance = integer(account?.openingBalanceMinor); records.filter((record) => record.entity === 'financialTransactions' && String(record.status || 'POSTED') === 'POSTED').forEach((transaction) => { const amount = integer(transaction.amountMinor); const source = transaction.accountId === accountId; const destination = transaction.destinationAccountId === accountId; switch (String(transaction.transactionType)) { case 'INCOME': if (source) balance += amount; break; case 'EXPENSE': if (source) balance -= amount; break; case 'TRANSFER': if (source) balance -= amount; if (destination) balance += amount; break; case 'REFUND': if (source) balance += transaction.refundKind === 'INCOME_REFUND' ? -amount : amount; break; case 'ADJUSTMENT': if (source) balance += transaction.adjustmentDirection === 'DECREASE' ? -amount : amount; break } }); return balance }
 
-export function minorToDecimal(value: unknown, currency = 'CNY') {
-  const raw = String(value ?? '').trim()
-  if (!/^-?\d+$/.test(raw)) return raw
-  const decimals = currencyDecimals(currency)
-  if (!decimals) return raw
-  const negative = raw.startsWith('-'); const digits = raw.replace('-', '').padStart(decimals + 1, '0')
-  const whole = digits.slice(0, -decimals); const fraction = digits.slice(-decimals).replace(/0+$/, '')
-  return `${negative ? '-' : ''}${whole}${fraction ? `.${fraction}` : ''}`
-}
+export function financialFacts(records: RecordData[], projectId?: string | null): FinanceFact[] { const taskIds = projectId ? new Set(records.filter((record) => record.entity === 'tasks' && linkedTo(record, projectId)).map((record) => record.id)) : new Set<string>(); const belongsToProject = (record: RecordData) => !projectId || linkedTo(record, projectId) || (typeof record.taskId === 'string' && taskIds.has(record.taskId)); const allocations = records.filter((record) => record.entity === 'financialTransactionAllocations'); const allocationAmount = (transaction: RecordData) => { if (!projectId) return transactionBaseMinor(transaction); const splits = allocations.filter((allocation) => allocation.transactionId === transaction.id); if (splits.length) return splits.filter((allocation) => allocation.projectId === projectId).reduce((total, allocation) => total + integer(allocation.amountMinor), 0n); return belongsToProject(transaction) ? transactionBaseMinor(transaction) : 0n }; return records.filter((record) => record.entity === 'financialTransactions' && String(record.status || 'POSTED') === 'POSTED').map((transaction) => ({ transaction, amountMinor: allocationAmount(transaction) })).filter(({ amountMinor }) => amountMinor > 0n) }
 
-export function formatMoneyMinor(value: bigint | string | number | undefined, currency = 'CNY') {
-  const decimal = minorToDecimal(value ?? '0', currency)
-  try { return new Intl.NumberFormat('zh-CN', { style: 'currency', currency, minimumFractionDigits: currencyDecimals(currency), maximumFractionDigits: currencyDecimals(currency) }).format(Number(decimal)) } catch { return `${currency} ${decimal}` }
-}
+export function projectEconomics(records: RecordData[], projectId?: string | null): ProjectEconomics { const taskIds = projectId ? new Set(records.filter((record) => record.entity === 'tasks' && linkedTo(record, projectId)).map((record) => record.id)) : new Set<string>(); const belongsToProject = (record: RecordData) => !projectId || linkedTo(record, projectId) || (typeof record.taskId === 'string' && taskIds.has(record.taskId)); const transactions = financialFacts(records, projectId); let income = 0n; let expense = 0n; let cashNet = 0n; transactions.forEach(({ transaction, amountMinor: amount }) => { switch (String(transaction.transactionType)) { case 'INCOME': income += amount; cashNet += amount; break; case 'EXPENSE': expense += amount; cashNet -= amount; break; case 'REFUND': if (transaction.refundKind === 'INCOME_REFUND') { income -= amount; cashNet -= amount } else { expense -= amount; cashNet += amount }; break; case 'ADJUSTMENT': cashNet += transaction.adjustmentDirection === 'DECREASE' ? -amount : amount; break } }); const timeMinutes = records.filter((record) => record.entity === 'timeLogs' && belongsToProject(record)).reduce((total, record) => total + durationMinutes(record), 0); const outcomes = records.filter((record) => record.entity === 'results' && belongsToProject(record)); const verified = outcomes.filter((record) => record.evidenceStatus === 'VERIFIED').length; const contribution = income - expense; const required = [transactions.length > 0, timeMinutes > 0, outcomes.length > 0, verified > 0]; return { incomeMinor: income, expenseMinor: expense, cashNetMinor: cashNet, managementContributionMinor: contribution, timeMinutes, unitTimeContributionMinor: timeMinutes > 0 && transactions.length > 0 ? contribution * 60n / BigInt(timeMinutes) : undefined, postedTransactions: transactions.length, outcomeCount: outcomes.length, verifiedOutcomeCount: verified, dataCoverage: Math.round(required.filter(Boolean).length / required.length * 100) } }
 
-export function transactionBaseMinor(record: Partial<RecordData>) {
-  return integer(record.baseAmountMinor || record.amountMinor)
-}
+const dateKey = (record: RecordData) => String(record.occurredAt || record.createdAt || '').slice(0, 10)
+const factNet = ({ transaction, amountMinor }: FinanceFact) => transaction.transactionType === 'INCOME' ? amountMinor : transaction.transactionType === 'EXPENSE' ? -amountMinor : transaction.transactionType === 'REFUND' ? transaction.refundKind === 'INCOME_REFUND' ? -amountMinor : amountMinor : transaction.transactionType === 'ADJUSTMENT' ? transaction.adjustmentDirection === 'DECREASE' ? -amountMinor : amountMinor : 0n
+const matchesFilters = (transaction: RecordData, options: FinanceFilters) => { const date = dateKey(transaction); return (!options.from || !date || date >= options.from) && (!options.to || !date || date <= options.to) && (!options.accountId || transaction.accountId === options.accountId || transaction.destinationAccountId === options.accountId) && (!options.categoryId || transaction.categoryId === options.categoryId) }
+const overlap = (start: string, end: string, filters: FinanceFilters) => (!filters.from || end >= filters.from) && (!filters.to || start <= filters.to)
 
-export function accountBalanceMinor(records: RecordData[], accountId: string) {
-  const account = records.find((record) => record.entity === 'financialAccounts' && record.id === accountId)
-  let balance = integer(account?.openingBalanceMinor)
-  records.filter((record) => record.entity === 'financialTransactions' && String(record.status || 'POSTED') === 'POSTED').forEach((transaction) => {
-    const amount = integer(transaction.amountMinor)
-    const source = transaction.accountId === accountId
-    const destination = transaction.destinationAccountId === accountId
-    switch (String(transaction.transactionType)) {
-      case 'INCOME': if (source) balance += amount; break
-      case 'EXPENSE': if (source) balance -= amount; break
-      case 'TRANSFER': if (source) balance -= amount; if (destination) balance += amount; break
-      case 'REFUND': if (source) balance += transaction.refundKind === 'INCOME_REFUND' ? -amount : amount; break
-      case 'ADJUSTMENT': if (source) balance += transaction.adjustmentDirection === 'DECREASE' ? -amount : amount; break
-    }
-  })
-  return balance
-}
-
-export function projectEconomics(records: RecordData[], projectId?: string | null): ProjectEconomics {
-  const taskIds = projectId ? new Set(records.filter((record) => record.entity === 'tasks' && linkedTo(record, projectId)).map((record) => record.id)) : new Set<string>()
-  const belongsToProject = (record: RecordData) => !projectId || linkedTo(record, projectId) || (typeof record.taskId === 'string' && taskIds.has(record.taskId))
-  const transactions = records.filter((record) => record.entity === 'financialTransactions' && String(record.status || 'POSTED') === 'POSTED' && belongsToProject(record))
-  let income = 0n; let expense = 0n; let cashNet = 0n
-  transactions.forEach((transaction) => {
-    const amount = transactionBaseMinor(transaction)
-    switch (String(transaction.transactionType)) {
-      case 'INCOME': income += amount; cashNet += amount; break
-      case 'EXPENSE': expense += amount; cashNet -= amount; break
-      case 'REFUND':
-        if (transaction.refundKind === 'INCOME_REFUND') { income -= amount; cashNet -= amount } else { expense -= amount; cashNet += amount }
-        break
-      case 'ADJUSTMENT': cashNet += transaction.adjustmentDirection === 'DECREASE' ? -amount : amount; break
-    }
-  })
-  const timeMinutes = records.filter((record) => record.entity === 'timeLogs' && belongsToProject(record)).reduce((total, record) => total + durationMinutes(record), 0)
-  const outcomes = records.filter((record) => record.entity === 'results' && belongsToProject(record))
-  const verified = outcomes.filter((record) => record.evidenceStatus === 'VERIFIED').length
-  const contribution = income - expense
-  const required = [transactions.length > 0, timeMinutes > 0, outcomes.length > 0, verified > 0]
-  return {
-    incomeMinor: income,
-    expenseMinor: expense,
-    cashNetMinor: cashNet,
-    managementContributionMinor: contribution,
-    timeMinutes,
-    unitTimeContributionMinor: timeMinutes > 0 && transactions.length > 0 ? contribution * 60n / BigInt(timeMinutes) : undefined,
-    postedTransactions: transactions.length,
-    outcomeCount: outcomes.length,
-    verifiedOutcomeCount: verified,
-    dataCoverage: Math.round(required.filter(Boolean).length / required.length * 100),
-  }
-}
+export function financeDashboard(records: RecordData[], options: FinanceFilters = {}): FinanceDashboard { const facts = financialFacts(records, options.projectId).filter(({ transaction }) => matchesFilters(transaction, options)); const trend = new Map<string, { incomeMinor: bigint; expenseMinor: bigint }>(); const category = new Map<string, bigint>(); facts.forEach((fact) => { const key = dateKey(fact.transaction).slice(0, 7) || '未标日期'; const bucket = trend.get(key) || { incomeMinor: 0n, expenseMinor: 0n }; const net = factNet(fact); if (net >= 0n) bucket.incomeMinor += net; else bucket.expenseMinor += -net; trend.set(key, bucket); if (fact.transaction.transactionType !== 'TRANSFER') { const categoryId = String(fact.transaction.categoryId || '__uncategorized__'); category.set(categoryId, (category.get(categoryId) || 0n) + (net < 0n ? -net : net)) } }); const scopedRecords = records.filter((record) => record.entity !== 'financialTransactions' || matchesFilters(record, options)); const projects = records.filter((record) => record.entity === 'projects').map((project) => ({ projectId: project.id, economics: projectEconomics(scopedRecords, project.id) })).filter(({ economics }) => economics.postedTransactions || economics.timeMinutes || economics.outcomeCount).sort((a, b) => Number(b.economics.expenseMinor - a.economics.expenseMinor)); const budgets = records.filter((record) => record.entity === 'financialBudgets' && String(record.status || 'ACTIVE') === 'ACTIVE' && overlap(String(record.periodStart || ''), String(record.periodEnd || ''), options) && (!options.projectId || record.projectId === options.projectId) && (!options.categoryId || record.categoryId === options.categoryId)).map((budget) => { const budgetFacts = budget.projectId ? financialFacts(records, String(budget.projectId)).filter(({ transaction }) => matchesFilters(transaction, { ...options, projectId: undefined })) : facts; const actual = budgetFacts.filter(({ transaction }) => dateKey(transaction) >= String(budget.periodStart) && dateKey(transaction) <= String(budget.periodEnd) && transaction.transactionType === 'EXPENSE' && (!budget.categoryId || transaction.categoryId === budget.categoryId)); const actualExpenseMinor = actual.reduce((total, fact) => total + fact.amountMinor, 0n); const plannedMinor = integer(budget.amountMinor); return { budget, plannedMinor, actualExpenseMinor, varianceMinor: plannedMinor - actualExpenseMinor, observedTransactions: actual.length } }).sort((left, right) => Number(right.plannedMinor - left.plannedMinor)); const allocations = records.filter((record) => record.entity === 'financialTransactionAllocations'); const taskIdsWithProject = new Set(records.filter((record) => record.entity === 'tasks' && record.projectId).map((record) => String(record.id))); let unallocatedMinor = 0n; let unassignedTransactions = 0; financialFacts(records).filter(({ transaction }) => matchesFilters(transaction, options)).forEach(({ transaction, amountMinor }) => { const splits = allocations.filter((allocation) => allocation.transactionId === transaction.id); const splitTotal = splits.reduce((total, allocation) => total + integer(allocation.amountMinor), 0n); const directProject = Boolean(transaction.projectId) || (typeof transaction.taskId === 'string' && taskIdsWithProject.has(transaction.taskId)); const residual = splits.length ? amountMinor - splitTotal : directProject ? 0n : amountMinor; if (residual > 0n && !['TRANSFER', 'ADJUSTMENT'].includes(String(transaction.transactionType))) { unallocatedMinor += residual; unassignedTransactions += 1 } }); return { economics: projectEconomics(scopedRecords, options.projectId), trends: [...trend.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([key, value]) => ({ key, ...value })), categories: [...category.entries()].map(([categoryId, amountMinor]) => ({ categoryId, amountMinor })).sort((a, b) => Number(b.amountMinor - a.amountMinor)), projects, budgets, unallocatedMinor, unassignedTransactions, unverifiedTransactions: facts.filter(({ transaction }) => transaction.evidenceStatus !== 'VERIFIED').length, missingCategoryTransactions: facts.filter(({ transaction }) => !transaction.categoryId).length } }

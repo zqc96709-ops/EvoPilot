@@ -1,6 +1,6 @@
-use reqwest::blocking::Client;
 use serde_json::{json, Value};
 use std::time::Duration;
+use crate::provider_http;
 
 pub struct RedfoxCapture {
     pub canonical: Value,
@@ -208,11 +208,7 @@ pub fn normalize_response(url: &str, endpoint: &str, raw: &Value) -> Value {
 
 pub fn capture(api_key: &str, url: &str) -> Result<RedfoxCapture, String> {
     let (endpoint, body) = request_for_url(url)?;
-    let client = Client::builder()
-        .timeout(Duration::from_secs(25))
-        .user_agent("JasonOS/3.1 ExternalIntelligence")
-        .build()
-        .map_err(|error| error.to_string())?;
+    let client = provider_http::client(Duration::from_secs(25), Some("JasonOS/3.1 ExternalIntelligence"))?;
     let response = client
         .post(endpoint)
         .header("REDFOX_API_KEY", api_key)

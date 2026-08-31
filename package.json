@@ -9,6 +9,8 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "test": "vitest run",
+    "test:command:e2e": "node scripts/command-center-desktop-e2e.mjs",
+    "test:finance:e2e": "node scripts/finance-desktop-e2e.mjs",
     "tauri": "tauri"
   },
   "dependencies": {

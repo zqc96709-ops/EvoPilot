@@ -15,7 +15,9 @@ export type HackStartConfig = { provider: AiProviderId; providerLabel: string; c
 export type BackupInfo = { name: string; path: string; size: number; modified: string }
 export type FinanceSummary = { baseCurrency: string; incomeMinor: string; expenseMinor: string; cashNetMinor: string; managementContributionMinor: string; timeMinutes: number; unitTimeContributionMinor?: string; postedTransactions: number; outcomeCount: number; verifiedOutcomeCount: number; dataCoverage: number; warnings: string[] }
 export type CaptureProviderId = 'redfox' | 'apify' | 'tikhub' | 'scrapecreators'
-export type CaptureProviderConfig = { providers: { id: CaptureProviderId; label: string; configured: boolean; supportedPlatforms: string[]; automaticSync: boolean; mediaDownload: boolean }[] }
+export type ProviderHealthStatus = 'NOT_CONFIGURED' | 'CONFIGURED' | 'AVAILABLE' | 'UNKNOWN' | 'AUTH_ERROR' | 'UNAVAILABLE' | 'DEGRADED' | 'RATE_LIMITED' | 'QUOTA_EXHAUSTED' | 'CAPABILITY_MISMATCH' | 'DISABLED'
+export type CaptureProviderCapability = { platform: string; capability: 'POST_DETAIL' | 'VIDEO_SEARCH' | 'WEB_CAPTURE'; status: 'AVAILABLE' | 'NOT_IMPLEMENTED'; endpointKey: string; costClass?: string; latencyClass?: string }
+export type CaptureProviderConfig = { providers: { id: CaptureProviderId; code?: string; label: string; configured: boolean; enabled?: boolean; status?: ProviderHealthStatus; health?: { status?: ProviderHealthStatus; lastCheckedAt?: string; latencyMs?: number; lastError?: string }; supportedPlatforms: string[]; capabilities?: CaptureProviderCapability[]; automaticSync: boolean; mediaDownload: boolean }[] }
 export type NotebookUploadInput = { file: File; notebookCategoryId?: string; notebookFolderId?: string; relativePath?: string }
 export type NotebookFilePreview = { kind: 'text' | 'pdf' | 'image' | 'audio' | 'video' | 'unsupported'; text?: string; dataUrl?: string; page?: number; pageCount?: number; reason?: string; extractStatus?: string }
 export type NotebookStorageConfig = { maxFileSize: number; chunkSize: number }
@@ -33,20 +35,41 @@ const syncRecords = async () => {
   if (browser()) write(merged)
   else await invoke('merge_remote_records', { records: merged })
 }
+let syncQueued = false
+let syncRunning = false
+// Local SQLite is the interaction source of truth. Cloud sync stays durable, but it
+// must not make a click wait on the network before the UI can render its result.
+const queueSyncRecords = () => {
+  if (!cloudSync.status().signedIn) return
+  syncQueued = true
+  if (syncRunning) return
+  syncRunning = true
+  void Promise.resolve().then(async () => {
+    while (syncQueued) {
+      syncQueued = false
+      try { await syncRecords() } catch { /* The explicit sync control still reports retry errors. */ }
+    }
+  }).finally(() => {
+    syncRunning = false
+    if (syncQueued) queueSyncRecords()
+  })
+}
 
 export const api = {
   async initialize() { const result = browser() ? { ok: true } : await invoke('initialize_database'); await syncRecords(); return result },
   async list(entity: Entity | 'all'): Promise<RecordData[]> { return browser() ? read().filter((record) => active(record) && (entity === 'all' || record.entity === entity)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)) : invoke('list_records', { entity }) },
   async get(id: string): Promise<RecordData | null> { return browser() ? read().find((record) => record.id === id && !record.deletedAt) || null : invoke('get_record', { id }) },
   async save(entity: Entity, data: Partial<RecordData>): Promise<RecordData> {
-    if (!browser()) { const saved = await invoke<RecordData>('save_record', { entity, data }); await syncRecords(); return saved }
+    if (!browser()) { const saved = await invoke<RecordData>('save_record', { entity, data }); queueSyncRecords(); return saved }
     const records = read(); const id = data.id || `${entity}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`; const old = records.find((record) => record.id === id)
     const record = { ...old, ...data, id, entity, createdAt: old?.createdAt || stamp(), updatedAt: stamp() } as RecordData
-    write([...records.filter((item) => item.id !== id), record]); await syncRecords(); return record
+    write([...records.filter((item) => item.id !== id), record]); queueSyncRecords(); return record
   },
-  async archive(id: string) { if (!browser()) { await invoke('archive_record', { id }); await syncRecords(); return }; write(read().map((record) => record.id === id ? { ...record, archivedAt: stamp(), updatedAt: stamp() } : record)); await syncRecords() },
-  async remove(id: string) { if (!browser()) { await invoke('delete_record', { id }); await syncRecords(); return }; write(read().map((record) => record.id === id ? { ...record, archivedAt: undefined, deletedAt: stamp(), updatedAt: stamp() } : record)); await syncRecords() },
-  async restore(id: string): Promise<RecordData> { if (!browser()) { const restored = await invoke<RecordData>('restore_record', { id }); await syncRecords(); return restored }; const record = read().find((item) => item.id === id)!; const restored = { ...record, archivedAt: undefined, deletedAt: undefined, updatedAt: stamp() }; write([...read().filter((item) => item.id !== id), restored]); await syncRecords(); return restored },
+  async archive(id: string) { if (!browser()) { await invoke('archive_record', { id }); queueSyncRecords(); return }; write(read().map((record) => record.id === id ? { ...record, archivedAt: stamp(), updatedAt: stamp() } : record)); queueSyncRecords() },
+  async archiveMany(ids: string[]) { if (!ids.length) return; if (!browser()) { await invoke('archive_records', { ids }); queueSyncRecords(); return }; const selected = new Set(ids); write(read().map((record) => selected.has(record.id) ? { ...record, archivedAt: stamp(), updatedAt: stamp() } : record)); queueSyncRecords() },
+  async remove(id: string) { if (!browser()) { await invoke('delete_record', { id }); queueSyncRecords(); return }; write(read().map((record) => record.id === id ? { ...record, archivedAt: undefined, deletedAt: stamp(), updatedAt: stamp() } : record)); queueSyncRecords() },
+  async removeMany(ids: string[]) { if (!ids.length) return; if (!browser()) { await invoke('delete_records', { ids }); queueSyncRecords(); return }; const selected = new Set(ids); write(read().map((record) => selected.has(record.id) ? { ...record, archivedAt: undefined, deletedAt: stamp(), updatedAt: stamp() } : record)); queueSyncRecords() },
+  async restore(id: string): Promise<RecordData> { if (!browser()) { const restored = await invoke<RecordData>('restore_record', { id }); queueSyncRecords(); return restored }; const record = read().find((item) => item.id === id)!; const restored = { ...record, archivedAt: undefined, deletedAt: undefined, updatedAt: stamp() }; write([...read().filter((item) => item.id !== id), restored]); queueSyncRecords(); return restored },
   cloudStatus(): CloudSyncStatus { return cloudSync.status() },
   async signInToCloud(email: string, password: string): Promise<CloudSyncStatus> { const status = await cloudSync.signIn(email, password); await syncRecords(); return status },
   async signUpForCloud(email: string, password: string): Promise<CloudSyncStatus> { const status = await cloudSync.signUp(email, password); if (status.signedIn) await syncRecords(); return status },
@@ -88,10 +111,11 @@ export const api = {
   async testAiProvider(provider: AiProviderId, model: string): Promise<{ ok: boolean; provider: string; model: string; latencyMs: number; content: string }> { if (browser()) throw new Error('浏览器模式不能测试真实 API。请使用桌面应用。'); return invoke('test_ai_provider', { provider, model }) },
   async openExternal(url: string): Promise<void> { if (browser()) { window.open(url, '_blank', 'noopener,noreferrer'); return }; return invoke('open_external', { url }) },
   async getFinanceSummary(projectId?: string): Promise<FinanceSummary> { if (browser()) { const result = projectEconomics(read(), projectId); return { baseCurrency: 'CNY', incomeMinor: result.incomeMinor.toString(), expenseMinor: result.expenseMinor.toString(), cashNetMinor: result.cashNetMinor.toString(), managementContributionMinor: result.managementContributionMinor.toString(), timeMinutes: result.timeMinutes, unitTimeContributionMinor: result.unitTimeContributionMinor?.toString(), postedTransactions: result.postedTransactions, outcomeCount: result.outcomeCount, verifiedOutcomeCount: result.verifiedOutcomeCount, dataCoverage: result.dataCoverage, warnings: [] } } return invoke('get_finance_summary', { projectId }) },
-  async getCaptureProviderConfig(): Promise<CaptureProviderConfig> { return browser() ? { providers: [{ id: 'redfox', label: 'RedFoxHub', configured: false, supportedPlatforms: ['微信公众号', '抖音', '小红书'], automaticSync: false, mediaDownload: false }, { id: 'apify', label: 'Apify', configured: false, supportedPlatforms: ['网页', '微信公众号', '抖音', '小红书', 'X', 'Instagram', 'Facebook', 'Reddit', 'TikTok', 'YouTube'], automaticSync: false, mediaDownload: false }, { id: 'tikhub', label: 'TikHub', configured: false, supportedPlatforms: ['抖音', 'TikTok', '小红书', 'X', 'Instagram', 'Reddit', 'YouTube', '微信公众号'], automaticSync: false, mediaDownload: false }, { id: 'scrapecreators', label: 'Scrape Creators', configured: false, supportedPlatforms: ['TikTok', 'Instagram', 'YouTube', 'Facebook', 'X', 'Reddit'], automaticSync: false, mediaDownload: false }] } : invoke('get_capture_provider_config') },
+  async getCaptureProviderConfig(): Promise<CaptureProviderConfig> { return browser() ? { providers: [{ id: 'redfox', label: 'RedFoxHub', configured: false, supportedPlatforms: ['微信公众号', '抖音', '小红书'], capabilities: [{ platform: '微信公众号', capability: 'POST_DETAIL', status: 'AVAILABLE', endpointKey: 'gzhData/queryArticleDetail' }, { platform: '抖音', capability: 'POST_DETAIL', status: 'AVAILABLE', endpointKey: 'dyData/queryWork' }, { platform: '小红书', capability: 'POST_DETAIL', status: 'AVAILABLE', endpointKey: 'xhsUser/queryWorkDetail' }], automaticSync: false, mediaDownload: false }, { id: 'apify', label: 'Apify', configured: false, supportedPlatforms: ['网页'], capabilities: [{ platform: '网页', capability: 'WEB_CAPTURE', status: 'AVAILABLE', endpointKey: 'apify~website-content-crawler' }], automaticSync: false, mediaDownload: false }, { id: 'tikhub', label: 'TikHub', configured: false, supportedPlatforms: ['抖音', 'TikTok', '小红书', 'X'], capabilities: [{ platform: 'TikTok', capability: 'VIDEO_SEARCH', status: 'AVAILABLE', endpointKey: 'tiktok/fetch_general_search_result' }, { platform: 'TikTok', capability: 'POST_DETAIL', status: 'AVAILABLE', endpointKey: 'tiktok/fetch_post_detail' }, { platform: '抖音', capability: 'POST_DETAIL', status: 'AVAILABLE', endpointKey: 'douyin/fetch_one_video_by_share_url' }, { platform: '小红书', capability: 'POST_DETAIL', status: 'AVAILABLE', endpointKey: 'xiaohongshu/fetch_note_detail' }, { platform: 'X', capability: 'POST_DETAIL', status: 'AVAILABLE', endpointKey: 'twitter/fetch_tweet_detail' }], automaticSync: false, mediaDownload: false }, { id: 'scrapecreators', label: 'Scrape Creators', configured: false, supportedPlatforms: ['TikTok', 'Instagram', 'YouTube', 'Facebook', 'X'], capabilities: [{ platform: 'TikTok', capability: 'POST_DETAIL', status: 'AVAILABLE', endpointKey: 'tiktok/video' }, { platform: 'Instagram', capability: 'POST_DETAIL', status: 'AVAILABLE', endpointKey: 'instagram/post' }, { platform: 'YouTube', capability: 'POST_DETAIL', status: 'AVAILABLE', endpointKey: 'youtube/video' }, { platform: 'Facebook', capability: 'POST_DETAIL', status: 'AVAILABLE', endpointKey: 'facebook/post' }, { platform: 'X', capability: 'POST_DETAIL', status: 'AVAILABLE', endpointKey: 'twitter/tweet' }], automaticSync: false, mediaDownload: false }] } : invoke('get_capture_provider_config') },
   async configureCaptureProvider(provider: CaptureProviderId, apiKey: string): Promise<CaptureProviderConfig> { if (browser()) throw new Error('浏览器模式不能保存采集凭据。请使用桌面应用。'); return invoke('configure_capture_provider', { provider, apiKey }) },
   async testCaptureProvider(provider: CaptureProviderId, url: string): Promise<{ ok: boolean; provider: string; latencyMs: number; content: Record<string, unknown> }> { if (browser()) throw new Error('浏览器模式不能测试真实采集 API。'); return invoke('test_capture_provider', { provider, url }) },
-  async searchTikTok(query: string, periodDays = 30): Promise<{ items: number; urls: string[] }> { if (browser()) throw new Error('浏览器模式不能运行真实调研。请使用桌面应用。'); return invoke('search_tiktok_research', { query, periodDays }) },
+  async searchTikTok(query: string, periodDays = 30): Promise<{ items: number; itemIds?: string[]; urls: string[]; provider?: string; cacheHit?: boolean; researchRunId?: string; evidenceCount?: number }> { if (browser()) throw new Error('浏览器模式不能运行真实调研。请使用桌面应用。'); return invoke('search_tiktok_research', { query, periodDays }) },
+  async executeResearchSource(source: Record<string, unknown>): Promise<{ items: number; itemIds?: string[]; urls: string[]; provider?: string; cacheHit?: boolean; researchRunId?: string; evidenceCount?: number }> { if (browser()) throw new Error('浏览器模式不能运行真实调研。请使用桌面应用。'); return invoke('execute_research_source', { source }) },
   async listExternalItems(limit = 80): Promise<ExternalItem[]> { return browser() ? [] : invoke('list_external_items', { limit }) },
   async cleanupExternalCache(): Promise<{ ok: boolean; removed: number }> { return browser() ? { ok: true, removed: 0 } : invoke('cleanup_external_cache') },
   async captureLink(url: string, provider: CaptureProviderId | 'auto' = 'auto'): Promise<RecordData> { if (browser()) return this.save('inbox', { content: url, type: 'link', sourceUrl: url, captureStatus: 'link_saved', captureProvider: provider }); return invoke('capture_link', { url, provider }) },

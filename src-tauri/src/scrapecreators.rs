@@ -1,6 +1,6 @@
-use reqwest::blocking::Client;
 use serde_json::{json, Value};
 use std::time::Duration;
+use crate::provider_http;
 
 const BASE: &str = "https://api.scrapecreators.com";
 pub struct ScrapeCreatorsCapture {
@@ -9,10 +9,8 @@ pub struct ScrapeCreatorsCapture {
     pub endpoint: String,
     pub status_code: u16,
 }
-fn client() -> Result<Client, String> {
-    Client::builder()
-        .timeout(Duration::from_secs(60))
-        .build()
+fn client() -> Result<reqwest::blocking::Client, String> {
+    provider_http::client(Duration::from_secs(60), None)
         .map_err(|e| format!("Scrape Creators HTTP 客户端初始化失败：{e}"))
 }
 fn err(status: reqwest::StatusCode, body: &str) -> String {

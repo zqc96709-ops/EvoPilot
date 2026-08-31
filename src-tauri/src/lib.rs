@@ -3,6 +3,7 @@ mod decision_intelligence;
 mod external_intelligence;
 mod finance;
 mod mental_models;
+mod provider_http;
 mod redfox;
 mod scrapecreators;
 mod tikhub;
@@ -13,6 +14,7 @@ use serde_json::{json, Map, Value};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::{
+    collections::HashSet,
     fs::{self, OpenOptions},
     hash::{Hash, Hasher},
     io::Write,
@@ -78,11 +80,16 @@ const ENTITIES: &[&str] = &[
     "signals",
     "opportunities",
     "intelligenceBriefs",
+    "researchThreads",
     "researchRequests",
+    "researchRuns",
     "researchResults",
+    "researchFindings",
     "financialAccounts",
     "financialCategories",
     "financialTransactions",
+    "financialTransactionAllocations",
+    "financialBudgets",
     "decisionFrameworks",
     "ceoPrinciples",
     "decisionLenses",
@@ -111,7 +118,9 @@ fn is_entity(entity: &str) -> bool {
 }
 
 fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let dir = std::env::var_os("JASON_OS_DATA_DIR")
+        .map(PathBuf::from)
+        .unwrap_or(app.path().app_data_dir().map_err(|e| e.to_string())?);
     fs::create_dir_all(dir.join("attachments")).map_err(|e| e.to_string())?;
     fs::create_dir_all(dir.join("notebook-files")).map_err(|e| e.to_string())?;
     fs::create_dir_all(dir.join("exports")).map_err(|e| e.to_string())?;
@@ -142,6 +151,8 @@ const TIMELINE_SOURCE_ENTITIES: &[&str] = &[
     "signals",
     "opportunities",
     "intelligenceBriefs",
+    "researchRuns",
+    "researchResults",
     "financialTransactions",
     "timelineEvents",
 ];
@@ -669,6 +680,24 @@ fn db(app: &AppHandle) -> Result<Connection, String> {
         "CREATE INDEX IF NOT EXISTS idx_records_work_chain ON records(entity, updated_at DESC);
          INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (7, strftime('%s','now'));",
     ).map_err(|error| error.to_string())?;
+    let research_result_architecture_migrated: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=13)",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if !research_result_architecture_migrated {
+        migrate_research_result_architecture(&connection)?;
+        connection
+            .execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (13, ?1)",
+                params![now()],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    finance::migrate_allocations(&connection, &now())?;
+    finance::migrate_budgets(&connection, &now())?;
     Ok(connection)
 }
 
@@ -800,12 +829,17 @@ fn set_optional_id(object: &mut Map<String, Value>, key: &str, value: Option<Str
 }
 
 fn expected_entity(key: &str) -> Option<&'static str> {
+    if key == "researchRunIds" {
+        // Legacy provider execution IDs live outside unified records and are not relations.
+        return None;
+    }
     match key.trim_end_matches('s') {
         "goalId" => Some("goals"),
         "projectId" => Some("projects"),
         "taskId" | "dependencyId" => Some("tasks"),
         "timeLogId" => Some("timeLogs"),
         "resultId" => Some("results"),
+        "sourceResearchResultId" => Some("researchResults"),
         "deliverableId" | "previousDeliverableId" => Some("deliverables"),
         "fileId" => Some("notebookFiles"),
         "evidenceId" => Some("results"),
@@ -827,7 +861,10 @@ fn expected_entity(key: &str) -> Option<&'static str> {
         "signalId" => Some("signals"),
         "opportunityId" => Some("opportunities"),
         "briefId" => Some("intelligenceBriefs"),
+        "researchThreadId" => Some("researchThreads"),
         "researchRequestId" => Some("researchRequests"),
+        "researchRunId" => Some("researchRuns"),
+        "researchResultId" => Some("researchResults"),
         "sourceDecisionId" => Some("decisions"),
         "sourceOpportunityId" => Some("opportunities"),
         "sourceSignalId" => Some("signals"),
@@ -1189,6 +1226,23 @@ fn sync_relations(connection: &Connection, source_id: &str, data: &Value) -> Res
     Ok(())
 }
 
+fn validate_research_result_snapshot(existing: &Value, incoming: &Value) -> Result<(), String> {
+    if !["COMPLETED", "PARTIAL"].contains(&existing["status"].as_str().unwrap_or("")) {
+        return Ok(());
+    }
+    for field in [
+        "summary", "executiveSummary", "scopeSnapshot", "planSnapshot", "metricsSummary",
+        "sourceCoverage", "missingData", "limitations", "confidence", "recommendations",
+        "evidenceUrls", "evidenceItemIds", "researchRunIds", "provenanceCount",
+        "researchThreadId", "researchRequestId", "researchRunId", "completedAt", "status",
+    ] {
+        if incoming.get(field).is_some() && incoming.get(field) != existing.get(field) {
+            return Err("已完成的调研结果是不可变快照；请创建后续调研，而不是覆盖历史结果".into());
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn initialize_database(app: AppHandle) -> Result<Value, String> {
     let connection = db(&app)?;
@@ -1317,6 +1371,11 @@ fn save_record(app: AppHandle, entity: String, mut data: Value) -> Result<Value,
         .unwrap_or_else(|| new_id(&entity));
     let connection = db(&app)?;
     let existing = record_by_id(&connection, &id)?;
+    if entity == "researchResults" {
+        if let Some(existing) = existing.as_ref() {
+            validate_research_result_snapshot(existing, &data)?;
+        }
+    }
     if NOTEBOOK_ENTITIES.contains(&entity.as_str()) {
         let existing_owner = existing
             .as_ref()
@@ -1347,6 +1406,7 @@ fn save_record(app: AppHandle, entity: String, mut data: Value) -> Result<Value,
         .unwrap_or_else(now);
     let normalized = normalize_record(&connection, &entity, &data, true)?;
     finance::validate_transition(&entity, existing.as_ref(), &normalized)?;
+    finance::validate_allocation(&connection, &entity, &id, &normalized)?;
     let enriched = apply_timeline_metadata(&entity, &normalized, &created_at, &now());
     if entity == "timeLogs" && enriched["isRunning"].as_bool().unwrap_or(false) {
         let another_running: bool = connection.query_row(
@@ -1367,9 +1427,7 @@ fn save_record(app: AppHandle, entity: String, mut data: Value) -> Result<Value,
     Ok(saved)
 }
 
-#[tauri::command]
-fn delete_record(app: AppHandle, id: String) -> Result<(), String> {
-    let connection = db(&app)?;
+fn delete_record_from_connection(connection: &Connection, id: &str) -> Result<(), String> {
     let Some(mut data) = record_by_id(&connection, &id)? else {
         return Err("记录不存在".into());
     };
@@ -1400,18 +1458,18 @@ fn delete_record(app: AppHandle, id: String) -> Result<(), String> {
     connection
         .execute("DELETE FROM records_fts WHERE id=?1", params![id])
         .map_err(|e| e.to_string())?;
-    connection
-        .execute(
-            "DELETE FROM relations WHERE from_id=?1 OR to_id=?1",
-            params![id],
-        )
-        .map_err(|e| e.to_string())?;
+    if !["researchRequests", "researchResults"].contains(&entity.as_str()) {
+        connection
+            .execute(
+                "DELETE FROM relations WHERE from_id=?1 OR to_id=?1",
+                params![id],
+            )
+            .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
-#[tauri::command]
-fn archive_record(app: AppHandle, id: String) -> Result<(), String> {
-    let connection = db(&app)?;
+fn archive_record_from_connection(connection: &Connection, id: &str) -> Result<(), String> {
     let Some(mut data) = record_by_id(&connection, &id)? else {
         return Err("记录不存在".into());
     };
@@ -1442,6 +1500,61 @@ fn archive_record(app: AppHandle, id: String) -> Result<(), String> {
         .execute("DELETE FROM records_fts WHERE id=?1", params![id])
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+fn unique_record_ids(ids: Vec<String>) -> Result<Vec<String>, String> {
+    let mut seen = HashSet::new();
+    let ids = ids
+        .into_iter()
+        .filter(|id| !id.trim().is_empty() && seen.insert(id.clone()))
+        .collect::<Vec<_>>();
+    if ids.is_empty() {
+        return Err("请至少选择一条记录".into());
+    }
+    Ok(ids)
+}
+
+fn apply_record_batch(
+    connection: &Connection,
+    ids: Vec<String>,
+    action: fn(&Connection, &str) -> Result<(), String>,
+) -> Result<(), String> {
+    let ids = unique_record_ids(ids)?;
+    connection
+        .execute_batch("BEGIN IMMEDIATE")
+        .map_err(|error| error.to_string())?;
+    let result = ids.iter().try_for_each(|id| action(connection, id));
+    match result {
+        Ok(()) => connection.execute_batch("COMMIT").map_err(|error| error.to_string()),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK");
+            Err(error)
+        }
+    }
+}
+
+#[tauri::command]
+fn delete_record(app: AppHandle, id: String) -> Result<(), String> {
+    let connection = db(&app)?;
+    delete_record_from_connection(&connection, &id)
+}
+
+#[tauri::command]
+fn delete_records(app: AppHandle, ids: Vec<String>) -> Result<(), String> {
+    let connection = db(&app)?;
+    apply_record_batch(&connection, ids, delete_record_from_connection)
+}
+
+#[tauri::command]
+fn archive_record(app: AppHandle, id: String) -> Result<(), String> {
+    let connection = db(&app)?;
+    archive_record_from_connection(&connection, &id)
+}
+
+#[tauri::command]
+fn archive_records(app: AppHandle, ids: Vec<String>) -> Result<(), String> {
+    let connection = db(&app)?;
+    apply_record_batch(&connection, ids, archive_record_from_connection)
 }
 
 #[tauri::command]
@@ -2328,6 +2441,108 @@ fn all_records(connection: &Connection) -> Result<Vec<Value>, String> {
         .map_err(|e| e.to_string())
 }
 
+fn research_payload(record: &Value) -> Value {
+    let mut payload = record.clone();
+    if let Some(object) = payload.as_object_mut() {
+        for key in ["id", "entity", "createdAt", "updatedAt", "archivedAt", "deletedAt"] {
+            object.remove(key);
+        }
+    }
+    payload
+}
+
+fn migrate_research_result_architecture(connection: &Connection) -> Result<(), String> {
+    let records = all_records(connection)?;
+    let mut request_thread_ids = std::collections::HashMap::<String, String>::new();
+
+    for request in records.iter().filter(|record| record["entity"] == "researchRequests") {
+        let request_id = request["id"].as_str().unwrap_or("");
+        if request_id.is_empty() {
+            continue;
+        }
+        let existing_thread_id = string_field(request, "researchThreadId");
+        let thread_id = if let Some(thread_id) = existing_thread_id {
+            thread_id
+        } else {
+            let thread_id = new_id("researchThreads");
+            let title = string_field(request, "title").unwrap_or_else(|| "历史调研主题".into());
+            let thread = json!({
+                "title": title,
+                "summary": "由旧版调研需求迁移；每条旧需求独立保留，未自动合并。",
+                "status": "ACTIVE",
+                "legacy": true,
+                "tags": request.get("tags").cloned().unwrap_or(Value::String(String::new())),
+            });
+            write_record(connection, "researchThreads", &thread_id, &thread, None)?;
+            sync_relations(connection, &thread_id, &thread)?;
+            let mut migrated = research_payload(request);
+            migrated["researchThreadId"] = Value::String(thread_id.clone());
+            write_record(connection, "researchRequests", request_id, &migrated, request["createdAt"].as_str())?;
+            sync_relations(connection, request_id, &migrated)?;
+            thread_id
+        };
+        request_thread_ids.insert(request_id.into(), thread_id);
+    }
+
+    let results = all_records(connection)?;
+    for result in results.iter().filter(|record| record["entity"] == "researchResults") {
+        let result_id = result["id"].as_str().unwrap_or("");
+        if result_id.is_empty() {
+            continue;
+        }
+        let request_id = string_field(result, "researchRequestId");
+        let thread_id = if let Some(thread_id) = string_field(result, "researchThreadId")
+            .or_else(|| request_id.as_ref().and_then(|id| request_thread_ids.get(id).cloned())) {
+            thread_id
+        } else {
+            let id = new_id("researchThreads");
+            let thread = json!({
+                "title": format!("历史调研：{}", string_field(result, "title").unwrap_or_else(|| "未命名结果".into())),
+                "summary": "由没有来源需求的旧版调研结果迁移；未与其他记录自动合并。",
+                "status": "ACTIVE",
+                "legacy": true,
+            });
+            write_record(connection, "researchThreads", &id, &thread, None)?;
+            sync_relations(connection, &id, &thread)?;
+            id
+        };
+        let existing_run_id = string_field(result, "researchRunId");
+        let run_id = if let Some(run_id) = existing_run_id { run_id } else {
+            let run_id = new_id("researchRuns");
+            let source_request = request_id.as_ref().and_then(|id| records.iter().find(|record| record["id"].as_str() == Some(id.as_str())));
+            let plan_snapshot = source_request.map(|request| json!({
+                "scope": request.get("scope").cloned().unwrap_or(Value::String(String::new())),
+                "dimensions": request.get("dimensions").cloned().unwrap_or(Value::String(String::new())),
+                "deliverables": request.get("deliverables").cloned().unwrap_or(Value::String(String::new())),
+                "sourcePlan": request.get("sourcePlan").cloned().unwrap_or(Value::String(String::new())),
+            }).to_string()).unwrap_or_else(|| "{}".into());
+            let run = json!({
+                "title": format!("{} · 历史执行", string_field(result, "title").unwrap_or_else(|| "未命名调研".into())),
+                "researchThreadId": thread_id,
+                "researchRequestId": request_id,
+                "status": result.get("status").cloned().unwrap_or(Value::String("COMPLETED".into())),
+                "planSnapshot": plan_snapshot,
+                "scopeSnapshot": source_request.and_then(|request| string_field(request, "scope")).unwrap_or_default(),
+                "providerRunIds": result.get("researchRunIds").cloned().unwrap_or(Value::String(String::new())),
+                "completedAt": result.get("completedAt").cloned().unwrap_or(Value::String(String::new())),
+                "legacy": true,
+            });
+            write_record(connection, "researchRuns", &run_id, &run, result["createdAt"].as_str())?;
+            sync_relations(connection, &run_id, &run)?;
+            run_id
+        };
+        let mut migrated = research_payload(result);
+        migrated["researchThreadId"] = Value::String(thread_id);
+        migrated["researchRunId"] = Value::String(run_id);
+        if migrated.get("executiveSummary").is_none() {
+            migrated["legacyStatus"] = Value::String("LEGACY_RESULT".into());
+        }
+        write_record(connection, "researchResults", result_id, &migrated, result["createdAt"].as_str())?;
+        sync_relations(connection, result_id, &migrated)?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn export_data(app: AppHandle, format: String) -> Result<String, String> {
     if !["json", "markdown", "csv"].contains(&format.as_str()) {
@@ -2492,20 +2707,146 @@ fn ensure_external_source_capacity(
     Ok(())
 }
 
+fn provider_capability(platform: &str, capability: &str, endpoint_key: &str) -> Value {
+    json!({
+        "platform": platform,
+        "capability": capability,
+        "status": "AVAILABLE",
+        "endpointKey": endpoint_key,
+        "costClass": "UNKNOWN",
+        "latencyClass": "STANDARD"
+    })
+}
+
 fn capture_provider_config(
     redfox_configured: bool,
     apify_configured: bool,
     tikhub_configured: bool,
     scrapecreators_configured: bool,
 ) -> Value {
+    // This registry deliberately lists only endpoints implemented in this desktop app.
+    // Marketing platform lists must never be used as an executable capability claim.
     json!({
         "providers": [
-            {"id":"redfox", "label":"RedFoxHub", "configured":redfox_configured, "supportedPlatforms":["微信公众号","抖音","小红书"], "automaticSync":false, "mediaDownload":false},
-            {"id":"apify", "label":"Apify", "configured":apify_configured, "supportedPlatforms":["网页","微信公众号","抖音","小红书","X","Instagram","Facebook","Reddit","TikTok","YouTube"], "automaticSync":false, "mediaDownload":false},
-            {"id":"tikhub", "label":"TikHub", "configured":tikhub_configured, "supportedPlatforms":["抖音","TikTok","小红书","X","Instagram","Reddit","YouTube","微信公众号"], "automaticSync":false, "mediaDownload":false},
-            {"id":"scrapecreators", "label":"Scrape Creators", "configured":scrapecreators_configured, "supportedPlatforms":["TikTok","Instagram","YouTube","Facebook","X","Reddit"], "automaticSync":false, "mediaDownload":false}
+            {
+                "id":"redfox", "code":"REDFOXHUB", "label":"RedFoxHub", "providerType":"API",
+                "configured":redfox_configured, "enabled":true,
+                "status": if redfox_configured { "CONFIGURED" } else { "NOT_CONFIGURED" },
+                "supportedPlatforms":["微信公众号","抖音","小红书"], "automaticSync":false, "mediaDownload":false,
+                "capabilities":[
+                    provider_capability("微信公众号", "POST_DETAIL", "gzhData/queryArticleDetail"),
+                    provider_capability("抖音", "POST_DETAIL", "dyData/queryWork"),
+                    provider_capability("小红书", "POST_DETAIL", "xhsUser/queryWorkDetail")
+                ]
+            },
+            {
+                "id":"apify", "code":"APIFY", "label":"Apify", "providerType":"API",
+                "configured":apify_configured, "enabled":true,
+                "status": if apify_configured { "CONFIGURED" } else { "NOT_CONFIGURED" },
+                "supportedPlatforms":["网页"], "automaticSync":false, "mediaDownload":false,
+                "capabilities":[provider_capability("网页", "WEB_CAPTURE", "apify~website-content-crawler")]
+            },
+            {
+                "id":"tikhub", "code":"TIKHUB", "label":"TikHub", "providerType":"API",
+                "configured":tikhub_configured, "enabled":true,
+                "status": if tikhub_configured { "CONFIGURED" } else { "NOT_CONFIGURED" },
+                "supportedPlatforms":["TikTok","抖音","小红书","X"], "automaticSync":false, "mediaDownload":false,
+                "capabilities":[
+                    provider_capability("TikTok", "VIDEO_SEARCH", "tiktok/fetch_general_search_result"),
+                    provider_capability("TikTok", "POST_DETAIL", "tiktok/fetch_post_detail"),
+                    provider_capability("抖音", "POST_DETAIL", "douyin/fetch_one_video_by_share_url"),
+                    provider_capability("小红书", "POST_DETAIL", "xiaohongshu/fetch_note_detail"),
+                    provider_capability("X", "POST_DETAIL", "twitter/fetch_tweet_detail")
+                ]
+            },
+            {
+                "id":"scrapecreators", "code":"SCRAPE_CREATORS", "label":"Scrape Creators", "providerType":"API",
+                "configured":scrapecreators_configured, "enabled":true,
+                "status": if scrapecreators_configured { "CONFIGURED" } else { "NOT_CONFIGURED" },
+                "supportedPlatforms":["TikTok","Instagram","YouTube","Facebook","X"], "automaticSync":false, "mediaDownload":false,
+                "capabilities":[
+                    provider_capability("TikTok", "POST_DETAIL", "tiktok/video"),
+                    provider_capability("Instagram", "POST_DETAIL", "instagram/post"),
+                    provider_capability("YouTube", "POST_DETAIL", "youtube/video"),
+                    provider_capability("Facebook", "POST_DETAIL", "facebook/post"),
+                    provider_capability("X", "POST_DETAIL", "twitter/tweet")
+                ]
+            }
         ]
     })
+}
+
+fn provider_health_key(provider: &str) -> String {
+    format!("external_provider_health:{provider}")
+}
+
+fn provider_health(connection: &Connection, provider: &str) -> Value {
+    setting(connection, &provider_health_key(provider))
+        .ok()
+        .flatten()
+        .and_then(|value| serde_json::from_str(&value).ok())
+        .unwrap_or_else(|| json!({}))
+}
+
+fn save_provider_health(
+    app: &AppHandle,
+    provider: &str,
+    status: &str,
+    latency_ms: Option<u128>,
+    error: Option<&str>,
+) -> Result<(), String> {
+    let value = json!({
+        "status": status,
+        "lastCheckedAt": now(),
+        "latencyMs": latency_ms,
+        "lastError": error.map(|value| value.chars().take(300).collect::<String>())
+    });
+    db(app)?
+        .execute(
+            "INSERT INTO settings (key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![provider_health_key(provider), value.to_string()],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn provider_error_status(error: &str) -> &'static str {
+    let text = error.to_ascii_lowercase();
+    if text.contains("401") || text.contains("403") || text.contains("unauthorized") || text.contains("forbidden") {
+        "AUTH_ERROR"
+    } else if text.contains("429") || text.contains("rate limit") || text.contains("quota") {
+        "RATE_LIMITED"
+    } else if text.contains("timeout") || text.contains("timed out") {
+        "DEGRADED"
+    } else {
+        "UNAVAILABLE"
+    }
+}
+
+fn capture_provider_config_for_app(app: &AppHandle) -> Result<Value, String> {
+    let mut config = capture_provider_config(
+        redfox_key().is_ok(),
+        apify_key().is_ok(),
+        tikhub_key().is_ok(),
+        scrapecreators_key().is_ok(),
+    );
+    let connection = db(app)?;
+    if let Some(providers) = config.get_mut("providers").and_then(Value::as_array_mut) {
+        for provider in providers {
+            let Some(id) = provider.get("id").and_then(Value::as_str) else { continue };
+            let configured = provider.get("configured").and_then(Value::as_bool).unwrap_or(false);
+            let health = provider_health(&connection, id);
+            let status = health
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or(if configured { "CONFIGURED" } else { "NOT_CONFIGURED" });
+            if let Some(object) = provider.as_object_mut() {
+                object.insert("status".into(), Value::String(status.into()));
+                object.insert("health".into(), health);
+            }
+        }
+    }
+    Ok(config)
 }
 
 fn redfox_key() -> Result<String, String> {
@@ -2587,17 +2928,12 @@ fn get_finance_summary(app: AppHandle, project_id: Option<String>) -> Result<Val
 }
 
 #[tauri::command]
-fn get_capture_provider_config() -> Result<Value, String> {
-    Ok(capture_provider_config(
-        redfox_key().is_ok(),
-        apify_key().is_ok(),
-        tikhub_key().is_ok(),
-        scrapecreators_key().is_ok(),
-    ))
+fn get_capture_provider_config(app: AppHandle) -> Result<Value, String> {
+    capture_provider_config_for_app(&app)
 }
 
 #[tauri::command]
-fn configure_capture_provider(provider: String, api_key: String) -> Result<Value, String> {
+fn configure_capture_provider(app: AppHandle, provider: String, api_key: String) -> Result<Value, String> {
     if !["redfox", "apify", "tikhub", "scrapecreators"].contains(&provider.as_str()) {
         return Err("当前只支持配置 RedFoxHub、Apify、TikHub 或 Scrape Creators".into());
     }
@@ -2612,50 +2948,257 @@ fn configure_capture_provider(provider: String, api_key: String) -> Result<Value
     } else {
         scrapecreators_key()?
     };
-    if provider == "apify" {
-        apify::test_token(&key)?;
-    }
-    if provider == "tikhub" {
-        tikhub::test_token(&key)?;
-    }
-    if provider == "scrapecreators" {
-        scrapecreators::test_token(&key)?;
+    let started = Instant::now();
+    let tested = match provider.as_str() {
+        "apify" => apify::test_token(&key).map(|_| ()),
+        "tikhub" => tikhub::test_token(&key).map(|_| ()),
+        "scrapecreators" => scrapecreators::test_token(&key).map(|_| ()),
+        // RedFox has no lightweight token endpoint in the implemented adapter.
+        // Keep the state honest: a real public-link capture is the verification path.
+        "redfox" => Ok(()),
+        _ => unreachable!(),
+    };
+    if let Err(error) = tested {
+        save_provider_health(&app, &provider, provider_error_status(&error), Some(started.elapsed().as_millis()), Some(&error))?;
+        return Err(error);
     }
     store_provider_key(&provider, &key)?;
-    get_capture_provider_config()
+    let status = if provider == "redfox" { "CONFIGURED" } else { "AVAILABLE" };
+    save_provider_health(&app, &provider, status, Some(started.elapsed().as_millis()), None)?;
+    get_capture_provider_config(app)
 }
 
 #[tauri::command]
-async fn test_capture_provider(provider: String, url: String) -> Result<Value, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+async fn test_capture_provider(app: AppHandle, provider: String, url: String) -> Result<Value, String> {
+    let health_app = app.clone();
+    let health_provider = provider.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || -> Result<Value, String> {
         let started = Instant::now();
         if provider == "redfox" {
             let capture = redfox::capture(&redfox_key()?, url.trim())?;
             return Ok(json!({"ok":true,"provider":"redfox","latencyMs":started.elapsed().as_millis(),"content":capture.canonical}));
         }
-        if provider == "apify" { let result = apify::test_token(&apify_key()?)?; return Ok(json!({"ok":true,"provider":"apify","latencyMs":result["latencyMs"],"content":result})); }
-        if provider == "tikhub" { let result = tikhub::test_token(&tikhub_key()?)?; return Ok(json!({"ok":true,"provider":"tikhub","latencyMs":result["latencyMs"],"content":result})); }
-        if provider == "scrapecreators" { let result = scrapecreators::test_token(&scrapecreators_key()?)?; return Ok(json!({"ok":true,"provider":"scrapecreators","latencyMs":result["latencyMs"],"content":result})); }
+        if provider == "apify" { let result = apify::test_token(&apify_key()?)?; return Ok(json!({"ok":true,"provider":"apify","latencyMs":started.elapsed().as_millis(),"content":result})); }
+        if provider == "tikhub" { let result = tikhub::test_token(&tikhub_key()?)?; return Ok(json!({"ok":true,"provider":"tikhub","latencyMs":started.elapsed().as_millis(),"content":result})); }
+        if provider == "scrapecreators" { let result = scrapecreators::test_token(&scrapecreators_key()?)?; return Ok(json!({"ok":true,"provider":"scrapecreators","latencyMs":started.elapsed().as_millis(),"content":result})); }
         Err("当前只支持测试 RedFoxHub、Apify、TikHub 或 Scrape Creators".into())
-    }).await.map_err(|error| format!("采集服务后台任务失败：{error}"))?
+    }).await.map_err(|error| format!("采集服务后台任务失败：{error}"))?;
+    match &result {
+        Ok(value) => save_provider_health(&health_app, &health_provider, "AVAILABLE", value.get("latencyMs").and_then(Value::as_u64).map(|value| value as u128), None)?,
+        Err(error) => save_provider_health(&health_app, &health_provider, provider_error_status(error), None, Some(error))?,
+    }
+    result
+}
+
+struct ResearchExecutionMeta {
+    request_id: Option<String>,
+    source_key: String,
+    platform: String,
+    capability: String,
+    primary_provider: String,
+    fallback_providers: Vec<String>,
+}
+
+fn run_tikhub_research(
+    app: AppHandle,
+    query: &str,
+    period_days: i64,
+    context: Option<ResearchExecutionMeta>,
+) -> Result<Value, String> {
+    let captured_at = now();
+    let started = Instant::now();
+    let connection = db(&app)?;
+    let run_id = context.as_ref().map(|_| new_id("research-run"));
+    if let (Some(meta), Some(run_id)) = (context.as_ref(), run_id.as_deref()) {
+        external_intelligence::start_research_run(
+            &connection,
+            run_id,
+            meta.request_id.as_deref(),
+            &meta.source_key,
+            &meta.platform,
+            &meta.capability,
+            &meta.primary_provider,
+            &meta.fallback_providers,
+            &captured_at,
+        )?;
+    }
+    let cache_params = json!({"query":query.trim(),"periodDays":period_days});
+    let fingerprint = external_intelligence::research_fingerprint("tikhub", "TikTok", "VIDEO_SEARCH", &cache_params);
+    if let Some(cached) = external_intelligence::cached_research(&connection, &fingerprint, &captured_at)? {
+        if let Some(run_id) = run_id.as_deref() {
+            for (index, item_id) in cached.item_ids.iter().enumerate() {
+                external_intelligence::attach_research_evidence(
+                    &connection,
+                    &new_id("research-evidence"),
+                    run_id,
+                    item_id,
+                    "tikhub",
+                    "cache:tiktok/fetch_general_search_result",
+                    cached.urls.get(index).map(String::as_str).unwrap_or(""),
+                    &captured_at,
+                )?;
+            }
+            external_intelligence::record_provider_call_with_context(
+                &connection,
+                &new_id("provider-call"),
+                "tikhub",
+                "cache:tiktok/fetch_general_search_result",
+                None,
+                &captured_at,
+                true,
+                None,
+                cached.item_ids.len() as i64,
+                None,
+                Some(run_id),
+                Some("VIDEO_SEARCH"),
+                true,
+            )?;
+            external_intelligence::finish_research_run(&connection, run_id, "COMPLETED", true, &now(), None)?;
+        }
+        return Ok(json!({"items":cached.item_ids.len(),"itemIds":cached.item_ids,"urls":cached.urls,"provider":"tikhub","cacheHit":true,"researchRunId":run_id,"evidenceCount":run_id.as_deref().map(|id| external_intelligence::research_evidence_count(&connection, id)).transpose()?.unwrap_or(0)}));
+    }
+    let search = match tikhub::search_videos(&tikhub_key()?, query.trim(), period_days) {
+        Ok(value) => value,
+        Err(error) => {
+            if let Some(run_id) = run_id.as_deref() {
+                external_intelligence::record_provider_call_with_context(&connection, &new_id("provider-call"), "tikhub", "tiktok/fetch_general_search_result", None, &captured_at, false, None, 0, Some(&error), Some(run_id), Some("VIDEO_SEARCH"), false)?;
+                external_intelligence::finish_research_run(&connection, run_id, "FAILED", false, &now(), Some(&error))?;
+            }
+            save_provider_health(&app, "tikhub", provider_error_status(&error), Some(started.elapsed().as_millis()), Some(&error))?;
+            return Err(error);
+        }
+    };
+    let raw_path = data_dir(&app)?.join("external-intelligence/raw").join(format!("{}.json", new_id("tikhub-search")));
+    fs::write(&raw_path, serde_json::to_vec_pretty(&search.raw).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
+    let mut urls = Vec::new();
+    let mut item_ids = Vec::new();
+    for item in &search.items {
+        let item_id = external_intelligence::upsert_item(&connection, &new_id("external-item"), item, &captured_at, &timestamp_after_days(&captured_at, 1), &raw_path.to_string_lossy())?;
+        let url = item.get("canonicalUrl").and_then(Value::as_str).unwrap_or("").to_string();
+        if let Some(run_id) = run_id.as_deref() {
+            external_intelligence::attach_research_evidence(&connection, &new_id("research-evidence"), run_id, &item_id, "tikhub", &search.endpoint, &url, &captured_at)?;
+        }
+        item_ids.push(item_id);
+        urls.push(url);
+    }
+    external_intelligence::cache_research(&connection, &fingerprint, "tikhub", "TikTok", "VIDEO_SEARCH", &item_ids, &urls, &captured_at, &timestamp_after_days(&captured_at, 1))?;
+    external_intelligence::record_provider_call_with_context(&connection, &new_id("provider-call"), "tikhub", &search.endpoint, None, &captured_at, true, Some(search.status_code), item_ids.len() as i64, None, run_id.as_deref(), Some("VIDEO_SEARCH"), false)?;
+    if let Some(run_id) = run_id.as_deref() {
+        external_intelligence::finish_research_run(&connection, run_id, "COMPLETED", false, &now(), None)?;
+    }
+    save_provider_health(&app, "tikhub", "AVAILABLE", Some(started.elapsed().as_millis()), None)?;
+    Ok(json!({"items":item_ids.len(),"itemIds":item_ids,"urls":urls,"provider":"tikhub","cacheHit":false,"researchRunId":run_id,"evidenceCount":run_id.as_deref().map(|id| external_intelligence::research_evidence_count(&connection, id)).transpose()?.unwrap_or(0)}))
 }
 
 #[tauri::command]
 async fn search_tiktok_research(app: AppHandle, query: String, period_days: Option<i64>) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || run_tikhub_research(app, &query, period_days.unwrap_or(30), None))
+        .await
+        .map_err(|error| format!("TikHub 调研后台任务失败：{error}"))?
+}
+
+#[tauri::command]
+async fn execute_research_source(app: AppHandle, source: Value) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let captured_at = now();
-        let search = tikhub::search_videos(&tikhub_key()?, query.trim(), period_days.unwrap_or(30))?;
-        let raw_path = data_dir(&app)?.join("external-intelligence/raw").join(format!("{}.json", new_id("tikhub-search")));
-        fs::write(&raw_path, serde_json::to_vec_pretty(&search.raw).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
-        let connection = db(&app)?;
-        let mut urls = Vec::new();
-        for item in &search.items {
-            external_intelligence::upsert_item(&connection, &new_id("external-item"), item, &captured_at, &timestamp_after_days(&captured_at, 30), &raw_path.to_string_lossy())?;
-            if let Some(url) = item.get("canonicalUrl").and_then(Value::as_str) { urls.push(url.to_string()); }
+        let mode = source.get("mode").and_then(Value::as_str).unwrap_or("link");
+        let capability = source.get("capability").and_then(Value::as_str).unwrap_or("");
+        let primary = source
+            .get("primaryProvider")
+            .or_else(|| source.get("provider"))
+            .or_else(|| source.pointer("/sourceRoute/primaryProviderId"))
+            .and_then(Value::as_str)
+            .unwrap_or("auto");
+        if mode == "keyword_search" {
+            if capability != "VIDEO_SEARCH" || primary != "tikhub" {
+                return Err("该调研源没有匹配当前已实现的关键词搜索能力。".into());
+            }
+            return run_tikhub_research(
+                app,
+                source.get("query").and_then(Value::as_str).unwrap_or("TikTok"),
+                source.get("periodDays").and_then(Value::as_i64).unwrap_or(30),
+                Some(ResearchExecutionMeta {
+                    request_id: source.get("researchRequestId").and_then(Value::as_str).map(str::to_string),
+                    source_key: source.get("key").and_then(Value::as_str).unwrap_or("source").to_string(),
+                    platform: source.get("platform").and_then(Value::as_str).unwrap_or("TikTok").to_string(),
+                    capability: capability.to_string(),
+                    primary_provider: primary.to_string(),
+                    fallback_providers: source.get("fallbackProviders").or_else(|| source.pointer("/sourceRoute/fallbackProviderIds")).and_then(Value::as_array).map(|items| items.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default(),
+                }),
+            );
         }
-        external_intelligence::record_provider_call(&connection, &new_id("provider-call"), "tikhub", &search.endpoint, None, &captured_at, true, Some(search.status_code), search.items.len() as i64, None)?;
-        Ok(json!({"items":search.items.len(),"urls":urls}))
-    }).await.map_err(|error| format!("TikHub 调研后台任务失败：{error}"))?
+        let url = source.get("url").and_then(Value::as_str).ok_or("调研源缺少公开链接")?;
+        let mut providers = vec![primary.to_string()];
+        if let Some(fallbacks) = source
+            .get("fallbackProviders")
+            .or_else(|| source.pointer("/sourceRoute/fallbackProviderIds"))
+            .and_then(Value::as_array)
+        {
+            providers.extend(fallbacks.iter().filter_map(Value::as_str).map(str::to_string));
+        }
+        providers.dedup();
+        let captured_at = now();
+        let connection = db(&app)?;
+        let run_id = new_id("research-run");
+        let source_key = source.get("key").and_then(Value::as_str).unwrap_or("source");
+        let platform = source.get("platform").and_then(Value::as_str).unwrap_or("网页");
+        let fallback_providers = providers.iter().skip(1).cloned().collect::<Vec<_>>();
+        external_intelligence::start_research_run(
+            &connection,
+            &run_id,
+            source.get("researchRequestId").and_then(Value::as_str),
+            source_key,
+            platform,
+            if capability.is_empty() { "POST_DETAIL" } else { capability },
+            primary,
+            &fallback_providers,
+            &captured_at,
+        )?;
+        let mut errors = Vec::new();
+        for provider in providers {
+            match capture_link_blocking(app.clone(), url.to_string(), provider.clone()) {
+                Ok(record) if provider == "auto" || record.get("captureProvider").and_then(Value::as_str) == Some(provider.as_str()) => {
+                    let item_id = record.get("externalItemId").and_then(Value::as_str).filter(|id| !id.is_empty());
+                    if let Some(item_id) = item_id {
+                        external_intelligence::attach_research_evidence(
+                            &connection,
+                            &new_id("research-evidence"),
+                            &run_id,
+                            item_id,
+                            record.get("captureProvider").and_then(Value::as_str).unwrap_or(&provider),
+                            "capture_link",
+                            record.get("canonicalUrl").and_then(Value::as_str).unwrap_or(url),
+                            &captured_at,
+                        )?;
+                    }
+                    let effective_provider = record.get("captureProvider").and_then(Value::as_str).unwrap_or(&provider);
+                    external_intelligence::record_provider_call_with_context(
+                        &connection,
+                        &new_id("provider-call"),
+                        effective_provider,
+                        "capture_link",
+                        Some(source_key),
+                        &captured_at,
+                        true,
+                        None,
+                        item_id.is_some() as i64,
+                        None,
+                        Some(&run_id),
+                        Some(if capability.is_empty() { "POST_DETAIL" } else { capability }),
+                        false,
+                    )?;
+                    external_intelligence::finish_research_run(&connection, &run_id, "COMPLETED", false, &now(), None)?;
+                    return Ok(json!({"items":item_id.is_some() as i64,"itemIds":item_id.map(|id| vec![id]),"urls":[url],"provider":effective_provider,"cacheHit":false,"researchRunId":run_id,"evidenceCount":external_intelligence::research_evidence_count(&connection, &run_id)?}));
+                }
+                Ok(_) => errors.push(format!("{provider} 未返回采集结果")),
+                Err(error) => errors.push(format!("{provider}: {error}")),
+            }
+        }
+        let error = format!("所有已确认的 Provider 均未完成：{}", errors.join("；"));
+        external_intelligence::finish_research_run(&connection, &run_id, "FAILED", false, &now(), Some(&error))?;
+        Err(error)
+    })
+    .await
+    .map_err(|error| format!("调研执行后台任务失败：{error}"))?
 }
 
 #[tauri::command]
@@ -2839,7 +3382,7 @@ fn capture_link_blocking(app: AppHandle, url: String, provider: String) -> Resul
     let mut external_item_id = String::new();
     let mut capture_provider = "local".to_string();
     let mut local_metadata_path = String::new();
-    let redfox_result = if provider != "apify" && redfox::platform_for_url(&url).is_some() {
+    let redfox_result = if (provider == "redfox" || provider == "auto") && redfox::platform_for_url(&url).is_some() {
         match redfox_key() {
             Ok(key) => {
                 let endpoint = redfox::request_for_url(&url)
@@ -4749,8 +5292,10 @@ fn ask_chief_blocking(
 }
 
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_log::Builder::default().build())
+    let builder = tauri::Builder::default().plugin(tauri_plugin_log::Builder::default().build());
+    #[cfg(all(debug_assertions, feature = "webdriver"))]
+    let builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
+    builder
         .setup(|app| {
             db(&app.handle()).map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
             Ok(())
@@ -4764,6 +5309,7 @@ pub fn run() {
             configure_capture_provider,
             test_capture_provider,
             search_tiktok_research,
+            execute_research_source,
             list_external_items,
             cleanup_external_cache,
             list_records,
@@ -4772,7 +5318,9 @@ pub fn run() {
             get_record,
             save_record,
             delete_record,
+            delete_records,
             archive_record,
+            archive_records,
             restore_record,
             list_archived,
             search_records,
@@ -4907,6 +5455,7 @@ mod tests {
             "financialAccounts",
             "financialCategories",
             "financialTransactions",
+            "financialTransactionAllocations",
         ] {
             assert!(is_entity(entity));
         }
@@ -4940,7 +5489,7 @@ mod tests {
         let extracted = extract_notebook_content(&path, "txt").unwrap();
         assert!(extracted.contains("Shopify SEO research"));
         assert!(path.exists());
-        fs::remove_file(path).unwrap();
+        let _ = fs::remove_file(path);
     }
 
     #[test]
@@ -4969,13 +5518,8 @@ mod tests {
         let serialized = serde_json::to_string(&config).unwrap();
         assert!(config["providers"][0]["configured"].as_bool().unwrap());
         assert_eq!(config["providers"][1]["id"], "apify");
-        assert!(
-            config["providers"][1]["supportedPlatforms"]
-                .as_array()
-                .unwrap()
-                .len()
-                >= 8
-        );
+        assert_eq!(config["providers"][1]["supportedPlatforms"], json!(["网页"]));
+        assert_eq!(config["providers"][2]["capabilities"][0]["capability"], "VIDEO_SEARCH");
         assert!(!serialized.contains("apiKey"));
         assert!(!serialized.contains("REDFOX_API_KEY"));
         assert!(!serialized.contains("APIFY_API_TOKEN"));
@@ -5378,6 +5922,29 @@ mod tests {
         assert_eq!(count, 1);
     }
 
+    #[test]
+    fn completed_research_result_snapshot_rejects_evidence_rewrite_but_keeps_user_tags_editable() {
+        let existing = json!({"status":"COMPLETED","summary":"original","evidenceUrls":"https://example.com"});
+        assert!(validate_research_result_snapshot(&existing, &json!({"summary":"changed"})).is_err());
+        assert!(validate_research_result_snapshot(&existing, &json!({"tags":"市场"})).is_ok());
+    }
+
+    #[test]
+    fn legacy_research_migration_keeps_requests_in_separate_threads_and_preserves_result_text() {
+        let connection = relationship_test_db();
+        put(&connection, "researchRequests", "request-a", json!({"title":"需求 A","request":"A","status":"COMPLETED"}));
+        put(&connection, "researchRequests", "request-b", json!({"title":"需求 B","request":"B","status":"COMPLETED"}));
+        put(&connection, "researchResults", "result-a", json!({"title":"结果 A","researchRequestId":"request-a","status":"COMPLETED","summary":"不得改写的旧摘要","researchRunIds":"provider-run-a"}));
+        migrate_research_result_architecture(&connection).unwrap();
+        let request_a = record_by_id(&connection, "request-a").unwrap().unwrap();
+        let request_b = record_by_id(&connection, "request-b").unwrap().unwrap();
+        let result = record_by_id(&connection, "result-a").unwrap().unwrap();
+        assert_ne!(request_a["researchThreadId"], request_b["researchThreadId"]);
+        assert_eq!(result["summary"], "不得改写的旧摘要");
+        assert_eq!(result["researchThreadId"], request_a["researchThreadId"]);
+        assert!(result["researchRunId"].as_str().unwrap_or("").starts_with("researchRuns-"));
+    }
+
     fn relationship_test_db() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE records(id TEXT PRIMARY KEY,entity TEXT NOT NULL,data_json TEXT NOT NULL,title TEXT NOT NULL DEFAULT '',body TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL,archived_at TEXT,deleted_at TEXT); CREATE VIRTUAL TABLE records_fts USING fts5(id UNINDEXED,entity UNINDEXED,title,body); CREATE TABLE relations(id TEXT PRIMARY KEY,from_id TEXT NOT NULL,to_id TEXT NOT NULL,relation_type TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(from_id,to_id,relation_type));").unwrap();
@@ -5388,6 +5955,41 @@ mod tests {
         let normalized = normalize_record(connection, entity, &data, true).unwrap();
         write_record(connection, entity, id, &normalized, None).unwrap();
         sync_relations(connection, id, &normalized).unwrap();
+    }
+
+    #[test]
+    fn batch_record_actions_are_atomic_and_hide_records_from_active_queries() {
+        let connection = relationship_test_db();
+        put(&connection, "researchRequests", "request-a", json!({"title":"A"}));
+        put(&connection, "researchRequests", "request-b", json!({"title":"B"}));
+
+        assert!(apply_record_batch(
+            &connection,
+            vec!["request-a".into(), "missing".into()],
+            delete_record_from_connection,
+        )
+        .is_err());
+        assert!(record_by_id(&connection, "request-a").unwrap().is_some());
+
+        apply_record_batch(
+            &connection,
+            vec!["request-a".into(), "request-b".into(), "request-a".into()],
+            delete_record_from_connection,
+        )
+        .unwrap();
+        assert!(record_by_id(&connection, "request-a").unwrap().is_none());
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM records WHERE deleted_at IS NOT NULL", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM records_fts", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
 
     fn seed_work_chain(connection: &Connection) {
@@ -5615,6 +6217,63 @@ mod tests {
         assert_eq!(
             capture_platform("https://www.facebook.com/watch/1"),
             "Facebook"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires the user's configured TikHub credential and network access"]
+    fn live_tikhub_search_normalizes_and_persists_evidence() {
+        let search = tikhub::search_videos(&tikhub_key().expect("TikHub must be configured"), "plus size fashion", 30)
+            .expect("TikHub VIDEO_SEARCH should return a response");
+        assert!(!search.items.is_empty(), "TikHub returned no normalized items");
+
+        let connection = Connection::open_in_memory().expect("open test database");
+        connection
+            .execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL);")
+            .expect("create migration table");
+        external_intelligence::migrate(&connection, "1").expect("migrate external intelligence tables");
+        external_intelligence::start_research_run(
+            &connection,
+            "live-run",
+            Some("live-request"),
+            "tiktok-video-search",
+            "TikTok",
+            "VIDEO_SEARCH",
+            "tikhub",
+            &[],
+            "100",
+        )
+        .expect("start research run");
+
+        let mut item_ids = Vec::new();
+        for (index, item) in search.items.iter().enumerate() {
+            let item_id = external_intelligence::upsert_item(
+                &connection,
+                &format!("live-item-{index}"),
+                item,
+                "100",
+                "200",
+                "/tmp/jason-os-live-tikhub.json",
+            )
+            .expect("upsert normalized item");
+            external_intelligence::attach_research_evidence(
+                &connection,
+                &format!("live-evidence-{index}"),
+                "live-run",
+                &item_id,
+                "tikhub",
+                &search.endpoint,
+                item.get("canonicalUrl").and_then(Value::as_str).unwrap_or(""),
+                "100",
+            )
+            .expect("attach evidence");
+            item_ids.push(item_id);
+        }
+        external_intelligence::finish_research_run(&connection, "live-run", "COMPLETED", false, "101", None)
+            .expect("finish research run");
+        assert_eq!(
+            external_intelligence::research_evidence_count(&connection, "live-run").unwrap(),
+            item_ids.len() as i64
         );
     }
 }

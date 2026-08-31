@@ -1,5 +1,6 @@
 use rusqlite::{params, Connection};
 use serde_json::{json, Map, Value};
+use std::collections::HashMap;
 
 pub fn migrate(connection: &Connection, applied_at: &str) -> Result<(), String> {
     connection
@@ -27,6 +28,49 @@ pub fn migrate(connection: &Connection, applied_at: &str) -> Result<(), String> 
     connection
         .execute(
             "INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(8,?1)",
+            params![applied_at],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+pub fn migrate_allocations(connection: &Connection, applied_at: &str) -> Result<(), String> {
+    connection
+        .execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_finance_allocation_transaction
+               ON records(entity, json_extract(data_json,'$.transactionId'))
+               WHERE entity='financialTransactionAllocations';
+             CREATE INDEX IF NOT EXISTS idx_finance_allocation_project
+               ON records(entity, json_extract(data_json,'$.projectId'))
+               WHERE entity='financialTransactionAllocations';",
+        )
+        .map_err(|error| error.to_string())?;
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(14,?1)",
+            params![applied_at],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+pub fn migrate_budgets(connection: &Connection, applied_at: &str) -> Result<(), String> {
+    connection
+        .execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_finance_budget_project
+               ON records(entity, json_extract(data_json,'$.projectId'))
+               WHERE entity='financialBudgets';
+             CREATE INDEX IF NOT EXISTS idx_finance_budget_category
+               ON records(entity, json_extract(data_json,'$.categoryId'))
+               WHERE entity='financialBudgets';
+             CREATE INDEX IF NOT EXISTS idx_finance_budget_period
+               ON records(entity, json_extract(data_json,'$.periodStart'), json_extract(data_json,'$.periodEnd'))
+               WHERE entity='financialBudgets';",
+        )
+        .map_err(|error| error.to_string())?;
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(15,?1)",
             params![applied_at],
         )
         .map_err(|error| error.to_string())?;
@@ -224,7 +268,98 @@ pub fn normalize(entity: &str, data: &mut Value) -> Result<(), String> {
                 return Err("余额调整必须选择增加或减少".into());
             }
         }
+        "financialTransactionAllocations" => {
+            object
+                .entry("title")
+                .or_insert_with(|| Value::String("项目分摊".into()));
+            let snapshot = Value::Object(object.clone());
+            if string(&snapshot, "transactionId").is_empty() {
+                return Err("项目分摊必须选择财务流水".into());
+            }
+            if string(&snapshot, "projectId").is_empty() {
+                return Err("项目分摊必须选择项目".into());
+            }
+            let amount = parse_integer(&snapshot, "amountMinor")?.ok_or("项目分摊必须填写基础币金额")?;
+            if amount <= 0 {
+                return Err("项目分摊金额必须大于零".into());
+            }
+        }
+        "financialBudgets" => {
+            object
+                .entry("baseCurrency")
+                .or_insert_with(|| Value::String("CNY".into()));
+            object
+                .entry("status")
+                .or_insert_with(|| Value::String("ACTIVE".into()));
+            let snapshot = Value::Object(object.clone());
+            if string(&snapshot, "title").is_empty() {
+                return Err("预算必须填写名称".into());
+            }
+            let amount = parse_integer(&snapshot, "amountMinor")?.ok_or("预算必须填写基础币金额")?;
+            if amount <= 0 {
+                return Err("预算金额必须大于零".into());
+            }
+            let start = string(&snapshot, "periodStart");
+            let end = string(&snapshot, "periodEnd");
+            if start.is_empty() || end.is_empty() {
+                return Err("预算必须填写开始和结束日期".into());
+            }
+            if start > end {
+                return Err("预算结束日期不能早于开始日期".into());
+            }
+        }
         _ => {}
+    }
+    Ok(())
+}
+
+pub fn validate_allocation(
+    connection: &Connection,
+    entity: &str,
+    allocation_id: &str,
+    allocation: &Value,
+) -> Result<(), String> {
+    if entity != "financialTransactionAllocations" {
+        return Ok(());
+    }
+    let transaction_id = string(allocation, "transactionId");
+    let transaction_raw: String = connection
+        .query_row(
+            "SELECT data_json FROM records WHERE id=?1 AND entity='financialTransactions' AND archived_at IS NULL AND deleted_at IS NULL",
+            params![transaction_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| "项目分摊关联的财务流水不存在".to_string())?;
+    let transaction = serde_json::from_str::<Value>(&transaction_raw)
+        .map_err(|_| "项目分摊关联的财务流水数据无效".to_string())?;
+    if transaction.get("status").and_then(Value::as_str).unwrap_or("POSTED") == "VOIDED" {
+        return Err("不能为已作废财务流水创建项目分摊".into());
+    }
+    if ["TRANSFER", "ADJUSTMENT"].contains(&string(&transaction, "transactionType").as_str()) {
+        return Err("转账和余额调整不能分摊到项目".into());
+    }
+    let transaction_amount = parse_integer(&transaction, "baseAmountMinor")?
+        .or(parse_integer(&transaction, "amountMinor")?)
+        .unwrap_or(0);
+    let allocation_amount = parse_integer(allocation, "amountMinor")?.unwrap_or(0);
+    let mut statement = connection
+        .prepare(
+            "SELECT data_json FROM records
+             WHERE entity='financialTransactionAllocations' AND archived_at IS NULL AND deleted_at IS NULL
+               AND id<>?1 AND json_extract(data_json,'$.transactionId')=?2",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params![allocation_id, transaction_id], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?;
+    let mut allocated = allocation_amount;
+    for row in rows {
+        let raw = row.map_err(|error| error.to_string())?;
+        let existing = serde_json::from_str::<Value>(&raw).unwrap_or_else(|_| json!({}));
+        allocated += parse_integer(&existing, "amountMinor")?.unwrap_or(0);
+    }
+    if allocated > transaction_amount {
+        return Err("项目分摊合计不能超过财务流水基础币金额".into());
     }
     Ok(())
 }
@@ -305,13 +440,41 @@ pub fn freeze_decision_snapshot(
 
 pub fn summary(connection: &Connection, project_id: Option<&str>) -> Result<Value, String> {
     let mut statement = connection.prepare(
-        "SELECT entity,data_json FROM records WHERE archived_at IS NULL AND deleted_at IS NULL AND entity IN ('financialAccounts','financialTransactions','results','timeLogs')"
+        "SELECT id,entity,data_json FROM records WHERE archived_at IS NULL AND deleted_at IS NULL AND entity IN ('financialTransactions','financialTransactionAllocations','results','timeLogs','tasks')"
     ).map_err(|error| error.to_string())?;
     let rows = statement
         .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
         })
         .map_err(|error| error.to_string())?;
+    let mut records = Vec::new();
+    for row in rows {
+        let (id, entity, raw) = row.map_err(|error| error.to_string())?;
+        records.push((id, entity, serde_json::from_str::<Value>(&raw).unwrap_or_else(|_| json!({}))));
+    }
+    let mut allocations: HashMap<String, Vec<Value>> = HashMap::new();
+    let mut task_projects: HashMap<String, String> = HashMap::new();
+    for (id, entity, data) in &records {
+        if entity == "financialTransactionAllocations" {
+            let transaction_id = string(data, "transactionId");
+            if !transaction_id.is_empty() {
+                allocations.entry(transaction_id).or_default().push(data.clone());
+            }
+        }
+        if entity == "tasks" {
+            let task_project = string(data, "projectId");
+            if !id.is_empty() && !task_project.is_empty() {
+                task_projects.insert(id.clone(), task_project);
+            }
+        }
+    }
+    let belongs_to_project = |data: &Value, expected: &str| {
+        string(data, "projectId") == expected
+            || task_projects
+                .get(&string(data, "taskId"))
+                .map(String::as_str)
+                == Some(expected)
+    };
     let mut income = 0i128;
     let mut expense = 0i128;
     let mut cash_net = 0i128;
@@ -319,14 +482,7 @@ pub fn summary(connection: &Connection, project_id: Option<&str>) -> Result<Valu
     let mut transaction_count = 0i64;
     let mut outcome_count = 0i64;
     let mut verified_outcomes = 0i64;
-    for row in rows {
-        let (entity, raw) = row.map_err(|error| error.to_string())?;
-        let data = serde_json::from_str::<Value>(&raw).unwrap_or_else(|_| json!({}));
-        if let Some(project_id) = project_id {
-            if data.get("projectId").and_then(Value::as_str) != Some(project_id) {
-                continue;
-            }
-        }
+    for (id, entity, data) in records {
         match entity.as_str() {
             "financialTransactions"
                 if data
@@ -335,9 +491,24 @@ pub fn summary(connection: &Connection, project_id: Option<&str>) -> Result<Valu
                     .unwrap_or("POSTED")
                     == "POSTED" =>
             {
-                let amount = parse_integer(&data, "baseAmountMinor")?
+                let total_amount = parse_integer(&data, "baseAmountMinor")?
                     .or(parse_integer(&data, "amountMinor")?)
                     .unwrap_or(0);
+                let amount = if let Some(project_id) = project_id {
+                    let splits = allocations.get(&id);
+                    if let Some(splits) = splits.filter(|splits| !splits.is_empty()) {
+                        splits.iter().filter(|allocation| string(allocation, "projectId") == project_id).try_fold(0i128, |total, allocation| Ok::<i128, String>(total + parse_integer(allocation, "amountMinor")?.unwrap_or(0)))?
+                    } else if belongs_to_project(&data, project_id) {
+                        total_amount
+                    } else {
+                        0
+                    }
+                } else {
+                    total_amount
+                };
+                if amount <= 0 {
+                    continue;
+                }
                 transaction_count += 1;
                 match string(&data, "transactionType").as_str() {
                     "INCOME" => {
@@ -363,13 +534,13 @@ pub fn summary(connection: &Connection, project_id: Option<&str>) -> Result<Valu
                     _ => {}
                 }
             }
-            "timeLogs" => {
+            "timeLogs" if project_id.map(|id| belongs_to_project(&data, id)).unwrap_or(true) => {
                 minutes += data
                     .get("durationMinutes")
                     .and_then(Value::as_i64)
                     .unwrap_or(0)
             }
-            "results" => {
+            "results" if project_id.map(|id| belongs_to_project(&data, id)).unwrap_or(true) => {
                 outcome_count += 1;
                 if data.get("evidenceStatus").and_then(Value::as_str) == Some("VERIFIED") {
                     verified_outcomes += 1;
@@ -435,6 +606,74 @@ mod tests {
         assert_eq!(version, 1);
         assert_eq!(currency, "CNY");
         assert_eq!(indexes, 3);
+    }
+
+    #[test]
+    fn migration_v14_creates_allocation_indexes() {
+        let connection = db();
+        migrate_allocations(&connection, "2").unwrap();
+        let version: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version=14",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let indexes: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'idx_finance_allocation_%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, 1);
+        assert_eq!(indexes, 2);
+    }
+
+    #[test]
+    fn budget_migration_and_validation_require_a_positive_date_bound_budget() {
+        let connection = db();
+        migrate_budgets(&connection, "2").unwrap();
+        let version: i64 = connection.query_row("SELECT COUNT(*) FROM schema_migrations WHERE version=15", [], |row| row.get(0)).unwrap();
+        assert_eq!(version, 1);
+        let mut valid = json!({"title":"广告预算","amountMinor":"10000","periodStart":"2026-08-01","periodEnd":"2026-08-31"});
+        normalize("financialBudgets", &mut valid).unwrap();
+        assert_eq!(valid["baseCurrency"], "CNY");
+        let mut invalid = json!({"title":"错误预算","amountMinor":"0","periodStart":"2026-09-01","periodEnd":"2026-08-31"});
+        assert!(normalize("financialBudgets", &mut invalid).is_err());
+    }
+
+    #[test]
+    fn allocation_cannot_exceed_transaction_amount() {
+        let connection = db();
+        connection.execute(
+            "INSERT INTO records(id,entity,data_json,title,body,created_at,updated_at) VALUES('tx','financialTransactions',?1,'','', '1','1')",
+            params![json!({"status":"POSTED","transactionType":"EXPENSE","baseAmountMinor":"10000"}).to_string()],
+        ).unwrap();
+        connection.execute(
+            "INSERT INTO records(id,entity,data_json,title,body,created_at,updated_at) VALUES('split-1','financialTransactionAllocations',?1,'','', '1','1')",
+            params![json!({"transactionId":"tx","projectId":"p1","amountMinor":"6000"}).to_string()],
+        ).unwrap();
+        let allocation = json!({"transactionId":"tx","projectId":"p2","amountMinor":"5000"});
+        assert!(validate_allocation(&connection, "financialTransactionAllocations", "split-2", &allocation).is_err());
+    }
+
+    #[test]
+    fn project_summary_uses_allocations_without_changing_global_total() {
+        let connection = db();
+        connection.execute(
+            "INSERT INTO records(id,entity,data_json,title,body,created_at,updated_at) VALUES('tx','financialTransactions',?1,'','', '1','1')",
+            params![json!({"status":"POSTED","transactionType":"EXPENSE","baseAmountMinor":"10000"}).to_string()],
+        ).unwrap();
+        for (id, project_id, amount) in [("split-1", "p1", "4000"), ("split-2", "p2", "6000")] {
+            connection.execute(
+                "INSERT INTO records(id,entity,data_json,title,body,created_at,updated_at) VALUES(?1,'financialTransactionAllocations',?2,'','', '1','1')",
+                params![id, json!({"transactionId":"tx","projectId":project_id,"amountMinor":amount}).to_string()],
+            ).unwrap();
+        }
+        assert_eq!(summary(&connection, Some("p1")).unwrap()["expenseMinor"], "4000");
+        assert_eq!(summary(&connection, Some("p2")).unwrap()["expenseMinor"], "6000");
+        assert_eq!(summary(&connection, None).unwrap()["expenseMinor"], "10000");
     }
 
     #[test]
