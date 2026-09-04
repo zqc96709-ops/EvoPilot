@@ -86,7 +86,7 @@ if (typeof window !== 'undefined') {
 
 export const api = {
   async initialize() { await loadSyncV1Config(); if (browser()) { const db = await webDb(); let legacy: RecordData[] = []; try { legacy = JSON.parse(localStorage.getItem(key) || '[]') } catch { legacy = [] }; await db.importLegacy(legacy); await syncRecords().catch(() => {}); return { ok: true } }; const result = await invoke('initialize_database'); await syncRecords().catch(() => {}); return result },
-  async list(entity: Entity | 'all'): Promise<RecordData[]> { return browser() ? (await (await webDb()).records()).filter((record) => active(record) && (entity === 'all' || record.entity === entity)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)) : invoke('list_records', { entity }) },
+  async list(entity: Entity | 'all'): Promise<RecordData[]> { return browser() ? (await (await webDb()).records()).filter((record) => active(record) && (entity === 'all' || record.entity === entity)).sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''))) : invoke('list_records', { entity }) },
   async get(id: string): Promise<RecordData | null> { return browser() ? (await (await webDb()).record(id)) : invoke('get_record', { id }) },
   async save(entity: Entity, data: Partial<RecordData>): Promise<RecordData> {
     if (!browser()) { const saved = await invoke<RecordData>('save_record', { entity, data }); queueSyncRecords(); return saved }

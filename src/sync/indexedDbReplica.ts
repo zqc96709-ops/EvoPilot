@@ -5,6 +5,18 @@ import type { SyncReplica } from './client'
 const requestValue = <T>(request: IDBRequest<T>) => new Promise<T>((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error) })
 const transactionDone = (transaction: IDBTransaction) => new Promise<void>((resolve, reject) => { transaction.oncomplete = () => resolve(); transaction.onerror = () => reject(transaction.error); transaction.onabort = () => reject(transaction.error) })
 
+export const recordFromSyncChange = (change: SyncChange): RecordData => {
+  const syncedAt = change.createdAt || new Date(0).toISOString()
+  return {
+    ...change.payload,
+    id: change.entityId,
+    entity: change.entityType,
+    createdAt: String(change.payload.createdAt || syncedAt),
+    updatedAt: String(change.payload.updatedAt || syncedAt),
+    revision: change.serverRevision,
+  } as RecordData
+}
+
 export class IndexedDbReplica implements SyncReplica {
   private db: IDBDatabase
   private constructor(db: IDBDatabase) { this.db = db }
@@ -25,7 +37,10 @@ export class IndexedDbReplica implements SyncReplica {
     transaction.objectStore('outbox').put(mutation)
     await transactionDone(transaction)
   }
-  async records() { return requestValue(this.db.transaction('records').objectStore('records').getAll()) as Promise<RecordData[]> }
+  async records() {
+    const records = await requestValue(this.db.transaction('records').objectStore('records').getAll()) as RecordData[]
+    return records.map((record) => ({ ...record, createdAt: String(record.createdAt || record.updatedAt || ''), updatedAt: String(record.updatedAt || record.createdAt || '') }))
+  }
   async record(id: string) { return (await requestValue(this.db.transaction('records').objectStore('records').get(id)) as RecordData | undefined) || null }
   async importLegacy(records: RecordData[]) {
     if (!records.length || (await this.records()).length) return
@@ -55,7 +70,7 @@ export class IndexedDbReplica implements SyncReplica {
   async conflictCount() { return requestValue(this.db.transaction('conflicts').objectStore('conflicts').count()) }
   async apply(changes: SyncChange[], cursor: number) {
     const transaction = this.db.transaction(['records', 'meta'], 'readwrite')
-    for (const change of changes) transaction.objectStore('records').put({ ...change.payload, id: change.entityId, entity: change.entityType, revision: change.serverRevision })
+    for (const change of changes) transaction.objectStore('records').put(recordFromSyncChange(change))
     transaction.objectStore('meta').put(cursor, 'serverCursor')
     await transactionDone(transaction)
   }
