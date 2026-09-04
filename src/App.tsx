@@ -8,6 +8,11 @@ import { mentalModelCategories, modelCategoryLabel, modelDefinition, modelSource
 import { runDecisionEngine, impactLabel, urgencyLabel, reversibilityLabel, type DecisionAnalysis } from './decisionIntelligence'
 import { accountBalanceMinor, decimalToMinor, financeDashboard, financialFacts, formatMoneyMinor, minorToDecimal, projectEconomics } from './finance'
 import CommandCenterView from './CommandCenterView'
+import FinanceIntelligenceView from './FinanceIntelligenceView'
+import TodayCockpitView from './TodayCockpitView'
+import TimeIntelligenceView from './TimeIntelligenceView'
+import CognitiveCenterView from './CognitiveCenterView'
+import type { CognitivePeriod, CognitiveTab } from './cognitiveIntelligence'
 import { type ExternalItem } from './externalIntelligence'
 import { createResearchPlan, getConfiguredProviders, parseResearchSources, resolveResearchSources, type ResearchPlan, type ResearchSourcePlan } from './researchPlanner'
 import { calendarDateKey, taskCalendarItems, type CalendarScope } from './calendar'
@@ -21,11 +26,10 @@ import {
   type Entity, type EntityConfig, type FieldOption, type RecordData,
 } from './model'
 
-type View = 'command' | 'today' | 'tasks' | 'time' | 'projects' | 'outcomes' | 'finance' | 'notebook' | 'knowledge' | 'reviews' | 'insights' | 'principles' | 'mentalModels' | 'decisions' | 'events' | 'people' | 'timeline' | 'aiNews' | 'settings' | 'profile'
+type View = 'command' | 'today' | 'tasks' | 'time' | 'projects' | 'outcomes' | 'finance' | 'notebook' | 'cognition' | 'knowledge' | 'reviews' | 'insights' | 'principles' | 'mentalModels' | 'decisions' | 'events' | 'people' | 'timeline' | 'aiNews' | 'settings' | 'profile'
 type EditState = { config: EntityConfig; record?: RecordData; initial?: Partial<RecordData> }
 type Notice = { text: string; tone?: 'success' | 'danger' }
 type TaskView = 'list' | 'kanban' | 'matrix' | 'calendar'
-type TimeRange = 'day' | 'week' | 'month'
 type ThemePreference = 'dark' | 'light' | 'auto'
 const resolvedTheme = (theme: ThemePreference) => theme === 'auto' ? (new Date().getHours() >= 7 && new Date().getHours() < 19 ? 'light' : 'dark') : theme
 type ProfileSection = 'basic' | 'personal' | 'ai'
@@ -43,15 +47,6 @@ const formatMinutes = (minutes: number) => minutes < 60 ? `${Math.round(minutes)
 const optionParts = (option: FieldOption) => typeof option === 'string' ? { value: option, label: option } : option
 const defaultStatus = (entity: Entity) => ({ tasks: 'todo', goals: 'active', projects: 'active', hypotheses: 'untested', experiments: 'planned', decisions: 'pending', inbox: 'unprocessed', notes: 'INBOX', notebookFiles: 'ACTIVE', results: 'PLANNED', deliverables: 'DRAFT', resultPackages: 'ACTIVE', workflows: 'ACTIVE', workflowVersions: 'EXPERIMENTAL', workflowRuns: 'PLANNED', workflowRunSteps: 'PLANNED', workflowImprovementProposals: 'DRAFT', financialAccounts: 'ACTIVE', financialCategories: 'ACTIVE', financialTransactions: 'POSTED' } as Partial<Record<Entity, string>>)[entity] || 'active'
 const tagsFor = (record: RecordData) => Array.isArray(record.tags) ? record.tags.map(String).map((tag) => tag.trim()).filter(Boolean) : String(record.tags || '').split(',').map((tag) => tag.trim()).filter(Boolean)
-const matchesRange = (record: RecordData, range: TimeRange) => {
-  const value = record.startAt || recordDate(record)
-  const date = new Date(Number(value) || String(value))
-  if (Number.isNaN(date.getTime())) return false
-  const now = new Date(); const start = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-  if (range === 'day') return localDateKey(date) === localDateKey(now)
-  if (range === 'week') { const monday = new Date(start); monday.setDate(start.getDate() - ((start.getDay() + 6) % 7)); return date >= monday && date <= now }
-  return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth()
-}
 
 type PaneSizes = { left: number; right: number }
 const useThreePaneResize = (storageKey: string, defaults: PaneSizes) => {
@@ -115,6 +110,7 @@ function App() {
   const [decisionModelIds, setDecisionModelIds] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem('jason-os-decision-model-ids') || '[]') } catch { return [] } })
   const [backups, setBackups] = useState<BackupInfo[]>([])
   const [profileSection, setProfileSection] = useState<ProfileSection>('basic')
+  const [cognitivePeriod, setCognitivePeriod] = useState<CognitivePeriod>('30d')
   const noticeTimer = useRef<number | undefined>(undefined)
 
   const refresh = async () => {
@@ -188,6 +184,7 @@ function App() {
   const archiveRecord = async (id: string) => { await api.archive(id); await refresh(); setDetailId(null); if (selectedProjectId === id) setSelectedProjectId(null); showNotice('已归档，可在设置中恢复。') }
   const restoreRecord = async (id: string) => { await api.restore(id); await refresh(); showNotice('记录已恢复。') }
   const completeTask = async (task: RecordData) => { await api.save('tasks', { ...task, status: 'completed', completedAt: new Date().toISOString() }); await refresh(); showNotice('任务已完成。') }
+  const restoreTask = async (task: RecordData) => { await api.save('tasks', { ...task, status: 'todo', completedAt: '' }); await refresh(); showNotice('任务已恢复为待办。') }
   const startTimer = (context?: Partial<RecordData>) => {
     if (running) { showNotice('已有计时正在运行。', 'danger'); return }
     setTimerStart(context || {})
@@ -275,11 +272,16 @@ function App() {
     { group: '核心', items: [{ view: 'command', label: '指挥中心', icon: '⌂' }] },
     { group: '聚焦', items: [{ view: 'today', label: '今天', icon: '◉' }, { view: 'tasks', label: '任务', icon: '□' }, { view: 'time', label: '时间', icon: '◷' }] },
     { group: '工作', items: [{ view: 'projects', label: '项目', icon: '◈' }, { view: 'outcomes', label: '成果', icon: '✓' }, { view: 'finance', label: '财务', icon: '¥' }] },
-    { group: '记忆', items: [{ view: 'knowledge', label: '知识', icon: '⌘' }, { view: 'reviews', label: '复盘', icon: '◑' }, { view: 'insights', label: '洞见', icon: '✦' }, { view: 'principles', label: '原则', icon: '∴' }, { view: 'mentalModels', label: '思维模型', icon: '◇' }] },
+    { group: '认知', items: [{ view: 'cognition', label: '认知中心', icon: '⌘' }] },
     { group: '决策', items: [{ view: 'decisions', label: '决策日志', icon: '◆' }] },
     { group: '情境', items: [{ view: 'events', label: '事件', icon: '●' }, { view: 'people', label: '人物', icon: '♙' }, { view: 'timeline', label: '时间线', icon: '⌁' }] },
   ]
   const pageTitle = view === 'profile' ? '我的档案' : view === 'notebook' ? '收纳箱' : view === 'aiNews' ? 'AI News Radar' : nav.flatMap((group) => group.items).find((item) => item.view === view)?.label || (view === 'settings' ? '设置' : 'Jason OS')
+  const cognitiveTab: CognitiveTab = ({ insights: 'insights', reviews: 'reviews', knowledge: 'knowledge', principles: 'principles', mentalModels: 'mentalModels' } as Partial<Record<View, CognitiveTab>>)[view] || 'overview'
+  const cognitiveEntity = cognitiveTab === 'overview' ? 'insights' : cognitiveTab
+  const cognitiveDomainContent = cognitiveTab === 'overview' ? undefined : cognitiveTab === 'mentalModels'
+    ? <MentalModelsView records={records} onOpen={openRecord} onCreate={openCreate} onSaveDecision={saveDecisionAnalysis} decisionModelIds={decisionModelIds} onAddModel={addModelToDecision} onRemoveModel={removeModelFromDecision} />
+    : <MemoryView entity={cognitiveTab as Entity} records={records} onOpen={openRecord} onCreate={openCreate} />
 
   const effectiveSidebarOpen = sidebarOpen || sidebarPeek
   const toggleSidebar = () => { setSidebarPeek(false); setSidebarOpen((open) => !open) }
@@ -288,28 +290,27 @@ function App() {
     if (event.clientX <= 14) setSidebarPeek(true)
     else if (sidebarPeek && event.clientX > 236) setSidebarPeek(false)
   }
-  return <div className={`app-shell ${activeTheme === 'light' ? 'light-theme' : 'dark-theme'} ${effectiveSidebarOpen ? "" : "sidebar-collapsed"} ${sidebarPeek ? "sidebar-peek" : ""} ${aiOpen ? "ai-open" : ""} ${aiResizing ? "ai-resizing" : ""}`} style={{ "--ai-width": `${aiWidth}px` } as React.CSSProperties} onPointerMove={handleShellPointer}>
+  return <div className={`app-shell ${view === 'today' ? 'today-route' : ''} ${view === 'finance' ? 'finance-route' : ''} ${view === 'time' ? 'time-route' : ''} ${activeTheme === 'light' ? 'light-theme' : 'dark-theme'} ${effectiveSidebarOpen ? "" : "sidebar-collapsed"} ${sidebarPeek ? "sidebar-peek" : ""} ${aiOpen ? "ai-open" : ""} ${aiResizing ? "ai-resizing" : ""}`} style={{ "--ai-width": `${aiWidth}px` } as React.CSSProperties} onPointerMove={handleShellPointer}>
     <GlobalHeader
       query={searchQuery} onQuery={(value) => { setSearchQuery(value); setSearchOpen(true) }} onSearchFocus={() => setSearchOpen(true)}
       sidebarOpen={effectiveSidebarOpen} onToggleSidebar={toggleSidebar} onProfile={(section) => { setProfileSection(section); setView('profile') }} onSettings={() => setView('settings')} onAiNews={() => setView('aiNews')} aiNewsActive={view === 'aiNews'} onAi={() => setAiOpen(true)} onPalette={() => setPaletteOpen(true)} aiConfigured={Boolean(aiConfig?.configured)}
     />
     <aside className="sidebar">
       <button className="quick-capture" onClick={() => setView('notebook')}><span>▱</span><div><strong>收纳箱</strong><small>收集与笔记 · ⌘ ⇧ Space</small></div></button>
-      <nav>{nav.map((group) => <section key={group.group}><p>{group.group}</p>{group.items.map((item) => <button key={item.view} className={view === item.view ? 'active' : ''} onClick={() => { setView(item.view); if (item.view !== 'projects') setSelectedProjectId(null) }}><span>{item.icon}</span>{item.label}</button>)}</section>)}</nav>
+      <nav>{nav.map((group) => <section key={group.group}><p>{group.group}</p>{group.items.map((item) => <Fragment key={item.view}><button className={item.view === 'cognition' ? ['cognition', 'knowledge', 'reviews', 'insights', 'principles', 'mentalModels'].includes(view) ? 'active' : '' : view === item.view ? 'active' : ''} onClick={() => { setView(item.view); if (item.view !== 'projects') setSelectedProjectId(null) }}><span>{item.icon}</span>{item.label}</button>{item.view === 'cognition' && ['cognition', 'knowledge', 'reviews', 'insights', 'principles', 'mentalModels'].includes(view) && <div className="cognition-sidebar-tabs">{([['cognition', '总览'], ['insights', '洞见'], ['reviews', '复盘'], ['knowledge', '知识'], ['principles', '原则'], ['mentalModels', '思维模型']] as Array<[View, string]>).map(([target, label]) => <button key={target} className={(target === 'cognition' ? view === 'cognition' : view === target) ? 'active' : ''} onClick={() => setView(target)}>— <span>{label}</span></button>)}</div>}</Fragment>)}</section>)}</nav>
       <div className="sidebar-bottom-actions"><button className={`running-card ${running ? 'live' : ''}`} onClick={() => running ? stopTimer() : startTimer()}>{running ? <><span className="pulse" /><div><strong>{titleFor(running)}</strong><small>点击停止并记录时间</small></div></> : <><span>▶</span><div><strong>开始计时</strong><small>记录现实投入</small></div></>}</button><button className={`sidebar-settings ${view === 'settings' ? 'active' : ''}`} onClick={() => setView('settings')}><span>⚙</span>设置与数据</button></div>
     </aside>
     <main className="main-content">
-      {!['notebook', 'command'].includes(view) && <div className="page-heading"><div><p className="eyebrow">JASON OS · PERSONAL OPERATING SYSTEM</p><h1>{pageTitle}</h1></div>{!['command', 'aiNews', 'timeline', 'outcomes', 'finance', 'profile', 'settings'].includes(view) && <button className="button primary" onClick={() => openCreate(viewEntity(view))}>＋ 新建</button>}</div>}
+      {!['notebook', 'command', 'today', 'time', 'cognition', 'knowledge', 'reviews', 'insights', 'principles', 'mentalModels'].includes(view) && <div className="page-heading"><div><p className="eyebrow">JASON OS · PERSONAL OPERATING SYSTEM</p><h1>{pageTitle}</h1></div>{!['command', 'aiNews', 'timeline', 'outcomes', 'finance', 'profile', 'settings'].includes(view) && <button className="button primary" onClick={() => openCreate(viewEntity(view))}>＋ 新建</button>}</div>}
       {view === 'command' && <CommandCenter records={records} onOpen={openRecord} onView={setView} onRefresh={refresh} />}
-      {view === 'today' && <TodayView records={records} running={running} onOpen={openRecord} onEdit={(record) => setEditing({ config: configFor(record.entity), record })} onComplete={completeTask} onStartTimer={startTimer} onStopTimer={stopTimer} onCreate={openCreate} />}
+      {view === 'today' && <TodayView records={records} running={running} onOpen={openRecord} onComplete={completeTask} onRestore={restoreTask} onStartTimer={startTimer} onStopTimer={stopTimer} onCreate={openCreate} />}
       {view === 'tasks' && <TasksView records={records} onOpen={openRecord} onEdit={(record) => setEditing({ config: configFor('tasks'), record })} onComplete={completeTask} onStartTimer={startTimer} onCreate={(initial) => openCreate('tasks', initial)} />}
-      {view === 'time' && <TimeView records={records} running={running} onStartTimer={startTimer} onStopTimer={stopTimer} onEdit={(record) => setEditing({ config: configFor('timeLogs'), record })} onCreate={() => openCreate('timeLogs', { startAt: nowInput() })} />}
+      {view === 'time' && <TimeView records={records} running={running} onStartTimer={startTimer} onStopTimer={stopTimer} onOpen={openRecord} onEdit={(record) => setEditing({ config: configFor('timeLogs'), record })} onCreate={(initial) => openCreate('timeLogs', { startAt: nowInput(), ...initial })} />}
       {view === 'projects' && <ProjectsView records={records} selectedId={selectedProjectId} onSelect={setSelectedProjectId} onOpen={openRecord} onCreate={openCreate} onEdit={(record) => setEditing({ config: configFor(record.entity), record })} onStartTimer={startTimer} onAiAnalyze={(question, context) => { setAiOpen(true); void sendAi(question, context) }} />}
       {view === 'outcomes' && <OutcomesView records={records} onOpen={openRecord} onCreate={openCreate} />}
-      {view === 'finance' && <FinanceView records={records} onOpen={openRecord} onCreate={openCreate} />}
+      {view === 'finance' && <FinanceView records={records} onOpen={openRecord} onCreate={openCreate} onRefresh={() => void refresh()} onAskAi={() => void sendAi('基于当前财务总览，最近最值得 CEO 关注的财务问题是什么？请只基于已聚合的趋势、项目资本配置与关注事项解释。')} />}
       {view === 'notebook' && <NotebookView records={records} externalItems={externalItems} captureConfig={captureConfig} onOpen={openRecord} onRefresh={refresh} onNotice={showNotice} onAi={(question, context) => { setAiOpen(true); void sendAi(question, context) }} />}
-      {(['knowledge', 'reviews', 'insights', 'principles'] as View[]).includes(view) && <MemoryView entity={view as Entity} records={records} onOpen={openRecord} onCreate={openCreate} />}
-      {view === 'mentalModels' && <MentalModelsView records={records} onOpen={openRecord} onCreate={openCreate} onSaveDecision={saveDecisionAnalysis} decisionModelIds={decisionModelIds} onAddModel={addModelToDecision} onRemoveModel={removeModelFromDecision} />}
+      {(['cognition', 'knowledge', 'reviews', 'insights', 'principles', 'mentalModels'] as View[]).includes(view) && <CognitiveCenterView records={records} tab={cognitiveTab} period={cognitivePeriod} onPeriod={setCognitivePeriod} onTab={(tab) => setView(tab === 'overview' ? 'cognition' : tab)} onOpen={openRecord} onCreate={() => openCreate(cognitiveEntity as Entity)} onAi={() => { setAiOpen(true); if (aiConfig?.configured) void sendAi('基于当前认知中心的真实记录，哪些事项值得我优先复盘、验证或沉淀？不要自动修改任何认知状态。') }} domainContent={cognitiveDomainContent} />}
       {view === 'decisions' && <DecisionsView records={records} onOpen={openRecord} onCreate={() => openCreate('decisions', { date: today(), status: 'pending' })} />}
       {(view === 'events' || view === 'people') && <ContextView entity={view} records={records} onOpen={openRecord} onCreate={openCreate} />}
       {view === 'timeline' && <TimelineView records={records} onOpen={openRecord} onAiAnalyze={(question, context) => { setAiOpen(true); void sendAi(question, context) }} />}
@@ -327,7 +328,7 @@ function App() {
   </div>
 }
 
-const viewEntity = (view: View): Entity => ({ command: 'inbox', today: 'tasks', tasks: 'tasks', time: 'timeLogs', projects: 'projects', outcomes: 'results', finance: 'financialTransactions', notebook: 'notes', knowledge: 'knowledge', reviews: 'reviews', insights: 'insights', principles: 'principles', mentalModels: 'mentalModels', decisions: 'decisions', events: 'events', people: 'people', timeline: 'events', aiNews: 'inbox', settings: 'inbox', profile: 'profiles' }[view] as Entity)
+const viewEntity = (view: View): Entity => ({ command: 'inbox', today: 'tasks', tasks: 'tasks', time: 'timeLogs', projects: 'projects', outcomes: 'results', finance: 'financialTransactions', notebook: 'notes', cognition: 'insights', knowledge: 'knowledge', reviews: 'reviews', insights: 'insights', principles: 'principles', mentalModels: 'mentalModels', decisions: 'decisions', events: 'events', people: 'people', timeline: 'events', aiNews: 'inbox', settings: 'inbox', profile: 'profiles' }[view] as Entity)
 
 function GlobalHeader({ query, onQuery, onSearchFocus, sidebarOpen, onToggleSidebar, onProfile, onSettings, onAiNews, aiNewsActive, onAi, onPalette, aiConfigured }: { query: string; onQuery: (value: string) => void; onSearchFocus: () => void; sidebarOpen: boolean; onToggleSidebar: () => void; onProfile: (section: ProfileSection) => void; onSettings: () => void; onAiNews: () => void; aiNewsActive: boolean; onAi: () => void; onPalette: () => void; aiConfigured: boolean }) {
   const [profileMenuOpen, setProfileMenuOpen] = useState(false)
@@ -370,17 +371,8 @@ function CommandCenter({ records, onOpen, onView, onRefresh }: { records: Record
   return <CommandCenterView records={records} onOpen={onOpen} onView={onView} onRefresh={onRefresh} />
 }
 
-function TodayView({ records, running, onOpen, onEdit, onComplete, onStartTimer, onStopTimer, onCreate }: { records: RecordData[]; running?: RecordData; onOpen: (record: RecordData) => void; onEdit: (record: RecordData) => void; onComplete: (record: RecordData) => void; onStartTimer: (record?: Partial<RecordData>) => void; onStopTimer: () => void; onCreate: (entity: Entity, initial?: Partial<RecordData>) => void }) {
-  const tasks = records.filter((record) => record.entity === 'tasks' && isActive(record))
-  const top = [...tasks].sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority)).slice(0, 3)
-  const due = tasks.filter((record) => isToday(record.dueDate))
-  const logs = records.filter((record) => record.entity === 'timeLogs' && isToday(record.startAt)).sort((a, b) => String(a.startAt).localeCompare(String(b.startAt)))
-  const planned = due.reduce((sum, task) => sum + Number(task.estimateMinutes || 0), 0); const actual = logs.reduce((sum, log) => sum + durationMinutes(log), 0)
-  return <div className="focus-page"><section className="today-hero"><div><p>今天的焦点</p><h2>{running ? titleFor(running) : top[0] ? titleFor(top[0]) : '选择下一项真正重要的行动'}</h2><span>{running ? `开始于 ${formatDate(running.startAt, true)}` : 'Focus 不是新实体，而是把现有工作组织成可执行视图。'}</span></div>{running ? <button className="button danger" onClick={onStopTimer}>■ 停止计时</button> : <button className="button primary" onClick={() => onStartTimer(top[0])}>▶ 开始当前任务</button>}</section>
-    <div className="two-column"><section className="work-panel"><PanelHeader title="今日 Top 3" action="添加" onAction={() => onCreate('tasks', { dueDate: today(), priority: 'high' })} />{top.length ? top.map((task, index) => <ActionTask key={task.id} task={task} records={records} index={index + 1} onOpen={onOpen} onEdit={onEdit} onComplete={onComplete} onTimer={onStartTimer} />) : <GuidedEmpty icon="◉" title="还没有今日重点" text="添加一项最能推动目标的行动，而不是填满清单。" action="添加 Top 3" onAction={() => onCreate('tasks', { dueDate: today(), priority: 'high' })} />}</section>
-    <section className="work-panel"><PanelHeader title="计划 vs 实际" /><div className="compare"><CompareBar label="计划" value={planned} max={Math.max(planned, actual, 60)} /><CompareBar label="实际" value={actual} max={Math.max(planned, actual, 60)} /></div><div className="time-summary"><strong>{formatMinutes(actual)}</strong><span>今天已记录 · {logs.length} 段</span></div>{logs.slice(-3).reverse().map((log) => <CompactRecord key={log.id} record={log} onOpen={() => onEdit(log)} />)}</section></div>
-    <section className="work-panel"><PanelHeader title="今天的任务" action="新建任务" onAction={() => onCreate('tasks', { dueDate: today() })} />{due.length ? <div className="task-table">{due.map((task) => <ActionTask key={task.id} task={task} records={records} onOpen={onOpen} onEdit={onEdit} onComplete={onComplete} onTimer={onStartTimer} />)}</div> : <GuidedEmpty icon="□" title="今天没有到期任务" text="这不代表你无事可做。选择一个项目的下一步，明确安排到今天。" action="安排任务" onAction={() => onCreate('tasks', { dueDate: today() })} />}</section>
-  </div>
+function TodayView({ records, running, onOpen, onComplete, onRestore, onStartTimer, onStopTimer, onCreate }: { records: RecordData[]; running?: RecordData; onOpen: (record: RecordData) => void; onComplete: (record: RecordData) => void; onRestore: (record: RecordData) => void; onStartTimer: (record?: Partial<RecordData>) => void; onStopTimer: () => void; onCreate: (entity: Entity, initial?: Partial<RecordData>) => void }) {
+  return <TodayCockpitView records={records} running={running} onOpen={onOpen} onComplete={onComplete} onRestore={onRestore} onStartTimer={onStartTimer} onStopTimer={onStopTimer} onCreate={onCreate} />
 }
 
 function TasksView({ records, onOpen, onEdit, onComplete, onStartTimer, onCreate }: { records: RecordData[]; onOpen: (record: RecordData) => void; onEdit: (record: RecordData) => void; onComplete: (record: RecordData) => void; onStartTimer: (record: RecordData) => void; onCreate: (initial?: Partial<RecordData>) => void }) {
@@ -424,11 +416,8 @@ function TaskCalendarBoard({ tasks, records: _records, onOpen, onCreate, onTaskV
 function CalendarTopbar({ label, scope, onScope, onToday, onMove }: { label: string; scope: 'day' | 'week' | 'month'; onScope: (scope: 'day' | 'week' | 'month') => void; onToday: () => void; onMove: (direction: number) => void }) { return <header className="calendar-topbar"><button onClick={onToday}>今天</button><button onClick={() => onMove(-1)}>‹</button><button onClick={() => onMove(1)}>›</button><h3>{label}</h3><div>{(['day','week','month'] as const).map((item) => <button key={item} className={scope === item ? 'active' : ''} onClick={() => onScope(item)}>{{ day:'日', week:'周', month:'月' }[item]}</button>)}</div></header> }
 function MiniTaskMonth({ anchor, days, selected, taskMap, onSelect }: { anchor: Date; days: Date[]; selected: string; taskMap: Record<string, RecordData[]>; onSelect: (date: Date) => void }) { return <aside className="calendar-mini"><header><strong>{anchor.getFullYear()}年{anchor.getMonth()+1}月</strong><div><button onClick={() => onSelect(new Date(anchor.getFullYear(), anchor.getMonth()-1, 1))}>‹</button><button onClick={() => onSelect(new Date(anchor.getFullYear(), anchor.getMonth()+1, 1))}>›</button></div></header><div className="mini-weekdays">{['一','二','三','四','五','六','日'].map((day) => <span key={day}>{day}</span>)}</div><div className="mini-days">{days.map((day) => { const key=localDateKey(day); return <button key={key} className={`${day.getMonth() !== anchor.getMonth() ? 'muted' : ''} ${key === selected ? 'selected' : ''} ${key === today() ? 'today' : ''}`} onClick={() => onSelect(day)}>{day.getDate()}{taskMap[key]?.length ? <i /> : null}</button> })}</div><div className="calendar-sources"><strong>我的日历</strong><span><i className="blue" />任务截止日期</span><span><i className="green" />Jason OS 任务</span></div></aside> }
 
-function TimeView({ records, running, onStartTimer, onStopTimer, onEdit, onCreate }: { records: RecordData[]; running?: RecordData; onStartTimer: () => void; onStopTimer: () => void; onEdit: (record: RecordData) => void; onCreate: () => void }) {
-  const [range, setRange] = useState<TimeRange>('day'); const logs = records.filter((record) => record.entity === 'timeLogs' && matchesRange(record, range)).sort((a, b) => String(b.startAt).localeCompare(String(a.startAt)))
-  const total = logs.reduce((sum, log) => sum + durationMinutes(log), 0); const goalAligned = logs.filter((log) => log.goalId).reduce((sum, log) => sum + durationMinutes(log), 0); const projectTime = logs.filter((log) => log.projectId).reduce((sum, log) => sum + durationMinutes(log), 0); const unassigned = logs.filter((log) => !log.projectId && !log.goalId && !log.taskId).reduce((sum, log) => sum + durationMinutes(log), 0)
-  const planned = records.filter((record) => record.entity === 'tasks' && matchesRange({ ...record, startAt: record.dueDate } as RecordData, range)).reduce((sum, task) => sum + Number(task.estimateMinutes || 0), 0)
-  return <div className="time-page"><div className="toolbar"><div className="segmented">{(['day', 'week', 'month'] as const).map((item) => <button key={item} className={range === item ? 'active' : ''} onClick={() => setRange(item)}>{{ day: '今天', week: '本周', month: '本月' }[item]}</button>)}</div><div className="toolbar-actions"><button className="button ghost" onClick={onCreate}>＋ 手动记录</button>{running ? <button className="button danger" onClick={onStopTimer}>■ 停止计时</button> : <button className="button primary" onClick={onStartTimer}>▶ 开始计时</button>}</div></div><div className="metric-strip five"><Metric label="总时间" value={formatMinutes(total)} /><Metric label="目标一致" value={formatMinutes(goalAligned)} /><Metric label="项目时间" value={formatMinutes(projectTime)} /><Metric label="未分配" value={formatMinutes(unassigned)} /><Metric label="计划 / 实际" value={`${formatMinutes(planned)} / ${formatMinutes(total)}`} /></div><div className="two-column wide"><section className="work-panel"><PanelHeader title="现实时间轴" />{logs.length ? logs.map((log) => <TimeRow key={log.id} log={log} records={records} onEdit={onEdit} />) : <GuidedEmpty icon="◷" title="还没有现实时间记录" text="开始计时或手动添加一段工作，才能知道时间真正花在哪里。" action="手动记录" onAction={onCreate} />}</section><section className="work-panel"><PanelHeader title="时间分配" /><AllocationList items={allocation(logs, records)} empty="记录时间并关联项目、目标或类别后，这里会显示分配结构。" /><div className="compare"><CompareBar label="计划" value={planned} max={Math.max(planned, total, 60)} /><CompareBar label="实际" value={total} max={Math.max(planned, total, 60)} /></div></section></div></div>
+function TimeView({ records, running, onStartTimer, onStopTimer, onOpen, onEdit, onCreate }: { records: RecordData[]; running?: RecordData; onStartTimer: () => void; onStopTimer: () => void; onOpen: (record: RecordData) => void; onEdit: (record: RecordData) => void; onCreate: (initial?: Partial<RecordData>) => void }) {
+  return <TimeIntelligenceView records={records} running={running} onStartTimer={onStartTimer} onStopTimer={onStopTimer} onOpen={onOpen} onEdit={onEdit} onCreate={onCreate} />
 }
 
 function ProjectsView({ records, selectedId, onSelect, onOpen, onCreate, onEdit, onStartTimer, onAiAnalyze }: { records: RecordData[]; selectedId: string | null; onSelect: (id: string | null) => void; onOpen: (record: RecordData) => void; onCreate: (entity: Entity, initial?: Partial<RecordData>) => void; onEdit: (record: RecordData) => void; onStartTimer: (record: RecordData) => void; onAiAnalyze: (question: string, context: Partial<AgentContext>) => void }) {
@@ -491,13 +480,14 @@ function OutcomesView({ records, onOpen, onCreate }: { records: RecordData[]; on
     {tab === 'packages' && (packages.length ? <div className="result-package-grid">{packages.map((item) => <article key={item.id} onClick={() => onOpen(item)}><header><span>{statusLabel(item.status)}</span><small>{relationName(item.projectId, records) || '独立成果包'}</small></header><h3>{titleFor(item)}</h3><p>{String(item.summary || '聚合结果、正式资产、决策、复盘与工作链运行。')}</p><footer>{Array.isArray(item.resultIds) ? item.resultIds.length : String(item.resultIds || '').split(',').filter(Boolean).length} 个结果 · {Array.isArray(item.deliverableIds) ? item.deliverableIds.length : String(item.deliverableIds || '').split(',').filter(Boolean).length} 个资产</footer></article>)}</div> : <GuidedEmpty icon="▰" title="还没有成果包" text="成果包只是关联聚合对象，不会创建新的文件夹或复制文件。" action="创建成果包" onAction={() => onCreate('resultPackages', { status: 'ACTIVE' })} />)}</div>
 }
 
-function FinanceView({ records, onOpen, onCreate }: { records: RecordData[]; onOpen: (record: RecordData) => void; onCreate: (entity: Entity, initial?: Partial<RecordData>) => void }) {
+function FinanceView({ records, onOpen, onCreate, onRefresh, onAskAi }: { records: RecordData[]; onOpen: (record: RecordData) => void; onCreate: (entity: Entity, initial?: Partial<RecordData>) => void; onRefresh: () => void; onAskAi: () => void }) {
   const [tab, setTab] = useState<'overview' | 'transactions' | 'accounts' | 'categories' | 'budgets'>('overview')
   const [projectId, setProjectId] = useState('')
   const [accountId, setAccountId] = useState('')
   const [categoryId, setCategoryId] = useState('')
   const [period, setPeriod] = useState<'all' | 'month' | 'lastMonth' | 'quarter' | 'year'>('all')
   const [monthKey, setMonthKey] = useState('')
+  const [transactionType, setTransactionType] = useState('')
   const [series, setSeries] = useState({ income: true, expense: true })
   const accounts = records.filter((record) => record.entity === 'financialAccounts')
   const projects = records.filter((record) => record.entity === 'projects')
@@ -518,20 +508,30 @@ function FinanceView({ records, onOpen, onCreate }: { records: RecordData[]; onO
   const economics = dashboard.economics
   const transactions = financialFacts(records, projectId || undefined).map(({ transaction }) => transaction).filter((transaction) => {
     const date = String(transaction.occurredAt || transaction.createdAt || '').slice(0, 10)
-    return (!range.from || !date || date >= range.from) && (!range.to || !date || date <= range.to) && (!accountId || transaction.accountId === accountId || transaction.destinationAccountId === accountId) && (!categoryId || transaction.categoryId === categoryId)
+    return (!range.from || !date || date >= range.from) && (!range.to || !date || date <= range.to) && (!accountId || transaction.accountId === accountId || transaction.destinationAccountId === accountId) && (!categoryId || transaction.categoryId === categoryId) && (!transactionType || transaction.transactionType === transactionType)
   })
   const maximum = dashboard.trends.reduce((value, point) => [point.incomeMinor, point.expenseMinor].reduce((next, amount) => amount > next ? amount : next, value), 0n)
   const height = (value: bigint) => maximum ? Math.max(8, Number(value * 100n / maximum)) : 0
   const createTransaction = () => onCreate('financialTransactions', { status: 'POSTED', transactionType: 'EXPENSE', currency: 'CNY', baseCurrency: 'CNY', occurredAt: nowInput(), evidenceStatus: 'RECORDED' })
   const createBudget = () => onCreate('financialBudgets', { status: 'ACTIVE', baseCurrency: 'CNY', periodStart: today(), periodEnd: today() })
-  const clearFilters = () => { setProjectId(''); setAccountId(''); setCategoryId(''); setPeriod('all'); setMonthKey('') }
+  const clearFilters = () => { setProjectId(''); setAccountId(''); setCategoryId(''); setTransactionType(''); setPeriod('all'); setMonthKey('') }
   const showTransactions = () => setTab('transactions')
+  const drilldown = ({ tab: nextTab, projectId: nextProjectId, accountId: nextAccountId, categoryId: nextCategoryId, transactionType: nextTransactionType, monthKey: nextMonthKey }: { tab: 'overview' | 'transactions' | 'accounts' | 'categories' | 'budgets'; projectId?: string; accountId?: string; categoryId?: string; transactionType?: string; monthKey?: string }) => {
+    if (nextProjectId !== undefined) setProjectId(nextProjectId)
+    if (nextAccountId !== undefined) setAccountId(nextAccountId)
+    if (nextCategoryId !== undefined) setCategoryId(nextCategoryId)
+    if (nextTransactionType !== undefined) setTransactionType(nextTransactionType)
+    if (nextMonthKey !== undefined) setMonthKey(nextMonthKey)
+    setTab(nextTab)
+  }
+  const showLegacyOverview = tab === 'overview'
+  if (tab === 'overview') return <FinanceIntelligenceView records={records} onOpen={onOpen} onCreate={onCreate} onDrilldown={drilldown} onRefresh={onRefresh} onAskAi={onAskAi} />
   return <div className="finance-page">
     <section className="finance-hero"><div><span>JASON OS · RESOURCE LAYER</span><h2>Financial Intelligence</h2><p>记录资金事实，并把 Time + Money + Outcome 转化为 CEO 决策证据。现金净流动与经营贡献不等于会计利润。</p></div><button className="button primary" onClick={createTransaction}>＋ 记录流水</button></section>
     <section className="finance-filter-bar"><label>项目<select value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="">全部项目</option>{projects.map((item) => <option key={item.id} value={item.id}>{titleFor(item)}</option>)}</select></label><label>账户<select value={accountId} onChange={(event) => setAccountId(event.target.value)}><option value="">全部账户</option>{accounts.map((item) => <option key={item.id} value={item.id}>{titleFor(item)}</option>)}</select></label><label>分类<select value={categoryId} onChange={(event) => setCategoryId(event.target.value)}><option value="">全部分类</option>{categories.map((item) => <option key={item.id} value={item.id}>{titleFor(item)}</option>)}</select></label><div className="segmented">{([['all','全部'],['year','本年'],['quarter','本季度'],['month','本月'],['lastMonth','上月']] as const).map(([key, label]) => <button key={key} className={period === key && !monthKey ? 'active' : ''} onClick={() => { setPeriod(key); setMonthKey('') }}>{label}</button>)}</div>{(projectId || accountId || categoryId || period !== 'all' || monthKey) && <button className="button" onClick={clearFilters}>清除筛选</button>}<small>筛选只改变分析视图，不会修改流水。</small></section>
     <div className="metric-strip four"><Metric label="现金净流动" value={economics.postedTransactions ? formatMoneyMinor(economics.cashNetMinor) : '未记录'} /><Metric label="已记录收入" value={economics.postedTransactions ? formatMoneyMinor(economics.incomeMinor) : '未记录'} /><Metric label="已记录支出" value={economics.postedTransactions ? formatMoneyMinor(economics.expenseMinor) : '未记录'} /><Metric label="数据覆盖" value={String(economics.dataCoverage) + '%'} hint="缺失数据不会按 0 处理" /></div>
     <nav className="external-tabs finance-tabs">{([['overview','总览'],['transactions','流水'],['accounts','账户'],['categories','分类'],['budgets','预算']] as const).map(([key,label]) => <button key={key} className={tab === key ? 'active' : ''} onClick={() => setTab(key)}>{label}</button>)}</nav>
-    {tab === 'overview' && <div className="finance-dashboard">
+    {showLegacyOverview && <div className="finance-dashboard">
       <section className="work-panel finance-trend-panel"><PanelHeader title="资金趋势" /><div className="finance-trend-chart">{dashboard.trends.length ? dashboard.trends.map((point) => <button className="finance-trend-column" key={point.key} onClick={() => { setMonthKey(point.key); showTransactions() }}><><div className="finance-trend-bars">{series.income && <i className="income" style={{ height: String(height(point.incomeMinor)) + '%' }} />}{series.expense && <i className="expense" style={{ height: String(height(point.expenseMinor)) + '%' }} />}</div><small>{point.key}</small></></button>) : <p className="empty-copy">所选范围还没有已入账流水。</p>}</div><div className="finance-legend"><button className={series.income ? 'active income' : ''} onClick={() => setSeries((value) => ({ ...value, income: !value.income }))}>■ 收入</button><button className={series.expense ? 'active expense' : ''} onClick={() => setSeries((value) => ({ ...value, expense: !value.expense }))}>■ 支出</button></div></section>
       <section className="work-panel"><PanelHeader title="预算 vs 实际" action="管理预算" onAction={() => setTab('budgets')} />{dashboard.budgets.length ? <div className="finance-breakdown">{dashboard.budgets.slice(0, 4).map((item) => <button key={item.budget.id} onClick={() => { setProjectId(String(item.budget.projectId || '')); setCategoryId(String(item.budget.categoryId || '')); showTransactions() }}><small>{titleFor(item.budget)} · 实际 {item.observedTransactions ? formatMoneyMinor(item.actualExpenseMinor) : '未记录'}</small><b>{item.varianceMinor >= 0n ? '余 ' + formatMoneyMinor(item.varianceMinor) : '超 ' + formatMoneyMinor(-item.varianceMinor)}</b></button>)}</div> : <p className="empty-copy">预算是管理约束，不是流水；创建预算后将按真实支出进行对比。</p>}</section>
       <section className="work-panel"><PanelHeader title="CEO 资源事实" /><div className="decision-evidence-grid"><span><small>经营贡献</small><strong>{economics.postedTransactions ? formatMoneyMinor(economics.managementContributionMinor) : '未记录'}</strong></span><span><small>投入时间</small><strong>{economics.timeMinutes ? formatMinutes(economics.timeMinutes) : '未记录'}</strong></span><span><small>单位时间经营贡献</small><strong>{economics.unitTimeContributionMinor === undefined ? '数据不足' : formatMoneyMinor(economics.unitTimeContributionMinor) + '/h'}</strong></span><span><small>已核验 Outcome</small><strong>{String(economics.verifiedOutcomeCount) + '/' + String(economics.outcomeCount)}</strong></span></div><p className="finance-disclaimer">经营贡献基于已记录并入账的管理口径，不是会计利润；库存、预付及未分配成本需要单独核验。</p></section>
@@ -631,6 +631,7 @@ function NotebookView({ records, externalItems, captureConfig, onOpen, onRefresh
   const [categoryDraft, setCategoryDraft] = useState('')
   const [creatingCategory, setCreatingCategory] = useState(false)
   const [captureDraft, setCaptureDraft] = useState('')
+  const [captureFileAccept, setCaptureFileAccept] = useState('*/*')
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list')
   const [sortMode, setSortMode] = useState<'recent' | 'oldest' | 'title'>('recent')
   const [tagFilter, setTagFilter] = useState('')
@@ -641,16 +642,33 @@ function NotebookView({ records, externalItems, captureConfig, onOpen, onRefresh
   const [deleteIds, setDeleteIds] = useState<string[]>([])
   const [deletingItems, setDeletingItems] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const captureInputRef = useRef<HTMLTextAreaElement>(null)
   useEffect(() => { api.archived().then((items) => setArchived(items.filter((record) => ['notes', 'notebookFiles', 'notebookFolders', 'inbox'].includes(record.entity)))) }, [records])
   const categories = records.filter((record) => record.entity === 'notebookCategories')
   const folders = records.filter((record) => record.entity === 'notebookFolders')
   const activeItems = records.filter((record) => ['notes', 'notebookFiles', 'notebookFolders', 'inbox'].includes(record.entity))
-  const createdWithinDays = (record: RecordData, days: number) => Date.now() - new Date(String(record.createdAt || record.updatedAt || 0)).getTime() <= days * 86400000
+  const createdWithinDays = (record: RecordData, days: number) => {
+    const value = record.createdAt || record.updatedAt || 0
+    const timestamp = new Date(Number(value) || String(value)).getTime()
+    return Number.isFinite(timestamp) && Date.now() - timestamp <= days * 86400000
+  }
+  const createdToday = (record: RecordData) => {
+    const value = record.createdAt || record.updatedAt || ''
+    const date = new Date(Number(value) || String(value))
+    return !Number.isNaN(date.getTime()) && localDateKey(date) === today()
+  }
+  const fileMatches = (record: RecordData, type: 'image' | 'video' | 'audio') => record.entity === 'notebookFiles' && (
+    String(record.mimeType || record.contentType || '').toLowerCase().startsWith(`${type}/`) ||
+    new RegExp(type === 'image' ? '\\.(jpe?g|png|webp|gif|svg|heic|avif)$' : type === 'video' ? '\\.(mp4|mov|m4v|webm|avi|mkv)$' : '\\.(mp3|m4a|wav|aac|ogg|flac)$', 'i').test(String(record.originalName || record.name || record.relativePath || record.extension || ''))
+  )
   const matchesScope = (record: RecordData) => {
     if (scope === 'notes') return record.entity === 'notes'
     if (scope === 'links') return record.entity === 'inbox' || Boolean(record.url || record.sourceUrl)
+    if (scope === 'images') return fileMatches(record, 'image')
+    if (scope === 'videos') return fileMatches(record, 'video')
+    if (scope === 'audio') return fileMatches(record, 'audio')
     if (scope === 'files') return record.entity === 'notebookFiles'
-    if (scope === 'today') return String(record.createdAt || record.updatedAt || '').slice(0, 10) === today()
+    if (scope === 'today') return createdToday(record)
     if (scope === 'week') return createdWithinDays(record, 7)
     if (scope === 'attachments') return record.entity === 'notebookFiles' || Boolean(record.attachments)
     if (scope === 'later') return ['LATER', 'SNOOZED'].includes(String(record.status || '').toUpperCase()) || Boolean(record.snoozedUntil)
@@ -689,8 +707,21 @@ function NotebookView({ records, externalItems, captureConfig, onOpen, onRefresh
   const categoryMoveSources = (selectedIds.length ? selectedIds.map((id) => records.find((record) => record.id === id)) : selected ? [selected] : []).filter((record): record is RecordData => record !== undefined && ['notes', 'notebookFiles', 'inbox'].includes(record.entity))
   const captureIntoInbox = async () => {
     const content = captureDraft.trim(); if (!content) return
-    try { const url = content.match(/https?:\/\/[^\s]+/)?.[0]; if (url) await api.captureLink(url); else await api.save('notes', { title: content.slice(0, 42), content, status: 'INBOX', type: 'NOTE' }); setCaptureDraft(''); await onRefresh(); onNotice('已收纳到未整理；不会自动关联项目、目标或任务。') }
+    try {
+      const url = content.match(/https?:\/\/[^\s]+/)?.[0]
+      if (url) await api.captureLink(url)
+      else await api.save('notes', { title: content.slice(0, 42), content, status: 'INBOX', type: 'NOTE' })
+      setCaptureDraft('')
+      await onRefresh()
+      onNotice('已收纳到未整理；不会自动关联项目、目标或任务。')
+      window.setTimeout(() => captureInputRef.current?.focus(), 0)
+    }
     catch (error) { onNotice(`收纳失败：${String(error)}`, 'danger') }
+  }
+  const selectScope = (nextScope: string) => { setScope(nextScope); setFolderId(''); setSelectedId(''); setSelectedIds([]) }
+  const chooseCaptureFile = (accept = '*/*') => {
+    setCaptureFileAccept(accept)
+    window.setTimeout(() => fileInputRef.current?.click(), 0)
   }
   const createManualNote = async () => {
     try {
@@ -747,7 +778,7 @@ function NotebookView({ records, externalItems, captureConfig, onOpen, onRefresh
       onNotice(`已上传 ${files.length} 个文件；可搜索的内容已自动提取。`)
       await onRefresh()
     } catch (error) { onNotice(`上传失败：${String(error)}`, 'danger') }
-    finally { setUploading(false); if (fileInputRef.current) fileInputRef.current.value = '' }
+    finally { setUploading(false); setCaptureFileAccept('*/*'); if (fileInputRef.current) fileInputRef.current.value = '' }
   }
   const addOptionalRelation = async () => {
     if (!relationTarget || !relationSources.length) return
@@ -812,55 +843,71 @@ function NotebookView({ records, externalItems, captureConfig, onOpen, onRefresh
   const previewNode = !selected ? null : selected.entity === 'notes' ? <pre className="notebook-text-preview">{String(selected.content || '暂无正文。')}</pre> : selected.entity !== 'notebookFiles' ? <p>文件夹可包含 Note、File 与子文件夹。</p> : previewLoading ? <p>正在按需加载预览…</p> : preview?.kind === 'image' ? <img className="notebook-media-preview" src={preview.dataUrl} alt={titleFor(selected)} /> : preview?.kind === 'pdf' ? <><div className="notebook-pdf-toolbar"><span>PDF 阅读 · 第 {(preview.page ?? pdfPage) + 1} / {preview.pageCount || 1} 页</span><div><button disabled={(preview.page ?? pdfPage) <= 0} onClick={() => void changePdfPage((preview.page ?? pdfPage) - 1)}>上一页</button><button disabled={(preview.page ?? pdfPage) >= (preview.pageCount || 1) - 1} onClick={() => void changePdfPage((preview.page ?? pdfPage) + 1)}>下一页</button></div></div>{preview.dataUrl ? <img className="notebook-pdf-preview" src={preview.dataUrl} alt={`${titleFor(selected)} 第 ${(preview.page ?? pdfPage) + 1} 页`} /> : <p>此 PDF 页面暂时无法渲染，可阅读下方已提取文本。</p>}<pre className="notebook-text-preview">{preview.text}</pre></> : preview?.kind === 'audio' ? <audio controls src={preview.dataUrl} /> : preview?.kind === 'video' ? <video className="notebook-media-preview" controls src={preview.dataUrl} /> : preview?.kind === 'text' ? <pre className="notebook-text-preview">{preview.text || String(selected.extractionError || '没有可预览的文本。')}</pre> : <p>{preview?.reason || String(selected.extractionError || '此文件没有可用的内嵌预览。')}</p>
   if (workspaceMode === 'research') return <ResearchInboxView records={records} externalItems={externalItems} categories={categories} captureConfig={captureConfig} onBackToCapture={() => setWorkspaceMode('capture')} onRefresh={onRefresh} onNotice={onNotice} />
   return <div className="notebook-page notebook-space">
-    <header className="notebook-page-title">
-      <div><h2>收纳箱</h2><p>收集、整理并沉淀你的内容</p></div>
-      <div className="research-mode-switch"><button className="active">收纳内容</button><button onClick={() => setWorkspaceMode('research')}>提出调研需求</button></div>
-    </header>
-
-    <section
-      className="notebook-capture"
-      onDragOver={(event) => event.preventDefault()}
-      onDrop={(event) => { event.preventDefault(); void uploadFiles(event.dataTransfer.files) }}
-    >
-      <span className="notebook-capture-icon">⌁</span>
-      <textarea
-        value={captureDraft}
-        onChange={(event) => setCaptureDraft(event.target.value)}
-        onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void captureIntoInbox() } }}
-        placeholder="记录想法、粘贴链接，或拖入文件…"
-        aria-label="快速记录"
-      />
-      <button className="notebook-attach-button" title="添加附件" disabled={uploading} onClick={() => fileInputRef.current?.click()}>{uploading ? '…' : '📎'}</button>
-      <button className="button primary" disabled={!captureDraft.trim()} onClick={() => void captureIntoInbox()}>收纳</button>
-      <input ref={fileInputRef} className="hidden-file-input" type="file" multiple onChange={(event) => void uploadFiles(event.currentTarget.files)} />
-    </section>
-
     <div ref={notebookPanes.layoutRef} className="notebook-layout notebook-resizable-layout" style={notebookPanes.style}>
       <aside className="notebook-sidebar">
+        <header className="notebook-sidebar-title"><span>▣</span><div><strong>收纳箱</strong><small>快速记录，随手收纳，稍后整理</small></div></header>
         <div className="notebook-filter-group">
           {[
             { id: 'inbox', icon: '▱', label: '未整理', count: activeItems.filter((item) => item.entity === 'inbox' || (!item.notebookCategoryId && !item.notebookFolderId && (item.entity !== 'notes' || item.status === 'INBOX'))).length },
+            { id: 'all', icon: '▦', label: '全部内容', count: activeItems.length },
             { id: 'notes', icon: '▤', label: '笔记', count: activeItems.filter((item) => item.entity === 'notes').length },
             { id: 'links', icon: '⌁', label: '链接', count: activeItems.filter((item) => item.entity === 'inbox' || Boolean(item.url || item.sourceUrl)).length },
+            { id: 'images', icon: '▧', label: '图片', count: activeItems.filter((item) => fileMatches(item, 'image')).length },
+            { id: 'videos', icon: '▻', label: '视频', count: activeItems.filter((item) => fileMatches(item, 'video')).length },
             { id: 'files', icon: '□', label: '文件', count: activeItems.filter((item) => item.entity === 'notebookFiles').length },
-          ].map((item) => <button key={item.id} className={scope === item.id ? 'active' : ''} onClick={() => { setScope(item.id); setFolderId(''); setSelectedId(''); setSelectedIds([]) }}><i>{item.icon}</i><strong>{item.label}</strong><span>{item.count}</span></button>)}
+            { id: 'audio', icon: '♩', label: '语音', count: activeItems.filter((item) => fileMatches(item, 'audio')).length },
+          ].map((item) => <button key={item.id} className={scope === item.id ? 'active' : ''} onClick={() => selectScope(item.id)}><i>{item.icon}</i><strong>{item.label}</strong><span>{item.count}</span></button>)}
         </div>
         <div className="notebook-filter-group archive">
-          <button className={scope === 'archive' ? 'active' : ''} onClick={() => { setScope('archive'); setFolderId(''); setSelectedId(''); setSelectedIds([]) }}><i>▱</i><strong>已归档</strong><span>{archived.length}</span></button>
+          <button className={scope === 'later' ? 'active' : ''} onClick={() => selectScope('later')}><i>◴</i><strong>稍后处理</strong><span>{activeItems.filter((item) => ['LATER', 'SNOOZED'].includes(String(item.status || '').toUpperCase()) || Boolean(item.snoozedUntil)).length}</span></button>
+          <button className={scope === 'archive' ? 'active' : ''} onClick={() => selectScope('archive')}><i>▱</i><strong>已归档</strong><span>{archived.length}</span></button>
         </div>
-        <div className="notebook-category-filters"><button className={`notebook-category-trigger${currentCategoryId ? ' active' : ''}`} onClick={() => setCategoryMenuOpen(true)}><i>▦</i><strong>分类</strong><span>{categories.length}</span><b>⌄</b></button></div>
-        <div className="notebook-smart-views">
-          <header><span>✦</span><strong>智能视图</strong><b>⌄</b></header>
-          {[
-            { id: 'today', icon: '◉', label: '今天收集', count: activeItems.filter((item) => String(item.createdAt || item.updatedAt || '').slice(0, 10) === today()).length },
-            { id: 'week', icon: '◷', label: '本周收集', count: activeItems.filter((item) => createdWithinDays(item, 7)).length },
-            { id: 'attachments', icon: '⌕', label: '有附件', count: activeItems.filter((item) => item.entity === 'notebookFiles' || Boolean(item.attachments)).length },
-            { id: 'later', icon: '◴', label: '稍后处理', count: activeItems.filter((item) => ['LATER', 'SNOOZED'].includes(String(item.status || '').toUpperCase()) || Boolean(item.snoozedUntil)).length },
-          ].map((item) => <button key={item.id} className={scope === item.id ? 'active' : ''} onClick={() => { setScope(item.id); setFolderId(''); setSelectedId(''); setSelectedIds([]) }}><i>{item.icon}</i><strong>{item.label}</strong><span>{item.count}</span></button>)}
+        <div className="notebook-category-filters">
+          <header><span>▦</span><strong>分类</strong><button title="新建分类" onClick={() => { setCategoryDraft(''); setCategoryDialogOpen(true) }}>＋</button></header>
+          <div className="notebook-category-list">
+            {categories.length ? categories.map((category) => <button key={category.id} className={scope === category.id ? 'active' : ''} onClick={() => selectScope(category.id)}><span>{titleFor(category)}</span><b>{activeItems.filter((item) => ['notes', 'notebookFiles', 'inbox'].includes(item.entity) && item.notebookCategoryId === category.id).length}</b></button>) : <p>还没有分类</p>}
+          </div>
+          <button className="notebook-manage-categories" onClick={() => setCategoryMenuOpen(true)}>⚙ 管理分类</button>
         </div>
-        {noteTags.length > 0 && <div className="notebook-tag-filters"><header><span>◇</span><strong>标签</strong>{tagFilter && <button title="清除标签筛选" onClick={() => setTagFilter('')}>×</button>}</header><button className={!tagFilter ? 'active' : ''} onClick={() => { setTagFilter(''); setScope('notes'); setSelectedId('') }}>全部标签</button>{noteTags.map((tag) => <button key={tag} className={tagFilter === tag ? 'active' : ''} onClick={() => { setTagFilter(tag); setScope('notes'); setFolderId(''); setSelectedId(''); setSelectedIds([]) }}>#{tag}</button>)}</div>}
       </aside>
       <div className="notebook-pane-resizer" role="separator" title="拖动调整左侧栏宽度" aria-label="调整左侧栏宽度" aria-orientation="vertical" onPointerDown={notebookPanes.startResize('left')}><span aria-hidden="true">⋮</span></div>
+
+      <header className="notebook-page-title notebook-workspace-title">
+        <div><h2>收纳箱</h2><p>快速记录 · 自由编辑 · 分类整理 · 随时调用</p></div>
+        <div className="research-mode-switch"><button className="active">收纳内容</button><button onClick={() => setWorkspaceMode('research')}>提出调研需求</button></div>
+      </header>
+
+      <section
+        className="notebook-capture"
+        onDragOver={(event) => event.preventDefault()}
+        onDrop={(event) => { event.preventDefault(); void uploadFiles(event.dataTransfer.files) }}
+      >
+        <div className="notebook-capture-copy">
+          <span className="notebook-capture-icon">⌁</span>
+          <textarea
+            ref={captureInputRef}
+            value={captureDraft}
+            onChange={(event) => setCaptureDraft(event.target.value)}
+            onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void captureIntoInbox() } }}
+            placeholder="记录想法、粘贴链接、拖入文件，或快速语音记录..."
+            aria-label="快速记录"
+          />
+        </div>
+        <div className="notebook-capture-types" aria-label="收纳类型">
+          <button className="active" type="button" onClick={() => captureInputRef.current?.focus()}>▤ 文字</button>
+          <button type="button" onClick={() => captureInputRef.current?.focus()}>⌁ 链接</button>
+          <button type="button" onClick={() => chooseCaptureFile('image/*')}>▧ 图片</button>
+          <button type="button" onClick={() => chooseCaptureFile('video/*')}>▻ 视频</button>
+          <button type="button" onClick={() => chooseCaptureFile('*/*')}>□ 文件</button>
+          <button type="button" onClick={() => chooseCaptureFile('audio/*')}>♩ 语音</button>
+        </div>
+        <div className="notebook-capture-actions">
+          <button className="notebook-attach-button" title="添加附件" disabled={uploading} onClick={() => chooseCaptureFile()}>{uploading ? '…' : '📎'}</button>
+          <button className="notebook-attach-button" title="选择语音文件" disabled={uploading} onClick={() => chooseCaptureFile('audio/*')}>♩</button>
+          <button className="button primary" disabled={!captureDraft.trim()} onClick={() => void captureIntoInbox()}>立即收纳</button>
+        </div>
+        <input ref={fileInputRef} className="hidden-file-input" type="file" accept={captureFileAccept} multiple onChange={(event) => void uploadFiles(event.currentTarget.files)} />
+      </section>
 
       <section className="notebook-main">
         <div className="notebook-toolbar">
@@ -899,6 +946,16 @@ function NotebookView({ records, externalItems, captureConfig, onOpen, onRefresh
             <button className={viewMode === 'list' ? 'active' : ''} onClick={() => setViewMode('list')} title="列表视图">▤</button>
             <button className={viewMode === 'grid' ? 'active' : ''} onClick={() => setViewMode('grid')} title="网格视图">▦</button>
           </div>
+        </div>
+
+        <div className="notebook-smart-filter-row">
+          {[
+            { id: 'today', icon: '◉', label: '今天收集', count: activeItems.filter(createdToday).length },
+            { id: 'week', icon: '◷', label: '本周收集', count: activeItems.filter((item) => createdWithinDays(item, 7)).length },
+            { id: 'attachments', icon: '⌕', label: '有附件', count: activeItems.filter((item) => item.entity === 'notebookFiles' || Boolean(item.attachments)).length },
+            { id: 'inbox', icon: '○', label: '未分类', count: activeItems.filter((item) => !item.notebookCategoryId && !item.notebookFolderId).length },
+          ].map((item) => <button key={item.id} className={scope === item.id ? 'active' : ''} onClick={() => selectScope(item.id)}><i>{item.icon}</i>{item.label}<span>{item.count}</span></button>)}
+          {noteTags.length > 0 && <div className="notebook-tag-filter-inline"><strong>标签</strong><select aria-label="按标签筛选" value={tagFilter} onChange={(event) => { setTagFilter(event.target.value); selectScope('notes') }}><option value="">全部</option>{noteTags.map((tag) => <option key={tag} value={tag}>#{tag}</option>)}</select></div>}
         </div>
 
         {selectedIds.length > 0 && <div className="notebook-batch-bar"><span>已选择 {selectedIds.length} 项</span>{scope !== 'archive' && <button className="notebook-batch-delete" onClick={() => requestDeleteSelection()}>删除所选</button>}<button onClick={() => setSelectedIds([])}>取消选择</button></div>}
@@ -1180,7 +1237,23 @@ function RichNotebookEditor({ note, records, related, categories, fullscreen, on
   const [imagePickerOpen, setImagePickerOpen] = useState(false)
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
   const [deleting, setDeleting] = useState(false)
-  useEffect(() => { setTitle(String(note.title || '')); setTags(Array.isArray(note.tags) ? note.tags.map(String).map((tag) => tag.trim()).filter(Boolean) : String(note.tags || '').split(',').map((tag) => tag.trim()).filter(Boolean)); setRelationPickerOpen(false); setKnowledgeDialogOpen(false); if (editorRef.current) { const html = String(note.contentHtml || ''); if (html) editorRef.current.innerHTML = html; else editorRef.current.textContent = String(note.content || '') } }, [note.id, note.updatedAt, note.content, note.contentHtml, note.tags, note.title])
+  useEffect(() => {
+    setTitle(String(note.title || ''))
+    setTags(Array.isArray(note.tags) ? note.tags.map(String).map((tag) => tag.trim()).filter(Boolean) : String(note.tags || '').split(',').map((tag) => tag.trim()).filter(Boolean))
+    setRelationPickerOpen(false); setKnowledgeDialogOpen(false)
+    const editor = editorRef.current
+    if (!editor) return
+    const savedHtml = String(note.contentHtml || '')
+    if (savedHtml) editor.innerHTML = savedHtml
+    else editor.textContent = String(note.content || '')
+    for (const image of Array.from(editor.querySelectorAll<HTMLImageElement>('img[data-jason-file-id]'))) {
+      const fileId = image.dataset.jasonFileId
+      if (!fileId) continue
+      void api.previewNotebookFile(fileId).then((preview) => {
+        if (preview.kind === 'image' && preview.dataUrl && image.isConnected) image.src = preview.dataUrl
+      }).catch(() => { image.alt = image.alt || '图片暂时不可用' })
+    }
+  }, [note.id, note.updatedAt, note.content, note.contentHtml, note.tags, note.title])
   useEffect(() => {
     if (!fullscreen) return
     const exitFullscreen = (event: KeyboardEvent) => { if (event.key === 'Escape') onToggleFullscreen() }
@@ -1195,7 +1268,15 @@ function RichNotebookEditor({ note, records, related, categories, fullscreen, on
     window.addEventListener('pointerdown', closeOutside)
     return () => window.removeEventListener('pointerdown', closeOutside)
   }, [relationPickerOpen])
-  const html = () => editorRef.current?.innerHTML || ''
+  const html = () => {
+    const clone = editorRef.current?.cloneNode(true) as HTMLElement | undefined
+    if (!clone) return ''
+    for (const image of Array.from(clone.querySelectorAll<HTMLImageElement>('img[data-jason-file-id]'))) {
+      const fileId = image.dataset.jasonFileId
+      if (fileId) image.setAttribute('src', `jason-file://${fileId}`)
+    }
+    return clone.innerHTML
+  }
   const text = () => editorRef.current?.innerText.trim() || ''
   const command = (name: string, value?: string) => { editorRef.current?.focus(); document.execCommand(name, false, value) }
   const save = async () => { try { await api.save('notes', { ...note, title: title.trim() || '未命名笔记', content: text(), contentHtml: html(), tags }); await onRefresh(); onNotice('笔记已保存。') } catch (error) { onNotice(`保存失败：${String(error)}`, 'danger') } }
@@ -1210,19 +1291,28 @@ function RichNotebookEditor({ note, records, related, categories, fullscreen, on
   }
   const addLink = () => { const url = window.prompt('输入链接地址'); if (url) command('createLink', url) }
   const inboxImages = records.filter((record) => record.entity === 'notebookFiles' && (String(record.mimeType || '').startsWith('image/') || /\.(jpe?g|png|webp|gif|svg|heic)$/i.test(String(record.originalName || record.name || record.relativePath || record.extension || ''))))
-  const addLocalImage = (files: FileList | null) => {
+  const insertManagedImage = (fileId: string, dataUrl: string, alt: string) => {
+    const image = document.createElement('img')
+    image.src = dataUrl; image.alt = alt; image.dataset.jasonFileId = fileId
+    command('insertHTML', image.outerHTML)
+  }
+  const addLocalImage = async (files: FileList | null) => {
     const file = files?.[0]
     if (!file) return
-    const reader = new FileReader()
-    reader.onload = () => { command('insertImage', String(reader.result || '')); setImagePickerOpen(false); if (imageInputRef.current) imageInputRef.current.value = '' }
-    reader.onerror = () => onNotice('图片读取失败。', 'danger')
-    reader.readAsDataURL(file)
+    try {
+      const stored = await api.uploadNotebookFile({ file })
+      const preview = await api.previewNotebookFile(stored.id)
+      if (preview.kind !== 'image' || !preview.dataUrl) throw new Error('图片保存后无法预览')
+      insertManagedImage(stored.id, preview.dataUrl, file.name)
+      setImagePickerOpen(false)
+    } catch (error) { onNotice(`图片保存失败：${String(error)}`, 'danger') }
+    finally { if (imageInputRef.current) imageInputRef.current.value = '' }
   }
   const addInboxImage = async (record: RecordData) => {
     try {
       const image = await api.previewNotebookFile(record.id)
       if (image.kind !== 'image' || !image.dataUrl) throw new Error('这张图片暂时无法预览')
-      command('insertImage', image.dataUrl); setImagePickerOpen(false)
+      insertManagedImage(record.id, image.dataUrl, titleFor(record)); setImagePickerOpen(false)
     } catch (error) { onNotice(`图片插入失败：${String(error)}`, 'danger') }
   }
   const archiveToKnowledge = async () => {
@@ -1270,9 +1360,23 @@ function RichNotebookEditor({ note, records, related, categories, fullscreen, on
         <button title="编号列表" onClick={() => command('insertOrderedList')}>☰</button>
         <button title="待办事项" onClick={() => command('insertHTML', '<div>☐&nbsp;</div>')}>☑</button>
         <button title="引用" onClick={() => command('formatBlock', 'blockquote')}>❝</button>
-        <button title="代码块" onClick={() => command('formatBlock', 'pre')}>‹›</button>
-        <button title="插入链接" onClick={addLink}>⌁</button>
-        <button className="notebook-image-button" title="添加图片（电脑 / 收纳箱）" onClick={() => setImagePickerOpen((open) => !open)}><span>▧</span>图片</button>
+        <div className="notebook-toolbar-secondary">
+          <button title="代码块" onClick={() => command('formatBlock', 'pre')}>‹›</button>
+          <button title="插入链接" onClick={addLink}>⌁</button>
+          <button className="notebook-image-button" title="添加图片（电脑 / 收纳箱）" onClick={() => setImagePickerOpen((open) => !open)}><span>▧</span>图片</button>
+          <label className="notebook-color-control" title="文字颜色">A<input aria-label="文字颜色" type="color" defaultValue="#e5edf2" onChange={(event) => command('foreColor', event.currentTarget.value)} /></label>
+          <label className="notebook-color-control highlight" title="高亮颜色">▰<input aria-label="高亮颜色" type="color" defaultValue="#a8d943" onChange={(event) => command('hiliteColor', event.currentTarget.value)} /></label>
+        </div>
+        <details className="notebook-toolbar-more">
+          <summary title="更多格式">•••</summary>
+          <div>
+            <button title="代码块" onClick={() => command('formatBlock', 'pre')}>‹› 代码块</button>
+            <button title="插入链接" onClick={addLink}>⌁ 链接</button>
+            <button title="添加图片（电脑 / 收纳箱）" onClick={() => setImagePickerOpen((open) => !open)}>▧ 图片</button>
+            <label className="notebook-color-control" title="文字颜色">A 文字颜色<input aria-label="更多文字颜色" type="color" defaultValue="#e5edf2" onChange={(event) => command('foreColor', event.currentTarget.value)} /></label>
+            <label className="notebook-color-control highlight" title="高亮颜色">▰ 高亮颜色<input aria-label="更多高亮颜色" type="color" defaultValue="#a8d943" onChange={(event) => command('hiliteColor', event.currentTarget.value)} /></label>
+          </div>
+        </details>
         <span />
         <button title="撤销" onClick={() => command('undo')}>↶</button>
         <button title="重做" onClick={() => command('redo')}>↷</button>
@@ -1390,25 +1494,29 @@ function RadarStoryCard({ story, rank, featured = false }: { story: RadarStory; 
 
 function CloudSyncPanel({ onNotice, onSynced }: { onNotice: (text: string, tone?: Notice['tone']) => void; onSynced: () => Promise<void> }) {
   const [status, setStatus] = useState(() => api.cloudStatus())
+  const [protocol, setProtocol] = useState<{ pending: number; conflicts: number; serverCursor: number; lastSyncedAt?: string } | null>(null)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
+  const [serverUrl, setServerUrl] = useState(''); const [serverToken, setServerToken] = useState(''); const [serverConfigured, setServerConfigured] = useState(false)
   const refreshStatus = () => setStatus(api.cloudStatus())
+  useEffect(() => { api.syncV1Status().then(setProtocol).catch(() => setProtocol(null)); api.getSyncV1Config().then((value) => { setServerUrl(value.url); setServerConfigured(value.configured) }) }, [])
   const run = async (action: () => Promise<void>, success: string) => {
     setBusy(true)
     try { await action(); refreshStatus(); onNotice(success) } catch (error) { onNotice(String(error), 'danger') } finally { setBusy(false) }
   }
-  return <section className="settings-section cloud-sync-panel"><header><div><h2>网页端与跨设备同步</h2><p>同步只在你登录后执行；AI 不会自动关联项目、目标、任务或存入知识。</p></div><span className={`connection-badge ${status.signedIn ? 'connected' : ''}`}>{status.signedIn ? `已登录${status.email ? ` · ${status.email}` : ''}` : status.configured ? '等待登录' : '等待云端配置'}</span></header>{!status.configured ? <p className="muted">尚未检测到 Supabase 环境变量。部署前请按 docs/WEB_AND_SYNC_SETUP.md 配置 VITE_SUPABASE_URL 与 VITE_SUPABASE_ANON_KEY。</p> : status.signedIn ? <div className="settings-actions"><button className="primary" disabled={busy} onClick={() => run(async () => { await api.syncNow(); await onSynced() }, '本机与云端已同步。')}>{busy ? '同步中…' : '立即同步'}</button><button disabled={busy} onClick={() => run(async () => { await api.signOutFromCloud() }, '已退出同步账户；本机数据未删除。')}>退出同步账户</button>{status.lastSyncedAt && <span className="muted">上次同步：{formatDate(status.lastSyncedAt, true)}</span>}</div> : <div className="settings-fields cloud-sync-fields"><label>同步邮箱<input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" /></label><label>同步密码<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="至少 6 位" /></label><button className="button primary" disabled={busy || !email || !password} onClick={() => run(async () => { await api.signInToCloud(email, password); await onSynced() }, '登录成功，已完成首次同步。')}>{busy ? '登录中…' : '登录并同步'}</button><button className="button ghost" disabled={busy || !email || !password} onClick={() => run(async () => { await api.signUpForCloud(email, password) }, '注册请求已提交；如启用了邮箱确认，请先完成邮箱验证。')}>注册</button></div>}</section>
+  return <section className="settings-section cloud-sync-panel"><header><div><h2>同步与设备</h2><p>本地先写、增量同步；密钥、仪表盘、搜索索引和缓存不会上传。</p></div><span className={`connection-badge ${serverConfigured || status.signedIn ? 'connected' : ''}`}>{serverConfigured ? '协议 V1 已配置' : status.signedIn ? '兼容云同步已登录' : '等待云端配置'}</span></header><div className="settings-fields cloud-sync-fields"><label>Jason Sync Server<input value={serverUrl} onChange={(event) => setServerUrl(event.target.value)} placeholder="https://sync.example.com" /></label><label>同步 Token<input type="password" autoComplete="off" value={serverToken} onChange={(event) => setServerToken(event.target.value)} placeholder={serverConfigured ? '已安全保存；留空则不修改' : '输入同步 Token'} /></label><button className="button primary" disabled={busy || !serverUrl || (!serverConfigured && !serverToken)} onClick={() => run(async () => { if (serverToken) { const saved = await api.configureSyncV1(serverUrl, serverToken); setServerConfigured(saved.configured); setServerToken('') }; const tested = await api.testSyncV1(); setProtocol(await api.syncV1Status()); onNotice(`同步服务连接正常（${tested.latencyMs}ms）`) }, '同步服务已保存并通过连接测试。')}>保存并测试</button></div>{protocol && <div className="settings-actions"><span>待上传 {protocol.pending}</span><span>冲突 {protocol.conflicts}</span><span>游标 {protocol.serverCursor}</span>{protocol.lastSyncedAt && <span className="muted">上次同步：{formatDate(protocol.lastSyncedAt, true)}</span>}<button disabled={busy || !serverConfigured} onClick={() => run(async () => { await api.syncV1Now(); setProtocol(await api.syncV1Status()); await onSynced() }, 'Jason Sync Protocol 1.0 已完成增量同步。')}>立即同步</button></div>}{!status.configured ? <p className="muted">网页端正式账户同步尚未配置；桌面端可直接使用上方 Jason Sync Server。部署说明见 docs/WEB_AND_SYNC_SETUP.md。</p> : status.signedIn ? <div className="settings-actions"><button className="primary" disabled={busy} onClick={() => run(async () => { await api.syncNow(); await onSynced() }, '本机与云端已同步。')}>{busy ? '同步中…' : '兼容同步'}</button><button disabled={busy} onClick={() => run(async () => { await api.signOutFromCloud() }, '已退出同步账户；本机数据未删除。')}>退出同步账户</button></div> : <div className="settings-fields cloud-sync-fields"><label>同步邮箱<input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" /></label><label>同步密码<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="至少 6 位" /></label><button className="button primary" disabled={busy || !email || !password} onClick={() => run(async () => { await api.signInToCloud(email, password); await onSynced() }, '登录成功，已完成首次同步。')}>{busy ? '登录中…' : '登录并同步'}</button><button className="button ghost" disabled={busy || !email || !password} onClick={() => run(async () => { await api.signUpForCloud(email, password) }, '注册请求已提交；如启用了邮箱确认，请先完成邮箱验证。')}>注册</button></div>}</section>
 }
 
 function SettingsView({ themePreference, activeTheme, onThemeChange, config, captureConfig, onSaveAiProvider, onSaveCaptureProvider, onExport, onBackup, backups, onRestoreBackup, onRestoreRecord }: { themePreference: ThemePreference; activeTheme: 'dark' | 'light'; onThemeChange: (theme: ThemePreference) => void; config: HackStartConfig | null; captureConfig: CaptureProviderConfig | null; onSaveAiProvider: (provider: AiProviderId, key: string, model: string) => void; onSaveCaptureProvider: (provider: CaptureProviderId, key: string) => void; onExport: (format: 'json' | 'markdown' | 'csv') => void; onBackup: () => void; backups: BackupInfo[]; onRestoreBackup: (path: string) => void; onRestoreRecord: (id: string) => Promise<void> }) {
   const [provider, setProvider] = useState<AiProviderId>(config?.provider || 'hackstart')
   const selectedProvider = config?.providers.find((item) => item.id === provider)
-  const [key, setKey] = useState(''); const [redfoxKey, setRedfoxKey] = useState(''); const [apifyKey, setApifyKey] = useState(''); const [tikhubKey, setTikhubKey] = useState(''); const [scrapeCreatorsKey, setScrapeCreatorsKey] = useState(''); const [model, setModel] = useState(selectedProvider?.model || 'gpt-5.5'); const [archived, setArchived] = useState<RecordData[]>([])
+  const [key, setKey] = useState(''); const [redfoxKey, setRedfoxKey] = useState(''); const [apifyKey, setApifyKey] = useState(''); const [tikhubKey, setTikhubKey] = useState(''); const [scrapeCreatorsKey, setScrapeCreatorsKey] = useState(''); const [model, setModel] = useState(selectedProvider?.model || 'gpt-5.5'); const [archived, setArchived] = useState<RecordData[]>([]); const [provenance, setProvenance] = useState<Awaited<ReturnType<typeof api.buildProvenance>> | null>(null)
   useEffect(() => { if (config?.provider) setProvider(config.provider) }, [config?.provider])
   useEffect(() => { const selected = config?.providers.find((item) => item.id === provider); setKey(''); if (selected) setModel(selected.model || selected.models[0]?.id || '') }, [provider, config])
   useEffect(() => { api.archived().then(setArchived) }, [])
-  return <div className="settings-page"><section className="settings-section appearance-section"><header><div><h2>界面外观</h2><p>选择深色、白色，或按本机时间自动切换。</p></div><span className="connection-badge connected">当前：{activeTheme === 'light' ? '白色' : '深色'}</span></header><div className="theme-options">{([{ value: 'light', label: '白色' }, { value: 'dark', label: '深色' }, { value: 'auto', label: '自动' }] as { value: ThemePreference; label: string }[]).map((option) => <button key={option.value} className={themePreference === option.value ? 'active' : ''} onClick={() => onThemeChange(option.value)}><strong>{option.label}</strong><small>{option.value === 'auto' ? '07:00–19:00 白色' : option.value === 'light' ? '清爽白色界面' : '保留深色界面'}</small>{themePreference === option.value && <b>✓</b>}</button>)}</div></section><section className="settings-section"><header><div><h2>AI 服务商与模型</h2><p>每个服务商使用独立 API Key，并分别保存在 应用私有凭据文件（权限 0600）。</p></div><span className={`connection-badge ${selectedProvider?.configured ? 'connected' : ''}`}>{selectedProvider?.configured ? '已配置' : '未配置'}</span></header><div className="provider-tabs">{config?.providers.map((item) => <button key={item.id} className={provider === item.id ? 'active' : ''} onClick={() => setProvider(item.id)}><span className={`provider-light ${item.configured ? 'connected' : ''}`} /><strong>{item.label}</strong><small>{item.model}</small></button>)}</div><div className="model-catalog">{selectedProvider?.models.map((item) => <button key={item.id} className={model === item.id ? 'active' : ''} onClick={() => setModel(item.id)}><span>{model === item.id ? '●' : '○'}</span><div><strong>{item.label}</strong><small>{item.description}</small></div></button>)}</div><div className="settings-fields provider-settings"><label>{selectedProvider?.label || 'AI'} API Key<input type="password" autoComplete="off" placeholder={selectedProvider?.configured ? '已配置；留空保留当前 Key' : `粘贴 ${selectedProvider?.label || ''} API Key`} value={key} onChange={(event) => setKey(event.target.value)} /></label><label>当前模型<select value={model} onChange={(event) => setModel(event.target.value)}>{selectedProvider?.models.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label><button className="button primary" onClick={() => onSaveAiProvider(provider, key, model)}>保存、测试并启用</button></div><p className="provider-endpoint">API Endpoint：{selectedProvider?.baseUrl}{provider === 'minimax' ? ' · 中国大陆 Token Plan（Anthropic Messages）' : ''}</p></section><section className="settings-section capture-provider-section"><header><div><h2>采集服务与 External Intelligence Provider</h2><p>Provider 只负责读取外部数据，原始响应进入本机 External Intelligence 缓存；API 凭据保存在应用私有凭据文件（权限 0600），不会进入 SQLite、导出或 AI Prompt。</p></div><span className={`connection-badge ${captureConfig?.providers.some((item) => item.configured) ? 'connected' : ''}`}>{captureConfig?.providers.some((item) => item.configured) ? '已有 Provider' : '未配置'}</span></header>{captureConfig?.providers.map((item) => { if (item.id === 'redfox') return <div className="capture-provider-card" key={item.id}><div><strong>RedFoxHub</strong><small>微信公众号 · 抖音 · 小红书</small></div><label>RedFox API Key<input type="password" autoComplete="off" value={redfoxKey} onChange={(event) => setRedfoxKey(event.target.value)} placeholder={item.configured ? '已配置；留空保留当前 Key' : '粘贴 RedFox API Key'} /></label><button className="button primary" onClick={() => { onSaveCaptureProvider('redfox', redfoxKey); setRedfoxKey('') }}>保存并测试</button></div>; if (item.id === 'apify') return <div className="capture-provider-card" key={item.id}><div><strong>Apify</strong><small>网页 · 公众号 · 抖音 · 小红书 · X · Instagram · Facebook · Reddit · TikTok · YouTube</small></div><label>Apify API Token<input type="password" autoComplete="off" value={apifyKey} onChange={(event) => setApifyKey(event.target.value)} placeholder={item.configured ? '已配置；留空保留当前 Token' : '粘贴 Apify API Token'} /></label><button className="button primary" onClick={() => { onSaveCaptureProvider('apify', apifyKey); setApifyKey('') }}>保存并测试</button></div>; if (item.id === 'tikhub') return <div className="capture-provider-card" key={item.id}><div><strong>TikHub</strong><small>抖音 · TikTok · 小红书 · X · Instagram · Reddit · YouTube · 微信公众号</small></div><label>TikHub API Key<input type="password" autoComplete="off" value={tikhubKey} onChange={(event) => setTikhubKey(event.target.value)} placeholder={item.configured ? '已配置；留空保留当前 Key' : '粘贴 TikHub API Key'} /></label><button className="button primary" onClick={() => { onSaveCaptureProvider('tikhub', tikhubKey); setTikhubKey('') }}>保存并测试</button></div>; return <div className="capture-provider-card" key={item.id}><div><strong>Scrape Creators</strong><small>TikTok · Instagram · YouTube · Facebook · X · Reddit</small></div><label>Scrape Creators API Key<input type="password" autoComplete="off" value={scrapeCreatorsKey} onChange={(event) => setScrapeCreatorsKey(event.target.value)} placeholder={item.configured ? '已配置；留空保留当前 Key' : '粘贴 Scrape Creators API Key'} /></label><button className="button primary" onClick={() => { onSaveCaptureProvider('scrapecreators', scrapeCreatorsKey); setScrapeCreatorsKey('') }}>保存并测试</button></div>})}</section><section className="settings-section"><header><div><h2>数据所有权</h2><p>核心数据保存在本机 SQLite，可完整导出、备份和恢复。</p></div></header><div className="settings-actions"><button onClick={() => onExport('json')}>导出 JSON</button><button onClick={() => onExport('markdown')}>导出 Markdown</button><button onClick={() => onExport('csv')}>导出 CSV</button><button className="primary" onClick={onBackup}>创建 SQLite 快照</button></div></section><section className="settings-section"><header><div><h2>本地备份</h2><p>恢复前会自动保存当前数据库，避免覆盖错误。</p></div></header>{backups.length ? <div className="backup-list">{backups.slice(0, 8).map((backup) => <div key={backup.path}><div><strong>{backup.name}</strong><small>{formatDate(backup.modified, true)} · {(backup.size / 1024).toFixed(1)} KB</small></div><button onClick={() => onRestoreBackup(backup.path)}>恢复</button></div>)}</div> : <GuidedEmpty icon="↺" title="还没有本地备份" text="创建 SQLite 快照后，可以随时恢复到这个状态。" action="创建第一个备份" onAction={onBackup} />}</section><section className="settings-section"><header><div><h2>归档</h2><p>重要记录不会直接永久删除。归档后可随时恢复。</p></div><span>{archived.length} 条</span></header>{archived.length ? <div className="archive-list">{archived.map((record) => <div key={record.id}><div><span>{configFor(record.entity).icon}</span><strong>{titleFor(record)}</strong><small>{configFor(record.entity).label}</small></div><button onClick={async () => { await onRestoreRecord(record.id); setArchived(await api.archived()) }}>恢复</button></div>)}</div> : <p className="muted">归档箱为空。</p>}</section></div>
+  useEffect(() => { api.buildProvenance().then(setProvenance) }, [])
+  return <div className="settings-page"><section className="settings-section build-provenance"><header><div><h2>版本与运行诊断</h2><p>用于确认当前看到的是否为最新正式安装版。</p></div><span className="connection-badge connected">Sync Protocol {provenance?.syncProtocolVersion || "—"}</span></header>{provenance && <div className="provenance-grid"><span><small>应用路径</small><b>{provenance.appPath}</b></span><span><small>版本</small><b>{provenance.appVersion}</b></span><span><small>Git Commit</small><b>{provenance.gitCommit}</b></span><span><small>构建时间</small><b>{provenance.buildTime}</b></span><span><small>数据库 Schema</small><b>{provenance.schemaVersion}</b></span><span><small>设备</small><b>{provenance.deviceId || "尚未注册"}</b></span></div>}</section><section className="settings-section appearance-section"><header><div><h2>界面外观</h2><p>选择深色、白色，或按本机时间自动切换。</p></div><span className="connection-badge connected">当前：{activeTheme === 'light' ? '白色' : '深色'}</span></header><div className="theme-options">{([{ value: 'light', label: '白色' }, { value: 'dark', label: '深色' }, { value: 'auto', label: '自动' }] as { value: ThemePreference; label: string }[]).map((option) => <button key={option.value} className={themePreference === option.value ? 'active' : ''} onClick={() => onThemeChange(option.value)}><strong>{option.label}</strong><small>{option.value === 'auto' ? '07:00–19:00 白色' : option.value === 'light' ? '清爽白色界面' : '保留深色界面'}</small>{themePreference === option.value && <b>✓</b>}</button>)}</div></section><section className="settings-section"><header><div><h2>AI 服务商与模型</h2><p>每个服务商使用独立 API Key，并分别保存在 应用私有凭据文件（权限 0600）。</p></div><span className={`connection-badge ${selectedProvider?.configured ? 'connected' : ''}`}>{selectedProvider?.configured ? '已配置' : '未配置'}</span></header><div className="provider-tabs">{config?.providers.map((item) => <button key={item.id} className={provider === item.id ? 'active' : ''} onClick={() => setProvider(item.id)}><span className={`provider-light ${item.configured ? 'connected' : ''}`} /><strong>{item.label}</strong><small>{item.model}</small></button>)}</div><div className="model-catalog">{selectedProvider?.models.map((item) => <button key={item.id} className={model === item.id ? 'active' : ''} onClick={() => setModel(item.id)}><span>{model === item.id ? '●' : '○'}</span><div><strong>{item.label}</strong><small>{item.description}</small></div></button>)}</div><div className="settings-fields provider-settings"><label>{selectedProvider?.label || 'AI'} API Key<input type="password" autoComplete="off" placeholder={selectedProvider?.configured ? '已配置；留空保留当前 Key' : `粘贴 ${selectedProvider?.label || ''} API Key`} value={key} onChange={(event) => setKey(event.target.value)} /></label><label>当前模型<select value={model} onChange={(event) => setModel(event.target.value)}>{selectedProvider?.models.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label><button className="button primary" onClick={() => onSaveAiProvider(provider, key, model)}>保存、测试并启用</button></div><p className="provider-endpoint">API Endpoint：{selectedProvider?.baseUrl}{provider === 'minimax' ? ' · 中国大陆 Token Plan（Anthropic Messages）' : ''}</p></section><section className="settings-section capture-provider-section"><header><div><h2>采集服务与 External Intelligence Provider</h2><p>Provider 只负责读取外部数据，原始响应进入本机 External Intelligence 缓存；API 凭据保存在应用私有凭据文件（权限 0600），不会进入 SQLite、导出或 AI Prompt。</p></div><span className={`connection-badge ${captureConfig?.providers.some((item) => item.configured) ? 'connected' : ''}`}>{captureConfig?.providers.some((item) => item.configured) ? '已有 Provider' : '未配置'}</span></header>{captureConfig?.providers.map((item) => { if (item.id === 'redfox') return <div className="capture-provider-card" key={item.id}><div><strong>RedFoxHub</strong><small>微信公众号 · 抖音 · 小红书</small></div><label>RedFox API Key<input type="password" autoComplete="off" value={redfoxKey} onChange={(event) => setRedfoxKey(event.target.value)} placeholder={item.configured ? '已配置；留空保留当前 Key' : '粘贴 RedFox API Key'} /></label><button className="button primary" onClick={() => { onSaveCaptureProvider('redfox', redfoxKey); setRedfoxKey('') }}>保存并测试</button></div>; if (item.id === 'apify') return <div className="capture-provider-card" key={item.id}><div><strong>Apify</strong><small>网页 · 公众号 · 抖音 · 小红书 · X · Instagram · Facebook · Reddit · TikTok · YouTube</small></div><label>Apify API Token<input type="password" autoComplete="off" value={apifyKey} onChange={(event) => setApifyKey(event.target.value)} placeholder={item.configured ? '已配置；留空保留当前 Token' : '粘贴 Apify API Token'} /></label><button className="button primary" onClick={() => { onSaveCaptureProvider('apify', apifyKey); setApifyKey('') }}>保存并测试</button></div>; if (item.id === 'tikhub') return <div className="capture-provider-card" key={item.id}><div><strong>TikHub</strong><small>抖音 · TikTok · 小红书 · X · Instagram · Reddit · YouTube · 微信公众号</small></div><label>TikHub API Key<input type="password" autoComplete="off" value={tikhubKey} onChange={(event) => setTikhubKey(event.target.value)} placeholder={item.configured ? '已配置；留空保留当前 Key' : '粘贴 TikHub API Key'} /></label><button className="button primary" onClick={() => { onSaveCaptureProvider('tikhub', tikhubKey); setTikhubKey('') }}>保存并测试</button></div>; return <div className="capture-provider-card" key={item.id}><div><strong>Scrape Creators</strong><small>TikTok · Instagram · YouTube · Facebook · X · Reddit</small></div><label>Scrape Creators API Key<input type="password" autoComplete="off" value={scrapeCreatorsKey} onChange={(event) => setScrapeCreatorsKey(event.target.value)} placeholder={item.configured ? '已配置；留空保留当前 Key' : '粘贴 Scrape Creators API Key'} /></label><button className="button primary" onClick={() => { onSaveCaptureProvider('scrapecreators', scrapeCreatorsKey); setScrapeCreatorsKey('') }}>保存并测试</button></div>})}</section><section className="settings-section"><header><div><h2>数据所有权</h2><p>核心数据保存在本机 SQLite，可完整导出、备份和恢复。</p></div></header><div className="settings-actions"><button onClick={() => onExport('json')}>导出 JSON</button><button onClick={() => onExport('markdown')}>导出 Markdown</button><button onClick={() => onExport('csv')}>导出 CSV</button><button className="primary" onClick={onBackup}>创建 SQLite 快照</button></div></section><section className="settings-section"><header><div><h2>本地备份</h2><p>恢复前会自动保存当前数据库，避免覆盖错误。</p></div></header>{backups.length ? <div className="backup-list">{backups.slice(0, 8).map((backup) => <div key={backup.path}><div><strong>{backup.name}</strong><small>{formatDate(backup.modified, true)} · {(backup.size / 1024).toFixed(1)} KB</small></div><button onClick={() => onRestoreBackup(backup.path)}>恢复</button></div>)}</div> : <GuidedEmpty icon="↺" title="还没有本地备份" text="创建 SQLite 快照后，可以随时恢复到这个状态。" action="创建第一个备份" onAction={onBackup} />}</section><section className="settings-section"><header><div><h2>归档</h2><p>重要记录不会直接永久删除。归档后可随时恢复。</p></div><span>{archived.length} 条</span></header>{archived.length ? <div className="archive-list">{archived.map((record) => <div key={record.id}><div><span>{configFor(record.entity).icon}</span><strong>{titleFor(record)}</strong><small>{configFor(record.entity).label}</small></div><button onClick={async () => { await onRestoreRecord(record.id); setArchived(await api.archived()) }}>恢复</button></div>)}</div> : <p className="muted">归档箱为空。</p>}</section></div>
 }
 
 function SearchOverlay({ query, results, selectedEntities, onToggleEntity, onOpen, onClose }: { query: string; results: RecordData[]; selectedEntities: Entity[]; onToggleEntity: (entity: Entity) => void; onOpen: (record: RecordData) => void; onClose: () => void }) {
@@ -1602,9 +1710,6 @@ function GuidedEmpty({ icon, title, text, action, onAction }: { icon: string; ti
 function ProgressBar({ value }: { value: number }) { return <div className="progress"><span style={{ width: `${value}%` }} /><small>{Math.round(value)}%</small></div> }
 function CompactRecord({ record, onOpen }: { record: RecordData; onOpen: (record: RecordData) => void }) { return <button className="compact-record" onClick={() => onOpen(record)}><span>{configFor(record.entity).icon}</span><div><strong>{titleFor(record)}</strong><small>{configFor(record.entity).label} · {formatDate(recordDate(record))}</small></div><b>›</b></button> }
 function ActionTask({ task, records, index, onOpen, onEdit, onComplete, onTimer }: { task: RecordData; records: RecordData[]; index?: number; onOpen: (record: RecordData) => void; onEdit: (record: RecordData) => void; onComplete: (record: RecordData) => void; onTimer: (record: RecordData) => void }) { return <div className={`action-task ${isOverdue(task) ? 'overdue' : ''}`}>{index && <span className="task-index">{index}</span>}<button className="check" onClick={() => onComplete(task)}>✓</button><button className="task-main" onClick={() => onOpen(task)}><strong>{titleFor(task)}</strong><small>{relationName(task.projectId, records) || '未分配项目'} · {task.dueDate ? formatDate(task.dueDate) : '未安排日期'} · 预计 {Number(task.estimateMinutes || 0)} 分钟</small></button><span className={`priority ${task.priority || 'medium'}`}>{priorityLabel(task.priority)}</span><button onClick={() => onTimer(task)}>▶</button><button onClick={() => onEdit(task)}>•••</button></div> }
-function TimeRow({ log, records, onEdit }: { log: RecordData; records: RecordData[]; onEdit: (record: RecordData) => void }) { return <button className="time-row" onClick={() => onEdit(log)}><time>{formatDate(log.startAt, true).split(' ')[1] || formatDate(log.startAt, true)}<span>—</span>{log.endAt ? formatDate(log.endAt, true).split(' ')[1] : '进行中'}</time><div><strong>{titleFor(log)}</strong><small>{relationName(log.projectId, records) || String(log.category || '未分配')} · {relationName(log.taskId, records)}</small></div><b>{formatMinutes(durationMinutes(log))}</b></button> }
-function CompareBar({ label, value, max }: { label: string; value: number; max: number }) { return <div className="compare-bar"><span>{label}</span><div><i style={{ width: `${Math.min(100, value / max * 100)}%` }} /></div><strong>{formatMinutes(value)}</strong></div> }
-function AllocationList({ items, empty }: { items: { label: string; minutes: number; percentage: number }[]; empty: string }) { return items.length ? <div className="allocation-list">{items.map((item) => <div key={item.label}><header><span>{item.label}</span><strong>{formatMinutes(item.minutes)}</strong></header><div><i style={{ width: `${item.percentage}%` }} /></div></div>)}</div> : <p className="empty-copy">{empty}</p> }
 function TimelineAiPanel({ scope, onAnalyze, onPrepare }: { scope: string; onAnalyze: (question: string) => void; onPrepare: (question: string) => void }) {
   const prompts = [
     ['总结当前范围', `请只做只读分析，基于当前筛选的时间线（${scope}）总结发生了什么。区分事实、计划和缺失证据，不要创建或修改任何记录。`],
@@ -1634,10 +1739,8 @@ function TimelineList({ items, records, causalEdges, onOpen }: { items: Timeline
 function timelineClock(item: TimelineProjectionItem) { if (item.record.timePrecision === 'date' || /^\d{4}-\d{2}-\d{2}$/.test(item.occurredAt)) return item.timeMeaning === 'planned' ? '计划' : '全天'; const timestamp = timelineTimestamp(item.occurredAt); return timestamp ? new Date(timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }) : '—' }
 function ModelEffectiveness({ model, records }: { model: RecordData; records: RecordData[] }) { const usages = records.filter((record) => record.entity === 'mentalModelUsages' && linkedTo(record, model.id)); const effective = usages.filter((record) => record.effective === 'yes').length; return <span>{usages.length} 次使用 · {usages.length ? Math.round(effective / usages.length * 100) : 0}% 有效</span> }
 
-function allocation(logs: RecordData[], records: RecordData[]) { const grouped: Record<string, number> = {}; logs.forEach((log) => { const label = relationName(log.projectId, records) || String(log.category || '未分配'); grouped[label] = (grouped[label] || 0) + durationMinutes(log) }); const total = Object.values(grouped).reduce((sum, value) => sum + value, 0); return Object.entries(grouped).sort(([, a], [, b]) => b - a).map(([label, minutes]) => ({ label, minutes, percentage: total ? minutes / total * 100 : 0 })) }
 function relationName(id: unknown, records: RecordData[]) { if (!id) return ''; return titleFor(records.find((record) => record.id === id) || {}) }
 function relationSummary(record: RecordData) { const count = Object.entries(record).filter(([key, value]) => (key.endsWith('Id') || key.endsWith('Ids')) && (Array.isArray(value) ? value.length > 0 : Boolean(value && String(value).trim()))).length; return count ? `${count} 个关联字段` : '暂无关联' }
-function priorityRank(value: unknown) { return ({ high: 0, medium: 1, low: 2 }[String(value)] ?? 3) }
 function groupBy<T>(items: T[], key: (item: T) => string) { return items.reduce<Record<string, T[]>>((groups, item) => { const value = key(item); (groups[value] ||= []).push(item); return groups }, {}) }
 function conversionInitial(source: RecordData, target: Entity): Partial<RecordData> { const common = { projectId: source.projectId, goalId: source.goalId }; if (target === 'reviews') return { ...common, resultId: source.id, title: `复盘：${titleFor(source)}`, whatHappened: source.actual || source.actualResult }; if (source.entity === 'reviews') { const content = source.lesson || source.doDifferently || source.whatHappened; if (target === 'insights') return { ...common, reviewId: source.id, statement: content, explanation: source.whyItHappened }; if (target === 'principles') return { statement: content, evidence: source.whatHappened, reviewIds: [source.id] }; if (target === 'knowledge') return { ...common, title: titleFor(source), content, reviewIds: [source.id] }; if (target === 'tasks') return { ...common, title: source.nextAction, status: 'todo' }; if (target === 'decisions') return { ...common, title: source.nextAction || titleFor(source), context: source.lesson, status: 'pending' } } if (source.entity === 'notes') { const noteContent = String(source.content || source.title || ''); if (target === 'knowledge') return { title: titleFor(source), content: noteContent, sourceNoteId: source.id }; if (target === 'insights') return { statement: noteContent, explanation: String(source.title || ''), sourceNoteId: source.id }; if (target === 'mentalModels') return { name: titleFor(source), definition: noteContent, coreIdea: noteContent, sourceNoteId: source.id }; if (target === 'decisions') return { title: titleFor(source), context: noteContent, sourceNoteId: source.id, status: 'pending' }; if (target === 'tasks') return { title: titleFor(source), description: noteContent, status: 'todo' }; if (target === 'projects') return { title: titleFor(source), description: noteContent, status: 'active' } } if (source.entity === 'inbox') return { ...common, title: source.content, content: source.content, statement: source.content, description: source.content }; return common }
 function paletteActions({ setSearchOpen, setPaletteOpen, openCreate, startTimer, setAiOpen, setView }: { setSearchOpen: (value: boolean) => void; setPaletteOpen: (value: boolean) => void; openCreate: (entity: Entity, initial?: Partial<RecordData>) => void; startTimer: () => void; setAiOpen: (value: boolean) => void; setView: (view: View) => void }) { const run = (action: () => void) => () => { setPaletteOpen(false); action() }; return [{ label: '全局搜索', hint: '搜索所有本地记录', icon: '⌕', run: run(() => setSearchOpen(true)) }, { label: '打开收纳箱', hint: '收集、整理与笔记', icon: '▱', run: run(() => setView('notebook')) }, { label: '创建任务', hint: '添加下一步行动', icon: '□', run: run(() => openCreate('tasks')) }, { label: '创建项目', hint: '建立工作空间', icon: '◈', run: run(() => openCreate('projects')) }, { label: '开始计时', hint: '记录现实投入', icon: '▶', run: run(startTimer) }, { label: '创建决策', hint: '记录预测和理由', icon: '◆', run: run(() => openCreate('decisions', { date: today() })) }, { label: '创建复盘', hint: '从现实提炼学习', icon: '◑', run: run(() => openCreate('reviews')) }, { label: '创建知识', hint: '沉淀长期资产', icon: '⌘', run: run(() => openCreate('knowledge')) }, { label: '打开 AI 助理', hint: '基于当前上下文分析', icon: 'AI', run: run(() => setAiOpen(true)) }, { label: '打开今天', hint: '进入 Focus 工作视图', icon: '◉', run: run(() => setView('today')) }] }

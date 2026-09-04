@@ -86,7 +86,7 @@ const pendingDecisions = (records: RecordData[]) => records.filter((record) => r
 
 const signedMoney = (records: RecordData[], from: string, to: string) => financeDashboard(records, { from, to }).economics.cashNetMinor
 const resultCount = (records: RecordData[], from: string, to: string) => records.filter((record) => record.entity === 'results' && inRange(record, from, to) && resultAchievement(record) !== undefined).length
-const timeMinutes = (records: RecordData[], from: string, to: string) => records.filter((record) => record.entity === 'timeLogs' && inRange(record, from, to)).reduce((sum, record) => sum + durationMinutes(record), 0)
+const timeMinutes = (records: RecordData[], from: string, to: string) => records.filter((record) => record.entity === 'timeLogs' && record.excludedFromTotals !== true && inRange(record, from, to)).reduce((sum, record) => sum + durationMinutes(record), 0)
 const expenseMinor = (records: RecordData[], from: string, to: string) => financeDashboard(records, { from, to }).economics.expenseMinor
 const efficiency = (records: RecordData[], from: string, to: string) => {
   const outcomes = resultCount(records, from, to); const minutes = timeMinutes(records, from, to); const expense = expenseMinor(records, from, to)

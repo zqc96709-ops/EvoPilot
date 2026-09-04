@@ -25,8 +25,7 @@ const save = async (entity, data) => { const value = await executeAsync(`const d
 try {
   await wait(() => request('/status').then((result) => result.value?.ready), 'webdriver')
   sessionId = (await request('/session', { capabilities: { alwaysMatch: { browserName: 'tauri' } } })).value.sessionId
-  await pause(1200)
-  if (!await execute('return Boolean(document.querySelector(".ceo-command-center"))')) throw new Error('Command Center did not render')
+  await wait(() => execute('return Boolean(document.querySelector(".ceo-command-center"))'), 'Command Center render')
   const profile = await save('profiles', { title: '我的档案', name: 'Jason', nickname: 'Jason' })
   const goal = await save('goals', { title: '建立可持续增长引擎', status: 'active', progress: 72, priority: 'high', startDate: '2026-08-01', targetDate: '2026-09-30' })
   await save('keyResults', { title: '验证增长模型', goalId: goal.id, status: 'active', currentValue: 72, targetValue: 100 })

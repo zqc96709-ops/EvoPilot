@@ -13,6 +13,10 @@ export type RecordData = Record<string, unknown> & {
   entity: Entity
   createdAt: string
   updatedAt: string
+  revision?: number
+  workspaceId?: string
+  createdBy?: string
+  updatedBy?: string
   archivedAt?: string
   deletedAt?: string
   relationType?: string
@@ -103,8 +107,10 @@ export const entities: EntityConfig[] = [
   { entity: 'timeLogs', label: '时间', singular: '时间记录', icon: '◷', titleKey: 'title', description: '时间记录现实，而不是计划。', fields: [
     { key: 'title', label: '活动' }, { key: 'notes', label: '备注', multiline: true }, { key: 'startAt', label: '开始时间', type: 'datetime-local' },
     { key: 'endAt', label: '结束时间', type: 'datetime-local' }, { key: 'durationMinutes', label: '时长（分钟）', type: 'number' },
+    { key: 'plannedMinutes', label: '明确计划时长（分钟）', type: 'number' },
     { key: 'goalId', label: '目标', relation: 'goals' }, { key: 'projectId', label: '项目', relation: 'projects' }, { key: 'taskId', label: '任务', relation: 'tasks' },
-    { key: 'category', label: '类别' }, { key: 'energyLevel', label: '精力（1-5）', type: 'number' },
+    { key: 'category', label: '类别' }, { key: 'workMode', label: '工作模式', type: 'select', options: [option('NORMAL', '普通工作'), option('DEEP_WORK', '深度工作'), option('MEETING', '会议')] },
+    { key: 'energyLevel', label: '精力（1-5）', type: 'number' },
   ] },
   { entity: 'results', label: '成果 Outcome', singular: '结果', icon: '✓', titleKey: 'title', description: '记录项目或行动产生的现实结果，并用证据比较预期与实际。', fields: [
     { key: 'title', label: '结果名称' }, { key: 'summary', label: '结果摘要', multiline: true }, { key: 'description', label: '结果说明', multiline: true },
@@ -210,11 +216,13 @@ export const entities: EntityConfig[] = [
   ] },
   { entity: 'insights', label: '洞见', singular: '洞见', icon: '✦', titleKey: 'statement', description: '从经验中提炼“我发现了什么”。', fields: [
     { key: 'statement', label: '洞见' }, { key: 'explanation', label: '解释', multiline: true }, { key: 'evidence', label: '证据', multiline: true },
+    { key: 'validationStatus', label: '验证状态', type: 'select', options: [option('PENDING', '待验证'), option('SUPPORTED', '已验证'), option('CONTRADICTED', '已反驳'), option('INSUFFICIENT', '证据不足')] }, { key: 'validatedAt', label: '验证时间', type: 'datetime-local' },
     { key: 'source', label: '来源' }, { key: 'taskId', label: '任务', relation: 'tasks' }, { key: 'projectId', label: '项目', relation: 'projects' }, { key: 'goalId', label: '目标', relation: 'goals' },
     { key: 'reviewId', label: '复盘', relation: 'reviews' }, { key: 'resultId', label: '结果', relation: 'results' }, { key: 'knowledgeId', label: '知识', relation: 'knowledge' }, { key: 'sourceNoteId', label: '来源笔记', relation: 'notes' }, { key: 'confidence', label: '置信度（0-100）', type: 'number' },
   ] },
   { entity: 'principles', label: '原则', singular: '原则', icon: '∴', titleKey: 'statement', description: '记录长期相信并愿意用于决策的原则。', fields: [
     { key: 'statement', label: '原则' }, { key: 'explanation', label: '解释', multiline: true }, { key: 'evidence', label: '证据', multiline: true },
+    { key: 'status', label: '生命周期', type: 'select', options: [option('CANDIDATE', '候选'), option('ACTIVE', '已验证/启用'), option('UNDER_REVIEW', '重新验证中'), option('RETIRED', '已退役'), option('REJECTED', '已拒绝')] }, { key: 'validatedAt', label: '最近验证时间', type: 'datetime-local' }, { key: 'revalidationDueAt', label: '重新验证日期', type: 'date' },
     { key: 'examples', label: '示例', multiline: true }, { key: 'limitations', label: '局限', multiline: true }, { key: 'source', label: '来源' },
     { key: 'usage', label: '使用说明', multiline: true }, { key: 'insightIds', label: '来源洞见', relation: 'insights', multiple: true }, { key: 'reviewIds', label: '来源复盘', relation: 'reviews', multiple: true }, { key: 'mentalModelIds', label: '相关思维模型', relation: 'mentalModels', multiple: true },
   ] },
@@ -339,7 +347,7 @@ export const recordDate = timelineOccurredAt
 export const isToday = (value: unknown) => localDateKey(String(value || '')) === localDateKey()
 export const isOverdue = (record: Partial<RecordData>) => Boolean(record.dueDate) && localDateKey(String(record.dueDate)) < localDateKey() && !['completed', 'cancelled'].includes(String(record.status))
 export const durationMinutes = (record: Partial<RecordData>) => Number(record.durationMinutes || record.duration || 0)
-export const minutesToday = (records: RecordData[]) => records.filter((record) => record.entity === 'timeLogs' && isToday(record.startAt)).reduce((total, record) => total + durationMinutes(record), 0)
+export const minutesToday = (records: RecordData[]) => records.filter((record) => record.entity === 'timeLogs' && record.excludedFromTotals !== true && isToday(record.startAt)).reduce((total, record) => total + durationMinutes(record), 0)
 export const timeline = timelineRecords
 export const linkedTo = (record: Partial<RecordData>, id: string) => Object.entries(record).some(([key, value]) => (key.endsWith('Id') && value === id) || (key.endsWith('Ids') && (Array.isArray(value) ? value.includes(id) : String(value || '').split(',').map((item) => item.trim()).includes(id))))
 export const percent = (value: unknown) => Math.max(0, Math.min(100, Number(value || 0)))

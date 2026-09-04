@@ -698,7 +698,100 @@ fn db(app: &AppHandle) -> Result<Connection, String> {
     }
     finance::migrate_allocations(&connection, &now())?;
     finance::migrate_budgets(&connection, &now())?;
+    migrate_sync_v1(&connection)?;
     Ok(connection)
+}
+
+fn migrate_sync_v1(connection: &Connection) -> Result<(), String> {
+    ensure_column(connection, "records", "workspace_id", "TEXT NOT NULL DEFAULT 'local'")?;
+    ensure_column(connection, "records", "revision", "INTEGER NOT NULL DEFAULT 1")?;
+    ensure_column(connection, "records", "created_by", "TEXT")?;
+    ensure_column(connection, "records", "updated_by", "TEXT")?;
+    connection.execute_batch(
+        "CREATE TABLE IF NOT EXISTS sync_outbox (
+           mutation_id TEXT PRIMARY KEY,
+           transaction_id TEXT,
+           workspace_id TEXT NOT NULL,
+           device_id TEXT NOT NULL,
+           entity_type TEXT NOT NULL,
+           entity_id TEXT NOT NULL,
+           operation TEXT NOT NULL,
+           base_revision INTEGER NOT NULL,
+           changed_fields_json TEXT NOT NULL,
+           payload_json TEXT NOT NULL,
+           protocol_version INTEGER NOT NULL DEFAULT 1,
+           created_at TEXT NOT NULL,
+           attempts INTEGER NOT NULL DEFAULT 0,
+           last_error TEXT
+         );
+         CREATE INDEX IF NOT EXISTS idx_sync_outbox_created ON sync_outbox(created_at, mutation_id);
+         CREATE TABLE IF NOT EXISTS sync_state (
+           workspace_id TEXT PRIMARY KEY,
+           server_cursor INTEGER NOT NULL DEFAULT 0,
+           snapshot_cursor INTEGER NOT NULL DEFAULT 0,
+           last_synced_at TEXT,
+           schema_version INTEGER NOT NULL DEFAULT 16,
+           protocol_version INTEGER NOT NULL DEFAULT 1
+         );
+         CREATE TABLE IF NOT EXISTS sync_devices (
+           device_id TEXT PRIMARY KEY,
+           name TEXT NOT NULL,
+           platform TEXT NOT NULL,
+           app_version TEXT NOT NULL,
+           schema_version INTEGER NOT NULL,
+           protocol_version INTEGER NOT NULL,
+           last_seen_at TEXT NOT NULL,
+           revoked_at TEXT
+         );
+         CREATE TABLE IF NOT EXISTS sync_conflicts (
+           conflict_id TEXT PRIMARY KEY,
+           entity_type TEXT NOT NULL,
+           entity_id TEXT NOT NULL,
+           local_revision INTEGER NOT NULL,
+           server_revision INTEGER NOT NULL,
+           fields_json TEXT NOT NULL,
+           local_payload_json TEXT NOT NULL,
+           remote_payload_json TEXT NOT NULL,
+           created_at TEXT NOT NULL,
+           resolved_at TEXT,
+           resolution TEXT
+         );
+         INSERT OR IGNORE INTO sync_state(workspace_id) VALUES ('local');
+         DROP TRIGGER IF EXISTS sync_records_insert;
+         DROP TRIGGER IF EXISTS sync_records_update;
+         DROP TRIGGER IF EXISTS sync_relations_insert;
+         DROP TRIGGER IF EXISTS sync_relations_delete;
+         CREATE TRIGGER sync_records_insert AFTER INSERT ON records
+         WHEN NOT EXISTS (SELECT 1 FROM settings WHERE key='sync.apply_mode' AND value='1')
+         BEGIN
+           INSERT INTO sync_outbox(mutation_id, workspace_id, device_id, entity_type, entity_id, operation, base_revision, changed_fields_json, payload_json, created_at)
+           VALUES (lower(hex(randomblob(16))), NEW.workspace_id, coalesce((SELECT value FROM settings WHERE key='sync.device_id'),'unregistered'), NEW.entity, NEW.id, 'CREATE', 0, '[]', NEW.data_json, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+         END;
+         CREATE TRIGGER sync_records_update AFTER UPDATE OF data_json, archived_at, deleted_at ON records
+         WHEN NOT EXISTS (SELECT 1 FROM settings WHERE key='sync.apply_mode' AND value='1')
+         BEGIN
+           UPDATE records SET revision=OLD.revision+1 WHERE id=NEW.id;
+           INSERT INTO sync_outbox(mutation_id, workspace_id, device_id, entity_type, entity_id, operation, base_revision, changed_fields_json, payload_json, created_at)
+           VALUES (lower(hex(randomblob(16))), NEW.workspace_id, coalesce((SELECT value FROM settings WHERE key='sync.device_id'),'unregistered'), NEW.entity, NEW.id, CASE WHEN NEW.deleted_at IS NOT NULL THEN 'DELETE' ELSE 'UPDATE' END, OLD.revision,
+             coalesce((SELECT json_group_array(key) FROM (SELECT key FROM json_each(OLD.data_json) UNION SELECT key FROM json_each(NEW.data_json)) WHERE json_extract(OLD.data_json,'$.'||key) IS NOT json_extract(NEW.data_json,'$.'||key)), '[]'),
+             NEW.data_json, strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+         END;
+         CREATE TRIGGER sync_relations_insert AFTER INSERT ON relations
+         WHEN NOT EXISTS (SELECT 1 FROM settings WHERE key='sync.apply_mode' AND value='1')
+         BEGIN
+           INSERT INTO sync_outbox(mutation_id, workspace_id, device_id, entity_type, entity_id, operation, base_revision, changed_fields_json, payload_json, created_at)
+           VALUES (lower(hex(randomblob(16))), 'local', coalesce((SELECT value FROM settings WHERE key='sync.device_id'),'unregistered'), 'relations', NEW.id, 'RELATION_ADD', 0, '[\"fromId\",\"toId\",\"relationType\"]', json_object('id',NEW.id,'fromId',NEW.from_id,'toId',NEW.to_id,'relationType',NEW.relation_type,'createdAt',NEW.created_at), strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+         END;
+         CREATE TRIGGER sync_relations_delete AFTER DELETE ON relations
+         WHEN NOT EXISTS (SELECT 1 FROM settings WHERE key='sync.apply_mode' AND value='1')
+         BEGIN
+           INSERT INTO sync_outbox(mutation_id, workspace_id, device_id, entity_type, entity_id, operation, base_revision, changed_fields_json, payload_json, created_at)
+           VALUES (lower(hex(randomblob(16))), 'local', coalesce((SELECT value FROM settings WHERE key='sync.device_id'),'unregistered'), 'relations', OLD.id, 'RELATION_REMOVE', 0, '[]', json_object('id',OLD.id,'fromId',OLD.from_id,'toId',OLD.to_id,'relationType',OLD.relation_type,'createdAt',OLD.created_at), strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+         END;
+         INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (16, strftime('%s','now'));
+         DELETE FROM settings WHERE key='sync.apply_mode';"
+    ).map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 fn ensure_column(
@@ -1353,6 +1446,156 @@ fn merge_remote_records(app: AppHandle, records: Vec<Value>) -> Result<usize, St
 #[tauri::command]
 fn get_record(app: AppHandle, id: String) -> Result<Option<Value>, String> {
     record_by_id(&db(&app)?, &id)
+}
+
+#[tauri::command]
+fn get_sync_status(app: AppHandle) -> Result<Value, String> {
+    let connection = db(&app)?;
+    let pending: i64 = connection.query_row("SELECT COUNT(*) FROM sync_outbox", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+    let conflicts: i64 = connection.query_row("SELECT COUNT(*) FROM sync_conflicts WHERE resolved_at IS NULL", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+    let (cursor, last_synced_at): (i64, Option<String>) = connection.query_row(
+        "SELECT server_cursor,last_synced_at FROM sync_state WHERE workspace_id='local'", [], |row| Ok((row.get(0)?, row.get(1)?))
+    ).map_err(|e| e.to_string())?;
+    Ok(json!({"pending":pending,"conflicts":conflicts,"serverCursor":cursor,"lastSyncedAt":last_synced_at,"protocolVersion":1,"schemaVersion":16}))
+}
+
+#[tauri::command]
+fn get_build_provenance(app: AppHandle) -> Result<Value, String> {
+    let connection = db(&app)?;
+    let schema: i64 = connection.query_row("SELECT COALESCE(MAX(version),0) FROM schema_migrations", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+    let device_id: Option<String> = connection.query_row("SELECT value FROM settings WHERE key='sync.device_id'", [], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+    let app_path = std::env::current_exe().map_err(|e| e.to_string())?.to_string_lossy().to_string();
+    Ok(json!({"appPath":app_path,"appVersion":env!("CARGO_PKG_VERSION"),"gitCommit":env!("JASON_GIT_COMMIT"),"buildTime":env!("JASON_BUILD_TIME"),"schemaVersion":schema,"syncProtocolVersion":1,"deviceId":device_id,"workspaceId":"local"}))
+}
+
+#[tauri::command]
+fn get_sync_v1_config(app: AppHandle) -> Result<Value, String> {
+    let connection = db(&app)?;
+    let url = setting(&connection, "sync.v1_url")?.unwrap_or_default();
+    let token = read_secrets()?.get("sync-v1-token").and_then(Value::as_str).unwrap_or_default().to_string();
+    Ok(json!({"url":url,"configured":!token.is_empty(),"token":token}))
+}
+
+#[tauri::command]
+fn configure_sync_v1(app: AppHandle, url: String, token: String) -> Result<Value, String> {
+    let normalized = url.trim().trim_end_matches('/').to_string();
+    if !(normalized.starts_with("http://") || normalized.starts_with("https://")) { return Err("同步服务地址必须以 http:// 或 https:// 开头".into()); }
+    if token.trim().is_empty() { return Err("同步 Token 不能为空".into()); }
+    let connection = db(&app)?; let timestamp = now();
+    connection.execute("INSERT INTO settings(key,value,updated_at) VALUES('sync.v1_url',?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at", params![normalized,timestamp]).map_err(|e| e.to_string())?;
+    store_provider_key("sync-v1-token", token.trim())?;
+    Ok(json!({"url":normalized,"configured":true,"token":token.trim()}))
+}
+
+#[tauri::command]
+fn test_sync_v1(app: AppHandle) -> Result<Value, String> {
+    let connection = db(&app)?; let url = setting(&connection, "sync.v1_url")?.filter(|value| !value.is_empty()).ok_or("尚未配置同步服务地址")?;
+    let token = read_secrets()?.get("sync-v1-token").and_then(Value::as_str).filter(|value| !value.is_empty()).ok_or("尚未配置同步 Token")?.to_string();
+    let started = std::time::Instant::now();
+    let response = reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(8)).build().map_err(|e| e.to_string())?.get(format!("{url}/devices")).bearer_auth(token).send().map_err(|e| e.to_string())?;
+    if !response.status().is_success() { return Err(format!("同步服务验证失败：HTTP {}", response.status())); }
+    Ok(json!({"ok":true,"latencyMs":started.elapsed().as_millis()}))
+}
+
+#[tauri::command]
+fn register_sync_device(app: AppHandle, name: String, platform: String) -> Result<Value, String> {
+    let connection = db(&app)?;
+    let existing: Option<String> = connection.query_row("SELECT value FROM settings WHERE key='sync.device_id'", [], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+    let id = existing.unwrap_or_else(|| new_id("device"));
+    let timestamp = now();
+    connection.execute("INSERT INTO settings(key,value,updated_at) VALUES('sync.device_id',?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at", params![id,timestamp]).map_err(|e| e.to_string())?;
+    connection.execute("INSERT INTO sync_devices(device_id,name,platform,app_version,schema_version,protocol_version,last_seen_at) VALUES(?1,?2,?3,'0.1.0',16,1,?4) ON CONFLICT(device_id) DO UPDATE SET name=excluded.name,platform=excluded.platform,last_seen_at=excluded.last_seen_at", params![id,name,platform,timestamp]).map_err(|e| e.to_string())?;
+    connection.execute("UPDATE sync_outbox SET device_id=?1 WHERE device_id='unregistered'", params![id]).map_err(|e| e.to_string())?;
+    Ok(json!({"deviceId":id,"name":name,"platform":platform,"schemaVersion":16,"protocolVersion":1}))
+}
+
+#[tauri::command]
+fn list_sync_outbox(app: AppHandle, limit: Option<usize>) -> Result<Vec<Value>, String> {
+    let connection = db(&app)?;
+    let mut statement = connection.prepare("SELECT mutation_id,transaction_id,workspace_id,device_id,entity_type,entity_id,operation,base_revision,changed_fields_json,payload_json,protocol_version,created_at,attempts,last_error FROM sync_outbox ORDER BY created_at,mutation_id LIMIT ?1").map_err(|e| e.to_string())?;
+    let rows = statement.query_map(params![limit.unwrap_or(100).min(500) as i64], |row| {
+        let changed: String = row.get(8)?;
+        let payload: String = row.get(9)?;
+        Ok(json!({"mutationId":row.get::<_,String>(0)?,"transactionId":row.get::<_,Option<String>>(1)?,"workspaceId":row.get::<_,String>(2)?,"deviceId":row.get::<_,String>(3)?,"entityType":row.get::<_,String>(4)?,"entityId":row.get::<_,String>(5)?,"operation":row.get::<_,String>(6)?,"baseRevision":row.get::<_,i64>(7)?,"changedFields":serde_json::from_str::<Value>(&changed).unwrap_or(json!([])),"payload":serde_json::from_str::<Value>(&payload).unwrap_or(json!({})),"protocolVersion":row.get::<_,i64>(10)?,"createdAt":row.get::<_,String>(11)?,"attempts":row.get::<_,i64>(12)?,"lastError":row.get::<_,Option<String>>(13)?}))
+    }).map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>,_>>().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn acknowledge_sync_mutations(app: AppHandle, mutation_ids: Vec<String>, server_cursor: i64) -> Result<(), String> {
+    let mut connection = db(&app)?;
+    let transaction = connection.transaction().map_err(|e| e.to_string())?;
+    for id in mutation_ids { transaction.execute("DELETE FROM sync_outbox WHERE mutation_id=?1", params![id]).map_err(|e| e.to_string())?; }
+    transaction.execute("UPDATE sync_state SET server_cursor=max(server_cursor,?1),last_synced_at=?2 WHERE workspace_id='local'", params![server_cursor,now()]).map_err(|e| e.to_string())?;
+    transaction.commit().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn apply_sync_changes(app: AppHandle, changes: Vec<Value>, server_cursor: i64) -> Result<usize, String> {
+    let connection = db(&app)?;
+    connection.execute_batch("BEGIN IMMEDIATE").map_err(|e| e.to_string())?;
+    let result = (|| -> Result<usize, String> {
+        connection.execute("INSERT INTO settings(key,value,updated_at) VALUES('sync.apply_mode','1',?1) ON CONFLICT(key) DO UPDATE SET value='1',updated_at=excluded.updated_at", params![now()]).map_err(|e| e.to_string())?;
+        for change in &changes {
+            let entity_type = change.get("entityType").and_then(Value::as_str).ok_or("同步变化缺少 entityType")?;
+            let entity_id = change.get("entityId").and_then(Value::as_str).ok_or("同步变化缺少 entityId")?;
+            let operation = change.get("operation").and_then(Value::as_str).ok_or("同步变化缺少 operation")?;
+            let payload = change.get("payload").cloned().unwrap_or_else(|| json!({}));
+            let revision = change.get("serverRevision").and_then(Value::as_i64).unwrap_or(1);
+            if entity_type == "relations" {
+                let from_id = payload.get("fromId").and_then(Value::as_str).unwrap_or("");
+                let to_id = payload.get("toId").and_then(Value::as_str).unwrap_or("");
+                let relation_type = payload.get("relationType").and_then(Value::as_str).unwrap_or("manual");
+                if operation == "RELATION_REMOVE" || payload.get("deletedAt").is_some() {
+                    connection.execute("DELETE FROM relations WHERE id=?1 OR (from_id=?2 AND to_id=?3 AND relation_type=?4)", params![entity_id,from_id,to_id,relation_type]).map_err(|e| e.to_string())?;
+                } else {
+                    connection.execute("INSERT INTO relations(id,from_id,to_id,relation_type,created_at) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(from_id,to_id,relation_type) DO NOTHING", params![entity_id,from_id,to_id,relation_type,payload.get("createdAt").and_then(Value::as_str).unwrap_or(&now())]).map_err(|e| e.to_string())?;
+                }
+            } else {
+                let mut record = payload;
+                let object = record.as_object_mut().ok_or("同步 payload 必须是对象")?;
+                object.insert("id".into(), Value::String(entity_id.into()));
+                object.insert("entity".into(), Value::String(entity_type.into()));
+                object.insert("revision".into(), Value::Number(revision.into()));
+                if object.get("createdAt").is_none() { object.insert("createdAt".into(), Value::String(now())); }
+                if object.get("updatedAt").is_none() { object.insert("updatedAt".into(), Value::String(now())); }
+                write_synced_record(&connection, &record)?;
+                connection.execute("UPDATE records SET revision=?2 WHERE id=?1", params![entity_id,revision]).map_err(|e| e.to_string())?;
+            }
+        }
+        connection.execute("UPDATE sync_state SET server_cursor=max(server_cursor,?1),last_synced_at=?2 WHERE workspace_id='local'", params![server_cursor,now()]).map_err(|e| e.to_string())?;
+        connection.execute("DELETE FROM settings WHERE key='sync.apply_mode'", []).map_err(|e| e.to_string())?;
+        Ok(changes.len())
+    })();
+    match result {
+        Ok(count) => { connection.execute_batch("COMMIT").map_err(|e| e.to_string())?; Ok(count) }
+        Err(error) => { let _ = connection.execute_batch("ROLLBACK"); Err(error) }
+    }
+}
+
+#[tauri::command]
+fn list_sync_conflicts(app: AppHandle) -> Result<Vec<Value>, String> {
+    let connection = db(&app)?;
+    let mut statement = connection.prepare("SELECT conflict_id,entity_type,entity_id,local_revision,server_revision,fields_json,local_payload_json,remote_payload_json,created_at,resolved_at,resolution FROM sync_conflicts ORDER BY created_at DESC").map_err(|e| e.to_string())?;
+    let rows = statement.query_map([], |row| Ok(json!({"conflictId":row.get::<_,String>(0)?,"entityType":row.get::<_,String>(1)?,"entityId":row.get::<_,String>(2)?,"localRevision":row.get::<_,i64>(3)?,"serverRevision":row.get::<_,i64>(4)?,"fields":serde_json::from_str::<Value>(&row.get::<_,String>(5)?).unwrap_or(json!([])),"localPayload":serde_json::from_str::<Value>(&row.get::<_,String>(6)?).unwrap_or(json!({})),"remotePayload":serde_json::from_str::<Value>(&row.get::<_,String>(7)?).unwrap_or(json!({})),"createdAt":row.get::<_,String>(8)?,"resolvedAt":row.get::<_,Option<String>>(9)?,"resolution":row.get::<_,Option<String>>(10)?}))).map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>,_>>().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_sync_conflict(app: AppHandle, conflict: Value) -> Result<(), String> {
+    let connection = db(&app)?;
+    connection.execute("INSERT OR REPLACE INTO sync_conflicts(conflict_id,entity_type,entity_id,local_revision,server_revision,fields_json,local_payload_json,remote_payload_json,created_at,resolved_at,resolution) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,NULL,NULL)", params![
+        conflict.get("conflictId").and_then(Value::as_str).ok_or("冲突缺少 ID")?,
+        conflict.get("entityType").and_then(Value::as_str).ok_or("冲突缺少实体")?,
+        conflict.get("entityId").and_then(Value::as_str).ok_or("冲突缺少记录")?,
+        conflict.get("localRevision").and_then(Value::as_i64).unwrap_or(0),
+        conflict.get("serverRevision").and_then(Value::as_i64).unwrap_or(0),
+        serde_json::to_string(conflict.get("fields").unwrap_or(&json!([]))).map_err(|e| e.to_string())?,
+        serde_json::to_string(conflict.get("localPayload").unwrap_or(&json!({}))).map_err(|e| e.to_string())?,
+        serde_json::to_string(conflict.get("remotePayload").unwrap_or(&json!({}))).map_err(|e| e.to_string())?,
+        now()
+    ]).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -5293,7 +5536,7 @@ fn ask_chief_blocking(
 
 pub fn run() {
     let builder = tauri::Builder::default().plugin(tauri_plugin_log::Builder::default().build());
-    #[cfg(all(debug_assertions, feature = "webdriver"))]
+    #[cfg(feature = "webdriver")]
     let builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
     builder
         .setup(|app| {
@@ -5315,6 +5558,17 @@ pub fn run() {
             list_records,
             list_sync_records,
             merge_remote_records,
+            get_sync_status,
+            get_build_provenance,
+            get_sync_v1_config,
+            configure_sync_v1,
+            test_sync_v1,
+            register_sync_device,
+            list_sync_outbox,
+            acknowledge_sync_mutations,
+            apply_sync_changes,
+            list_sync_conflicts,
+            save_sync_conflict,
             get_record,
             save_record,
             delete_record,
@@ -6221,6 +6475,25 @@ mod tests {
     }
 
     #[test]
+    fn sync_v1_migration_is_idempotent_and_outbox_is_atomic() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL); CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at TEXT NOT NULL); CREATE TABLE records(id TEXT PRIMARY KEY,entity TEXT NOT NULL,data_json TEXT NOT NULL,title TEXT NOT NULL DEFAULT '',body TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL,archived_at TEXT,deleted_at TEXT); CREATE TABLE relations(id TEXT PRIMARY KEY,from_id TEXT NOT NULL,to_id TEXT NOT NULL,relation_type TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(from_id,to_id,relation_type));").unwrap();
+        migrate_sync_v1(&connection).unwrap();
+        migrate_sync_v1(&connection).unwrap();
+        connection.execute_batch("BEGIN IMMEDIATE; INSERT INTO records(id,entity,data_json,created_at,updated_at) VALUES('task-rollback','tasks','{}','1','1'); ROLLBACK;").unwrap();
+        let rolled_back: i64 = connection.query_row("SELECT COUNT(*) FROM sync_outbox", [], |row| row.get(0)).unwrap();
+        assert_eq!(rolled_back, 0);
+        connection.execute("INSERT INTO records(id,entity,data_json,created_at,updated_at) VALUES('task-1','tasks','{\"title\":\"A\"}','1','1')", []).unwrap();
+        let created: (String, i64) = connection.query_row("SELECT operation,base_revision FROM sync_outbox", [], |row| Ok((row.get(0)?,row.get(1)?))).unwrap();
+        assert_eq!(created, ("CREATE".into(), 0));
+        connection.execute("UPDATE records SET data_json='{\"title\":\"B\"}' WHERE id='task-1'", []).unwrap();
+        let revision: i64 = connection.query_row("SELECT revision FROM records WHERE id='task-1'", [], |row| row.get(0)).unwrap();
+        assert_eq!(revision, 2);
+        let updates: i64 = connection.query_row("SELECT COUNT(*) FROM sync_outbox WHERE operation='UPDATE'", [], |row| row.get(0)).unwrap();
+        assert_eq!(updates, 1);
+    }
+
+    #[test]
     #[ignore = "requires the user's configured TikHub credential and network access"]
     fn live_tikhub_search_normalizes_and_persists_evidence() {
         let search = tikhub::search_videos(&tikhub_key().expect("TikHub must be configured"), "plus size fashion", 30)
@@ -6253,7 +6526,7 @@ mod tests {
                 item,
                 "100",
                 "200",
-                "/tmp/jason-os-live-tikhub.json",
+                "test-fixture://jason-os-live-tikhub.json",
             )
             .expect("upsert normalized item");
             external_intelligence::attach_research_evidence(

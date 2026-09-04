@@ -10,10 +10,18 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:command:e2e": "node scripts/command-center-desktop-e2e.mjs",
+    "test:cognition:e2e": "node scripts/cognition-desktop-e2e.mjs",
     "test:finance:e2e": "node scripts/finance-desktop-e2e.mjs",
+    "test:notebook:e2e": "node scripts/notebook-desktop-e2e.mjs",
+    "test:time:e2e": "node scripts/time-desktop-e2e.mjs",
+    "test:today:e2e": "node scripts/today-desktop-e2e.mjs",
+    "test:sync:web:e2e": "node scripts/web-local-first-e2e.mjs",
+    "test:sync:minio:e2e": "node scripts/minio-sync-e2e.mjs",
+    "sync:server": "node sync-server/server.mjs",
     "tauri": "tauri"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1125.0",
     "@tauri-apps/api": "^2.11.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
@@ -25,6 +33,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.4",
     "oxlint": "^1.75.0",
+    "playwright": "^1.62.1",
     "typescript": "~6.0.2",
     "vite": "^8.2.0",
     "vitest": "^4.1.10"

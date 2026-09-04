@@ -18,7 +18,7 @@ export function workChainScorecard(records: RecordData[], workflowRun: RecordDat
   const runId = workflowRun.id
   const steps = records.filter((record) => record.entity === 'workflowRunSteps' && record.workflowRunId === runId)
   const results = records.filter((record) => record.entity === 'results' && record.workflowRunId === runId)
-  const timeMinutes = records.filter((record) => record.entity === 'timeLogs' && record.workflowRunId === runId).reduce((total, record) => total + durationMinutes(record), 0)
+  const timeMinutes = records.filter((record) => record.entity === 'timeLogs' && record.excludedFromTotals !== true && record.workflowRunId === runId).reduce((total, record) => total + durationMinutes(record), 0)
   const costMinor = records.filter((record) => record.entity === 'financialTransactions' && record.workflowRunId === runId && record.status === 'POSTED').reduce((total, record) => total + (integer(record.amountMinor || record.baseAmountMinor) < 0n ? -integer(record.amountMinor || record.baseAmountMinor) : integer(record.amountMinor || record.baseAmountMinor)), 0n)
   const completedStepCount = steps.filter((record) => record.status === 'COMPLETED').length
   const verifiedResultCount = results.filter((record) => record.evidenceStatus === 'VERIFIED').length

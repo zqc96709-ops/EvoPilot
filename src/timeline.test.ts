@@ -38,9 +38,9 @@ describe('timeline evidence foundation', () => {
 
   it('groups filtered items by local calendar date', () => {
     const groups = groupTimelineItems(timelineProjection([
-      record('decisions', 'd1', { occurredAt: '2026-08-11T09:00:00-07:00' }),
-      record('results', 'r1', { occurredAt: '2026-08-11T08:00:00-07:00' }),
-      record('reviews', 'v1', { occurredAt: '2026-08-10T08:00:00-07:00' }),
+      record('decisions', 'd1', { occurredAt: '2026-08-11T09:00:00' }),
+      record('results', 'r1', { occurredAt: '2026-08-11T08:00:00' }),
+      record('reviews', 'v1', { occurredAt: '2026-08-10T08:00:00' }),
     ]), new Date(2026, 7, 11))
     expect(groups.map((group) => [group.label, group.items.length])).toEqual([['今天', 2], ['昨天', 1]])
   })

@@ -1,0 +1,16 @@
+{
+  "goals": "DISJOINT_FIELD_MERGE",
+  "projects": "DISJOINT_FIELD_MERGE",
+  "tasks": "DISJOINT_FIELD_MERGE",
+  "relations": "SET_SEMANTICS",
+  "decisions": "MANUAL_CONFLICT",
+  "reviews": "MANUAL_CONFLICT",
+  "insights": "MANUAL_CONFLICT",
+  "principles": "MANUAL_CONFLICT",
+  "notes": "DOCUMENT_REVISION",
+  "knowledge": "DOCUMENT_REVISION",
+  "financialTransactions": "APPEND_ONLY",
+  "timeLogs": "DOMAIN_CUSTOM",
+  "notebookFiles": "DOMAIN_CUSTOM",
+  "attachments": "DOMAIN_CUSTOM"
+}
