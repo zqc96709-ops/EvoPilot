@@ -1585,6 +1585,7 @@ html[data-theme='light'] { background: #fafaf7; color-scheme: light; }
 .notebook-toolbar-more summary::-webkit-details-marker { display: none; }
 .notebook-toolbar-more > div { position: absolute; z-index: 8; top: calc(100% + 6px); right: 0; display: grid; min-width: 124px; gap: 3px; padding: 6px; border: 1px solid var(--inbox-line); border-radius: 7px; background: var(--inbox-panel); box-shadow: 0 12px 28px rgba(0,0,0,.28); }
 .notebook-toolbar-more > div button,.notebook-toolbar-more > div .notebook-color-control { width: 100%; height: 27px; display: flex; align-items: center; gap: 6px; padding: 0 7px; color: var(--inbox-text); font-size: 10px; }
+.notebook-save-state{min-width:52px;color:var(--inbox-muted);font-size:9px;text-align:right;white-space:nowrap}.notebook-save-state.dirty,.notebook-save-state.saving{color:var(--warning)}.notebook-save-state.saved{color:var(--lime)}.notebook-save-state.error{color:var(--danger)}
 
 /* Keep the same Jason OS lime hierarchy when the workspace follows the light theme. */
 .light-theme .main-content:has(.notebook-space) { background:radial-gradient(circle at 75% -20%,rgba(141,174,98,.14),transparent 32%),var(--bg); }

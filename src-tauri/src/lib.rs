@@ -1754,12 +1754,29 @@ fn save_record(app: AppHandle, entity: String, mut data: Value) -> Result<Value,
         }
     }
     let saved = write_record(&connection, &entity, &id, &enriched, Some(&created_at))?;
+    if entity == "notes" {
+        coalesce_pending_note_updates(&connection, &id)?;
+    }
     sync_relations(&connection, &id, &enriched)?;
     if entity == "projects" || entity == "tasks" {
         cascade_context(&connection, &entity, &id)?;
     }
     write_timeline_change_events(&connection, &entity, &id, existing.as_ref(), &saved)?;
     Ok(saved)
+}
+
+fn coalesce_pending_note_updates(connection: &Connection, id: &str) -> Result<(), String> {
+    connection.execute(
+        "DELETE FROM sync_outbox
+         WHERE entity_type='notes' AND entity_id=?1 AND operation='UPDATE'
+           AND rowid NOT IN (
+             SELECT rowid FROM sync_outbox
+             WHERE entity_type='notes' AND entity_id=?1 AND operation='UPDATE'
+             ORDER BY rowid DESC LIMIT 1
+           )",
+        params![id],
+    ).map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 fn delete_record_from_connection(connection: &Connection, id: &str) -> Result<(), String> {
@@ -6600,6 +6617,24 @@ mod tests {
         assert_eq!(revision, 2);
         let updates: i64 = connection.query_row("SELECT COUNT(*) FROM sync_outbox WHERE operation='UPDATE'", [], |row| row.get(0)).unwrap();
         assert_eq!(updates, 1);
+    }
+
+    #[test]
+    fn note_autosaves_keep_only_the_latest_pending_update() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL); CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at TEXT NOT NULL); CREATE TABLE records(id TEXT PRIMARY KEY,entity TEXT NOT NULL,data_json TEXT NOT NULL,title TEXT NOT NULL DEFAULT '',body TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL,archived_at TEXT,deleted_at TEXT); CREATE TABLE relations(id TEXT PRIMARY KEY,from_id TEXT NOT NULL,to_id TEXT NOT NULL,relation_type TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(from_id,to_id,relation_type));").unwrap();
+        migrate_sync_v1(&connection).unwrap();
+        connection.execute("INSERT INTO records(id,entity,data_json,created_at,updated_at) VALUES('note-1','notes','{\"content\":\"\"}','1','1')", []).unwrap();
+        for content in ["A", "AB", "ABC"] {
+            connection.execute("UPDATE records SET data_json=?1 WHERE id='note-1'", params![format!("{{\"content\":\"{content}\"}}")]).unwrap();
+            coalesce_pending_note_updates(&connection, "note-1").unwrap();
+        }
+        let creates: i64 = connection.query_row("SELECT COUNT(*) FROM sync_outbox WHERE entity_id='note-1' AND operation='CREATE'", [], |row| row.get(0)).unwrap();
+        let updates: i64 = connection.query_row("SELECT COUNT(*) FROM sync_outbox WHERE entity_id='note-1' AND operation='UPDATE'", [], |row| row.get(0)).unwrap();
+        let payload: String = connection.query_row("SELECT payload_json FROM sync_outbox WHERE entity_id='note-1' AND operation='UPDATE'", [], |row| row.get(0)).unwrap();
+        assert_eq!(creates, 1);
+        assert_eq!(updates, 1);
+        assert!(payload.contains("ABC"));
     }
 
     #[test]

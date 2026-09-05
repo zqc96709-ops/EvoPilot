@@ -13,6 +13,7 @@
     "test:cognition:e2e": "node scripts/cognition-desktop-e2e.mjs",
     "test:finance:e2e": "node scripts/finance-desktop-e2e.mjs",
     "test:notebook:e2e": "node scripts/notebook-desktop-e2e.mjs",
+    "test:notebook-autosave:e2e": "node scripts/notebook-autosave-e2e.mjs",
     "test:time:e2e": "node scripts/time-desktop-e2e.mjs",
     "test:today:e2e": "node scripts/today-desktop-e2e.mjs",
     "test:sync:web:e2e": "node scripts/web-local-first-e2e.mjs",
