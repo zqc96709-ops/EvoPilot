@@ -17,6 +17,10 @@ export const recordFromSyncChange = (change: SyncChange): RecordData => {
   } as RecordData
 }
 
+export const supersededNoteMutationIds = (pending: SyncMutation[], latest: SyncMutation) => latest.entityType === 'notes' && latest.operation === 'UPDATE'
+  ? pending.filter((item) => item.entityType === 'notes' && item.entityId === latest.entityId && item.operation === 'UPDATE' && item.mutationId !== latest.mutationId).map((item) => item.mutationId)
+  : []
+
 export class IndexedDbReplica implements SyncReplica {
   private db: IDBDatabase
   private constructor(db: IDBDatabase) { this.db = db }
@@ -34,7 +38,14 @@ export class IndexedDbReplica implements SyncReplica {
   async save(record: RecordData, mutation: SyncMutation) {
     const transaction = this.db.transaction(['records', 'outbox'], 'readwrite')
     transaction.objectStore('records').put(record)
-    transaction.objectStore('outbox').put(mutation)
+    const outbox = transaction.objectStore('outbox')
+    if (mutation.entityType === 'notes' && mutation.operation === 'UPDATE') {
+      const pending = outbox.getAll()
+      pending.onsuccess = () => {
+        for (const id of supersededNoteMutationIds(pending.result as SyncMutation[], mutation)) outbox.delete(id)
+        outbox.put(mutation)
+      }
+    } else outbox.put(mutation)
     await transactionDone(transaction)
   }
   async records() {
