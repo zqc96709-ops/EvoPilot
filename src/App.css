@@ -637,6 +637,7 @@ html[data-theme='light'] { background: #fafaf7; color-scheme: light; }
 .notebook-rich-editor blockquote { margin: 10px 0; padding-left: 10px; border-left: 2px solid var(--lime); color: var(--muted); }
 .notebook-rich-editor pre { overflow-x: auto; padding: 8px; border-radius: 5px; background: #10130e; color: #c7d5b7; font: 10px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .notebook-rich-editor img { max-width: 100%; }
+.notebook-rich-editor img[data-jason-missing-asset] { min-width: 220px; min-height: 64px; padding: 12px; border: 1px dashed var(--border); border-radius: 8px; color: var(--muted); }
 .notebook-editor-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 8px 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 9px; }
 .notebook-editor-tags em { display: inline-flex; align-items: center; gap: 3px; padding: 2px 5px; border-radius: 999px; background: #27331f; color: var(--lime); font-style: normal; }
 .notebook-editor-tags button { border: 0; padding: 0 3px; color: inherit; background: transparent; font: inherit; cursor: pointer; }

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, unlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
@@ -9,6 +9,8 @@ const screenshotPath = resolve('artifacts/notebook-unified-capture-e2e.png')
 const port = String(5300 + Math.floor(Math.random() * 200))
 const endpoint = `http://127.0.0.1:${port}`
 const log = []
+const sourceImagePath = join(process.env.HOME, 'Downloads', `jason-image-persistence-${Date.now()}.png`)
+const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
 const frontend = spawn('pnpm', ['exec', 'vite', '--host', '127.0.0.1', '--port', '5174', '--strictPort'], { stdio: ['ignore', 'pipe', 'pipe'] })
 frontend.stdout.on('data', (chunk) => log.push(chunk.toString()))
 frontend.stderr.on('data', (chunk) => log.push(chunk.toString()))
@@ -25,6 +27,7 @@ const responseMs = {}
 const responsive = async (label, action, check, limit = 500) => { const started = Date.now(); await action(); await wait(check, label); const elapsed = Date.now() - started; if (elapsed > limit) throw new Error(`${label} response ${elapsed}ms exceeds ${limit}ms`); responseMs[label] = elapsed }
 
 try {
+  await writeFile(sourceImagePath, Buffer.from(pngBase64, 'base64'))
   await wait(() => fetch('http://127.0.0.1:5174').then((response) => response.ok), 'Vite frontend')
   app = spawn(binary, [], { env: { ...process.env, JASON_OS_DATA_DIR: dataDir, TAURI_WEBDRIVER_PORT: port }, stdio: ['ignore', 'pipe', 'pipe'] })
   app.stdout.on('data', (chunk) => log.push(chunk.toString()))
@@ -58,12 +61,19 @@ try {
   await responsive('open long note', () => click('.notebook-content-list article', '长笔记滚动验收'), () => execute('return document.querySelector(".notebook-editor-title")?.value === "长笔记滚动验收"'), 250)
   await execute(`document.querySelector('.notebook-image-button').click();return true`)
   await wait(() => execute('return Boolean(document.querySelector(".notebook-image-picker input[type=file]"))'), 'image picker')
-  await execute(`const input=document.querySelector('.notebook-image-picker input[type=file]');const bytes=Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='),c=>c.charCodeAt(0));const transfer=new DataTransfer();transfer.items.add(new File([bytes],'persistence.png',{type:'image/png'}));Object.defineProperty(input,'files',{value:transfer.files,configurable:true});input.dispatchEvent(new Event('change',{bubbles:true}));return true`)
+  await execute(`const input=document.querySelector('.notebook-image-picker input[type=file]');const bytes=Uint8Array.from(atob(${JSON.stringify(pngBase64)}),c=>c.charCodeAt(0));const transfer=new DataTransfer();transfer.items.add(new File([bytes],'jason-image-persistence.png',{type:'image/png'}));Object.defineProperty(input,'files',{value:transfer.files,configurable:true});input.dispatchEvent(new Event('change',{bubbles:true}));return true`)
   await wait(() => execute('return Boolean(document.querySelector(".notebook-rich-editor img[data-jason-file-id]")?.complete)'), 'managed image inserted')
   const managedFileId = await execute('return document.querySelector(".notebook-rich-editor img[data-jason-file-id]").dataset.jasonFileId')
+  await unlink(sourceImagePath)
+  await execute(`const editor=document.querySelector('.notebook-rich-editor');editor.focus();const bytes=Uint8Array.from(atob(${JSON.stringify(pngBase64)}),c=>c.charCodeAt(0));const transfer=new DataTransfer();transfer.items.add(new File([bytes],'pasted.png',{type:'image/png'}));const event=new Event('paste',{bubbles:true,cancelable:true});Object.defineProperty(event,'clipboardData',{value:transfer});editor.dispatchEvent(event);return true`)
+  await wait(() => execute('return document.querySelectorAll(".notebook-rich-editor img[data-jason-file-id]").length===2'), 'clipboard image inserted')
+  await execute(`const editor=document.querySelector('.notebook-rich-editor');editor.focus();const bytes=Uint8Array.from(atob(${JSON.stringify(pngBase64)}),c=>c.charCodeAt(0));const transfer=new DataTransfer();transfer.items.add(new File([bytes],'dropped.png',{type:'image/png'}));const event=new Event('drop',{bubbles:true,cancelable:true});Object.defineProperty(event,'dataTransfer',{value:transfer});editor.dispatchEvent(event);return true`)
+  await wait(() => execute('return document.querySelectorAll(".notebook-rich-editor img[data-jason-file-id]").length===3'), 'drag-drop image inserted')
   await responsive('save managed image note', () => execute('document.querySelector(".notebook-save-note").click();return true'), () => execute('return document.body.innerText.includes("笔记已保存")'), 900)
   const persistedImage = await executeAsync(`const done=arguments[arguments.length-1];window.__TAURI_INTERNALS__.invoke('get_record',{id:arguments[0]}).then(done).catch((error)=>done({__error:String(error)}))`, [longNote.id])
-  if (persistedImage?.__error || !String(persistedImage.contentHtml || '').includes(`jason-file://${managedFileId}`) || String(persistedImage.contentHtml || '').includes('blob:')) throw new Error(`Image did not persist as stable FileAsset reference: ${JSON.stringify(persistedImage)}`)
+  if (persistedImage?.__error || !String(persistedImage.contentHtml || '').includes(`jason-file://${managedFileId}`) || String(persistedImage.contentHtml || '').includes('blob:') || persistedImage.fileIds?.length !== 3) throw new Error(`Images did not persist as stable FileAsset references: ${JSON.stringify(persistedImage)}`)
+  const persistedAsset = await executeAsync(`const done=arguments[arguments.length-1];window.__TAURI_INTERNALS__.invoke('get_record',{id:arguments[0]}).then(done).catch((error)=>done({__error:String(error)}))`, [managedFileId])
+  if (persistedAsset?.__error || !persistedAsset.storageKey || !persistedAsset.sha256 || persistedAsset.storagePath || persistedAsset.localState !== 'LOCAL_AVAILABLE') throw new Error(`FileAsset metadata is not durable: ${JSON.stringify(persistedAsset)}`)
   await responsive('open relation picker', () => click('.notebook-editor-actions .button', '关联记录'), () => execute(`return [...document.querySelectorAll('.notebook-relation-popover option')].some((option)=>option.value===${JSON.stringify(relationProject.id)})`), 200)
   await responsive('save optional relation', () => execute(`const select=document.querySelector('.notebook-relation-popover select');select.value=${JSON.stringify(relationProject.id)};select.dispatchEvent(new Event('change',{bubbles:true}));[...document.querySelectorAll('.notebook-relation-popover .button')].find((node)=>node.textContent.includes('确认关联')).click();return true`), () => execute('return document.querySelector(".notebook-editor-relations")?.innerText.includes("关联项目验收")'), 700)
   const independentScroll = await execute(`const nav=document.querySelector('.notebook-sidebar');const main=document.querySelector('.notebook-main');const detail=document.querySelector('.notebook-preview');const body=document.scrollingElement;nav.scrollTop=9999;const afterNav={nav:nav.scrollTop,main:main.scrollTop,detail:detail.scrollTop,body:body.scrollTop};main.scrollTop=9999;const afterMain={nav:nav.scrollTop,main:main.scrollTop,detail:detail.scrollTop,body:body.scrollTop};detail.scrollTop=9999;return {afterNav,afterMain,afterDetail:{nav:nav.scrollTop,main:main.scrollTop,detail:detail.scrollTop,body:body.scrollTop},navHeight:nav.scrollHeight,navClient:nav.clientHeight,mainHeight:main.scrollHeight,mainClient:main.clientHeight,detailHeight:detail.scrollHeight,detailClient:detail.clientHeight}`)
@@ -89,8 +99,8 @@ try {
   await click('.sidebar .quick-capture', '收纳箱')
   await wait(() => execute('return document.querySelector(".notebook-content-list")?.innerText.includes("长笔记滚动验收")'), 'persisted note after restart')
   await click('.notebook-content-list article', '长笔记滚动验收')
-  await wait(() => execute(`const image=document.querySelector('.notebook-rich-editor img[data-jason-file-id="${managedFileId}"]');return Boolean(image?.complete && image.naturalWidth>0 && image.src.startsWith('data:image/'))`), 'managed image after offline restart')
-  console.log(JSON.stringify({ status: 'passed', screenshotPath, responseMs, managedFileId, checks: ['four-column workspace', 'inbox navigation spans header/capture/body', '100-category independent navigation scroll', 'content and detail independent scrolling', 'quick capture defaults to inbox', 'smart filters in content pane', 'stable FileAsset image reference', 'offline app restart image hydration', 'editor text/highlight colors in toolbar', 'desktop screenshot'] }))
+  await wait(() => execute(`const images=[...document.querySelectorAll('.notebook-rich-editor img[data-jason-file-id]')];return images.length===3 && images.every((image)=>image.complete && image.naturalWidth>0 && image.src.startsWith('data:image/'))`), 'managed file-picker, paste and drop images after offline restart')
+  console.log(JSON.stringify({ status: 'passed', screenshotPath, responseMs, managedFileId, checks: ['four-column workspace', 'inbox navigation spans header/capture/body', '100-category independent navigation scroll', 'content and detail independent scrolling', 'quick capture defaults to inbox', 'smart filters in content pane', 'stable FileAsset image reference', 'source image deleted before restart', 'paste image restart', 'drag-drop image restart', 'offline app restart image hydration', 'sha256 and storageKey metadata', 'no absolute storagePath', 'editor text/highlight colors in toolbar', 'desktop screenshot'] }))
 } catch (error) {
   const body = sessionId ? await execute('return document.documentElement.outerHTML').catch(() => '') : ''
   await writeFile(join(dataDir, 'failure.log'), `${String(error)}\n\n${body}\n\n${log.join('')}`)
@@ -100,5 +110,6 @@ try {
   if (sessionId) await fetch(`${endpoint}/session/${sessionId}`, { method: 'DELETE' }).catch(() => undefined)
   app?.kill('SIGTERM'); await pause(500)
   frontend.kill('SIGTERM')
+  await unlink(sourceImagePath).catch(() => undefined)
   if (!process.exitCode) await rm(dataDir, { recursive: true, force: true })
 }

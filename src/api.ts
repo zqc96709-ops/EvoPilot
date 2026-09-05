@@ -115,10 +115,10 @@ export const api = {
   async configureSyncV1(url: string, token: string): Promise<SyncV1Config> { if (browser()) { syncV1Url = url.trim().replace(/\/$/, ''); syncV1Token = token.trim(); localStorage.setItem('jason-sync-v1-url', syncV1Url); localStorage.setItem('jason-sync-v1-token', syncV1Token); return { url: syncV1Url, configured: Boolean(syncV1Url && syncV1Token) } }; const result = await invoke<SyncV1Config>('configure_sync_v1', { url, token }); syncV1Url = result.url; syncV1Token = result.token || token.trim(); return { url: result.url, configured: result.configured } },
   async testSyncV1(): Promise<{ ok: boolean; latencyMs: number }> { if (browser()) { const response = await fetch(`${syncV1Url}/devices`, { headers: { authorization: `Bearer ${syncV1Token}` } }); if (!response.ok) throw new Error(`同步服务验证失败：HTTP ${response.status}`); return { ok: true, latencyMs: 0 } }; return invoke('test_sync_v1') },
   async syncV1Status(): Promise<{ pending: number; conflicts: number; serverCursor: number; lastSyncedAt?: string; protocolVersion: number; schemaVersion: number }> {
-    if (browser()) { const db = await webDb(); return { pending: (await db.pending(100000)).length, conflicts: await db.conflictCount(), serverCursor: await db.cursor(), protocolVersion: 1, schemaVersion: 16 } }
+    if (browser()) { const db = await webDb(); return { pending: (await db.pending(100000)).length, conflicts: await db.conflictCount(), serverCursor: await db.cursor(), protocolVersion: 1, schemaVersion: 17 } }
     return invoke('get_sync_status')
   },
-  async buildProvenance(): Promise<BuildProvenance> { return browser() ? { appPath: window.location.href, appVersion: 'web', gitCommit: String(import.meta.env.VITE_GIT_COMMIT || 'development'), buildTime: String(import.meta.env.VITE_BUILD_TIME || 'development'), schemaVersion: 16, syncProtocolVersion: 1, workspaceId: 'local' } : invoke('get_build_provenance') },
+  async buildProvenance(): Promise<BuildProvenance> { return browser() ? { appPath: window.location.href, appVersion: 'web', gitCommit: String(import.meta.env.VITE_GIT_COMMIT || 'development'), buildTime: String(import.meta.env.VITE_BUILD_TIME || 'development'), schemaVersion: 17, syncProtocolVersion: 1, workspaceId: 'local' } : invoke('get_build_provenance') },
   async archived(): Promise<RecordData[]> { return browser() ? (await (await webDb()).records()).filter((record) => record.archivedAt && !record.deletedAt) : invoke('list_archived') },
   async search(query: string, entities: Entity[] = []): Promise<RecordData[]> { return browser() ? (await (await webDb()).records()).filter(active).filter((record) => (!entities.length || entities.includes(record.entity)) && JSON.stringify(record).toLowerCase().includes(query.toLowerCase())) : entities.length ? invoke('search_records_filtered', { query, entities }) : invoke('search_records', { query }) },
   async relations(id: string): Promise<RecordData[]> {
@@ -130,7 +130,7 @@ export const api = {
   async getNotebookStorageConfig(): Promise<NotebookStorageConfig> { return browser() ? { maxFileSize: 1024 * 1024 * 1024, chunkSize: 2 * 1024 * 1024 } : invoke('get_notebook_storage_config') },
   async setNotebookStorageConfig(maxFileSize: number): Promise<NotebookStorageConfig> { if (browser()) throw new Error('浏览器模式不能配置桌面 Storage。'); return invoke('set_notebook_storage_config', { maxFileSize }) },
   async uploadNotebookFile(input: NotebookUploadInput): Promise<RecordData> {
-    if (browser()) return this.save('notebookFiles', { name: input.file.name, originalName: input.file.name, mimeType: input.file.type, size: input.file.size, notebookCategoryId: input.notebookCategoryId, notebookFolderId: input.notebookFolderId, relativePath: input.relativePath, status: 'ACTIVE' })
+    if (browser()) throw new Error('Web 端尚未配置 Remote FileAsset 上传；为避免伪保存，本次图片没有写入笔记。')
     const started = await invoke<{ uploadId: string; chunkSize: number }>('begin_notebook_file_upload', { name: input.file.name, size: input.file.size })
     for (let offset = 0; offset < input.file.size; offset += started.chunkSize) {
       const chunk = new Uint8Array(await input.file.slice(offset, offset + started.chunkSize).arrayBuffer())

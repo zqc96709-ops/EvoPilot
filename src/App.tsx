@@ -20,6 +20,7 @@ import { taskMatrixQuadrants, taskQuadrant } from './taskMatrix'
 import { compareWorkChainRuns, workChainScorecard } from './workchain'
 import { filterTimelineItems, groupTimelineItems, timelineCausalEdges, timelineGoalId, timelineProjectId, timelineProjection, timelineTimestamp, timelineEntityTypes, visibleTimelineCausalEdges, type TimelineCausalEdge, type TimelineFilter, type TimelineProjectionItem, type TimelineRange } from './timeline'
 import { api, type AiProviderId, type BackupInfo, type CaptureProviderConfig, type CaptureProviderId, type ChatMessage, type HackStartConfig, type NotebookFilePreview } from './api'
+import { durableNotebookHtml, imageFiles, notebookFileIds } from './notebookImages'
 import {
   configFor, descriptionFor, durationMinutes, entities, isActive, isOverdue, isToday, linkedTo, localDateKey,
   percent, priorityLabel, recordDate, statusLabel, timeline, titleFor,
@@ -1246,6 +1247,11 @@ function RichNotebookEditor({ note, records, related, categories, fullscreen, on
     const savedHtml = String(note.contentHtml || '')
     if (savedHtml) editor.innerHTML = savedHtml
     else editor.textContent = String(note.content || '')
+    for (const image of Array.from(editor.querySelectorAll<HTMLImageElement>('img[data-jason-missing-asset]'))) {
+      image.removeAttribute('src')
+      image.alt = image.alt || '图片资源已失效，原始内容未被删除'
+      image.title = '图片资源已失效；如找到原图，可重新插入恢复'
+    }
     for (const image of Array.from(editor.querySelectorAll<HTMLImageElement>('img[data-jason-file-id]'))) {
       const fileId = image.dataset.jasonFileId
       if (!fileId) continue
@@ -1268,18 +1274,10 @@ function RichNotebookEditor({ note, records, related, categories, fullscreen, on
     window.addEventListener('pointerdown', closeOutside)
     return () => window.removeEventListener('pointerdown', closeOutside)
   }, [relationPickerOpen])
-  const html = () => {
-    const clone = editorRef.current?.cloneNode(true) as HTMLElement | undefined
-    if (!clone) return ''
-    for (const image of Array.from(clone.querySelectorAll<HTMLImageElement>('img[data-jason-file-id]'))) {
-      const fileId = image.dataset.jasonFileId
-      if (fileId) image.setAttribute('src', `jason-file://${fileId}`)
-    }
-    return clone.innerHTML
-  }
+  const html = () => editorRef.current ? durableNotebookHtml(editorRef.current) : ''
   const text = () => editorRef.current?.innerText.trim() || ''
   const command = (name: string, value?: string) => { editorRef.current?.focus(); document.execCommand(name, false, value) }
-  const save = async () => { try { await api.save('notes', { ...note, title: title.trim() || '未命名笔记', content: text(), contentHtml: html(), tags }); await onRefresh(); onNotice('笔记已保存。') } catch (error) { onNotice(`保存失败：${String(error)}`, 'danger') } }
+  const save = async () => { try { await api.save('notes', { ...note, title: title.trim() || '未命名笔记', content: text(), contentHtml: html(), fileIds: editorRef.current ? notebookFileIds(editorRef.current) : [], tags }); await onRefresh(); onNotice('笔记已保存。') } catch (error) { onNotice(`保存失败：${String(error)}`, 'danger') } }
   const existingTags = [...new Set(records.filter((record) => record.entity === 'notes').flatMap(tagsFor))].sort((a, b) => a.localeCompare(b, 'zh-CN'))
   const relationEntities: Entity[] = ['goals', 'projects', 'tasks', 'results', 'knowledge', 'insights', 'mentalModels', 'decisions', 'reviews', 'events', 'people']
   const relationTargets = records.filter((record) => record.id !== note.id && relationEntities.includes(record.entity))
@@ -1296,17 +1294,31 @@ function RichNotebookEditor({ note, records, related, categories, fullscreen, on
     image.src = dataUrl; image.alt = alt; image.dataset.jasonFileId = fileId
     command('insertHTML', image.outerHTML)
   }
-  const addLocalImage = async (files: FileList | null) => {
-    const file = files?.[0]
-    if (!file) return
+  const addLocalImages = async (files: FileList | File[] | null) => {
+    const images = files ? imageFiles(files) : []
+    if (!images.length) return
     try {
-      const stored = await api.uploadNotebookFile({ file })
-      const preview = await api.previewNotebookFile(stored.id)
-      if (preview.kind !== 'image' || !preview.dataUrl) throw new Error('图片保存后无法预览')
-      insertManagedImage(stored.id, preview.dataUrl, file.name)
+      for (const file of images) {
+        const stored = await api.uploadNotebookFile({ file })
+        const preview = await api.previewNotebookFile(stored.id)
+        if (preview.kind !== 'image' || !preview.dataUrl) throw new Error('图片保存后无法预览')
+        insertManagedImage(stored.id, preview.dataUrl, file.name)
+      }
       setImagePickerOpen(false)
     } catch (error) { onNotice(`图片保存失败：${String(error)}`, 'danger') }
     finally { if (imageInputRef.current) imageInputRef.current.value = '' }
+  }
+  const pasteImages = (event: React.ClipboardEvent<HTMLDivElement>) => {
+    const images = imageFiles(Array.from(event.clipboardData.files))
+    if (!images.length) return
+    event.preventDefault()
+    void addLocalImages(images)
+  }
+  const dropImages = (event: React.DragEvent<HTMLDivElement>) => {
+    const images = imageFiles(Array.from(event.dataTransfer.files))
+    if (!images.length) return
+    event.preventDefault()
+    void addLocalImages(images)
   }
   const addInboxImage = async (record: RecordData) => {
     try {
@@ -1381,8 +1393,8 @@ function RichNotebookEditor({ note, records, related, categories, fullscreen, on
         <button title="撤销" onClick={() => command('undo')}>↶</button>
         <button title="重做" onClick={() => command('redo')}>↷</button>
       </div>
-      {imagePickerOpen && <div className="notebook-image-picker"><header><strong>添加图片</strong><button onClick={() => setImagePickerOpen(false)}>×</button></header><button className="notebook-image-local" onClick={() => imageInputRef.current?.click()}><span>＋</span><div><strong>从电脑添加</strong><small>选择本地 JPG、PNG、WebP 等图片</small></div></button><input ref={imageInputRef} className="hidden-file-input" type="file" accept="image/*" onChange={(event) => addLocalImage(event.currentTarget.files)} /><div className="notebook-image-library"><strong>从收纳箱选择</strong>{inboxImages.length ? inboxImages.map((record) => <button key={record.id} onClick={() => void addInboxImage(record)}><span>▧</span><div><strong>{titleFor(record)}</strong><small>{String(record.extension || '图片').toUpperCase()}</small></div></button>) : <p>收纳箱里还没有图片。</p>}</div></div>}
-      <div ref={editorRef} className="notebook-rich-editor" contentEditable suppressContentEditableWarning data-placeholder="开始记录…" />
+      {imagePickerOpen && <div className="notebook-image-picker"><header><strong>添加图片</strong><button onClick={() => setImagePickerOpen(false)}>×</button></header><button className="notebook-image-local" onClick={() => imageInputRef.current?.click()}><span>＋</span><div><strong>从电脑添加</strong><small>选择本地 JPG、PNG、WebP 等图片</small></div></button><input ref={imageInputRef} className="hidden-file-input" type="file" accept="image/*" onChange={(event) => void addLocalImages(event.currentTarget.files)} /><div className="notebook-image-library"><strong>从收纳箱选择</strong>{inboxImages.length ? inboxImages.map((record) => <button key={record.id} onClick={() => void addInboxImage(record)}><span>▧</span><div><strong>{titleFor(record)}</strong><small>{String(record.extension || '图片').toUpperCase()}</small></div></button>) : <p>收纳箱里还没有图片。</p>}</div></div>}
+      <div ref={editorRef} className="notebook-rich-editor" contentEditable suppressContentEditableWarning data-placeholder="开始记录…" onPaste={pasteImages} onDragOver={(event) => { if (Array.from(event.dataTransfer.items).some((item) => item.kind === 'file' && item.type.startsWith('image/'))) event.preventDefault() }} onDrop={dropImages} />
       <div className="notebook-editor-rule">— — —</div>
     </div>
     <div className="notebook-editor-tags">

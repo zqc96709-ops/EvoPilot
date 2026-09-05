@@ -11,6 +11,7 @@ mod tikhub;
 use regex::Regex;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::{
@@ -699,7 +700,98 @@ fn db(app: &AppHandle) -> Result<Connection, String> {
     finance::migrate_allocations(&connection, &now())?;
     finance::migrate_budgets(&connection, &now())?;
     migrate_sync_v1(&connection)?;
+    migrate_image_persistence(&connection, app)?;
     Ok(connection)
+}
+
+fn unsafe_image_reference_type(value: &str) -> Option<&'static str> {
+    let value = value.trim().to_lowercase();
+    if value.starts_with("blob:") {
+        Some("blob")
+    } else if value.starts_with("file:") || value.contains("/tmp/") || value.contains("/var/folders/") {
+        Some("temporary-file")
+    } else if value.contains("localhost") || value.contains("127.0.0.1") {
+        Some("localhost")
+    } else if value.contains("x-amz-signature=") || value.contains("x-amz-credential=") {
+        Some("presigned-url")
+    } else {
+        None
+    }
+}
+
+fn repair_unsafe_note_image_html(html: &str) -> (String, usize) {
+    let image = Regex::new(r"(?is)<img\b[^>]*>").expect("image regex");
+    let double_src = Regex::new(r#"(?is)\bsrc\s*=\s*"([^"]*)""#).expect("double src regex");
+    let single_src = Regex::new(r"(?is)\bsrc\s*=\s*'([^']*)'").expect("single src regex");
+    let mut repaired = 0;
+    let result = image.replace_all(html, |capture: &regex::Captures<'_>| {
+        let tag = capture.get(0).map(|value| value.as_str()).unwrap_or("");
+        let found = double_src
+            .captures(tag)
+            .and_then(|value| value.get(1).map(|src| (double_src.clone(), src.as_str().to_string())))
+            .or_else(|| single_src.captures(tag).and_then(|value| value.get(1).map(|src| (single_src.clone(), src.as_str().to_string()))));
+        let Some((source_regex, source)) = found else { return tag.to_string() };
+        let Some(reference_type) = unsafe_image_reference_type(&source) else { return tag.to_string() };
+        repaired += 1;
+        let fingerprint = format!("{:x}", Sha256::digest(source.as_bytes()));
+        let without_source = source_regex.replace(tag, "");
+        format!("{} data-jason-missing-asset=\"true\" data-jason-original-reference-type=\"{}\" data-jason-missing-reference-hash=\"{}\">", without_source.trim_end_matches('>').trim_end(), reference_type, fingerprint)
+    });
+    (result.into_owned(), repaired)
+}
+
+fn file_sha256(path: &Path) -> Result<String, String> {
+    let bytes = fs::read(path).map_err(|error| error.to_string())?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+fn migrate_image_persistence(connection: &Connection, app: &AppHandle) -> Result<(), String> {
+    let migrated: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=17)", [], |row| row.get(0)).map_err(|error| error.to_string())?;
+    if migrated { return Ok(()) }
+    let rows = {
+        let mut statement = connection.prepare("SELECT id,entity,data_json FROM records WHERE entity IN ('notes','notebookFiles')").map_err(|error| error.to_string())?;
+        let mapped = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))).map_err(|error| error.to_string())?;
+        mapped.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?
+    };
+    let file_root = notebook_files_dir(app)?;
+    for (id, entity, raw) in rows {
+        let mut data = serde_json::from_str::<Value>(&raw).map_err(|error| error.to_string())?;
+        let mut changed = false;
+        if entity == "notes" {
+            if let Some(html) = data.get("contentHtml").and_then(Value::as_str) {
+                let (safe_html, repaired) = repair_unsafe_note_image_html(html);
+                if repaired > 0 {
+                    data["contentHtml"] = Value::String(safe_html);
+                    data["missingImageCount"] = Value::Number((repaired as u64).into());
+                    changed = true;
+                }
+            }
+        } else if let Some(object) = data.as_object_mut() {
+            if let Some(storage_path) = object.get("storagePath").and_then(Value::as_str).map(PathBuf::from) {
+                if let Some(name) = storage_path.file_name().and_then(|value| value.to_str()) {
+                    let durable_path = file_root.join(safe_file_name(name));
+                    if !durable_path.exists() && storage_path.starts_with(data_dir(app)?) && storage_path.exists() {
+                        fs::copy(&storage_path, &durable_path).map_err(|error| error.to_string())?;
+                    }
+                    object.insert("storageKey".into(), Value::String(name.to_string()));
+                    if durable_path.exists() {
+                        object.insert("sha256".into(), Value::String(file_sha256(&durable_path)?));
+                        object.insert("localState".into(), Value::String("LOCAL_AVAILABLE".into()));
+                    } else {
+                        object.insert("localState".into(), Value::String("MISSING".into()));
+                    }
+                    object.remove("storagePath");
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            connection.execute("UPDATE records SET data_json=?2,updated_at=?3 WHERE id=?1", params![id, serde_json::to_string(&data).map_err(|error| error.to_string())?, now()]).map_err(|error| error.to_string())?;
+        }
+    }
+    connection.execute("INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(17,?1)", params![now()]).map_err(|error| error.to_string())?;
+    connection.execute("UPDATE sync_state SET schema_version=17 WHERE schema_version<17", []).map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 fn migrate_sync_v1(connection: &Connection) -> Result<(), String> {
@@ -730,7 +822,7 @@ fn migrate_sync_v1(connection: &Connection) -> Result<(), String> {
            server_cursor INTEGER NOT NULL DEFAULT 0,
            snapshot_cursor INTEGER NOT NULL DEFAULT 0,
            last_synced_at TEXT,
-           schema_version INTEGER NOT NULL DEFAULT 16,
+           schema_version INTEGER NOT NULL DEFAULT 17,
            protocol_version INTEGER NOT NULL DEFAULT 1
          );
          CREATE TABLE IF NOT EXISTS sync_devices (
@@ -1456,7 +1548,7 @@ fn get_sync_status(app: AppHandle) -> Result<Value, String> {
     let (cursor, last_synced_at): (i64, Option<String>) = connection.query_row(
         "SELECT server_cursor,last_synced_at FROM sync_state WHERE workspace_id='local'", [], |row| Ok((row.get(0)?, row.get(1)?))
     ).map_err(|e| e.to_string())?;
-    Ok(json!({"pending":pending,"conflicts":conflicts,"serverCursor":cursor,"lastSyncedAt":last_synced_at,"protocolVersion":1,"schemaVersion":16}))
+    Ok(json!({"pending":pending,"conflicts":conflicts,"serverCursor":cursor,"lastSyncedAt":last_synced_at,"protocolVersion":1,"schemaVersion":17}))
 }
 
 #[tauri::command]
@@ -1504,9 +1596,9 @@ fn register_sync_device(app: AppHandle, name: String, platform: String) -> Resul
     let id = existing.unwrap_or_else(|| new_id("device"));
     let timestamp = now();
     connection.execute("INSERT INTO settings(key,value,updated_at) VALUES('sync.device_id',?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at", params![id,timestamp]).map_err(|e| e.to_string())?;
-    connection.execute("INSERT INTO sync_devices(device_id,name,platform,app_version,schema_version,protocol_version,last_seen_at) VALUES(?1,?2,?3,'0.1.0',16,1,?4) ON CONFLICT(device_id) DO UPDATE SET name=excluded.name,platform=excluded.platform,last_seen_at=excluded.last_seen_at", params![id,name,platform,timestamp]).map_err(|e| e.to_string())?;
+    connection.execute("INSERT INTO sync_devices(device_id,name,platform,app_version,schema_version,protocol_version,last_seen_at) VALUES(?1,?2,?3,'0.1.0',17,1,?4) ON CONFLICT(device_id) DO UPDATE SET name=excluded.name,platform=excluded.platform,last_seen_at=excluded.last_seen_at,schema_version=excluded.schema_version", params![id,name,platform,timestamp]).map_err(|e| e.to_string())?;
     connection.execute("UPDATE sync_outbox SET device_id=?1 WHERE device_id='unregistered'", params![id]).map_err(|e| e.to_string())?;
-    Ok(json!({"deviceId":id,"name":name,"platform":platform,"schemaVersion":16,"protocolVersion":1}))
+    Ok(json!({"deviceId":id,"name":name,"platform":platform,"schemaVersion":17,"protocolVersion":1}))
 }
 
 #[tauri::command]
@@ -2261,11 +2353,11 @@ fn notebook_file_path(app: &AppHandle, record: &Value) -> Result<PathBuf, String
     if record["ownerId"].as_str().unwrap_or(LOCAL_NOTEBOOK_OWNER) != LOCAL_NOTEBOOK_OWNER {
         return Err("无权访问其他用户的 Notebook 文件".into());
     }
-    let path = PathBuf::from(
-        record["storagePath"]
-            .as_str()
-            .ok_or("文件缺少 storagePath")?,
-    );
+    let path = if let Some(key) = record["storageKey"].as_str() {
+        notebook_files_dir(app)?.join(safe_file_name(key))
+    } else {
+        PathBuf::from(record["storagePath"].as_str().ok_or("文件缺少 storageKey")?)
+    };
     if !path.starts_with(notebook_files_dir(app)?) || !path.exists() {
         return Err("文件路径无效或文件不存在".into());
     }
@@ -2294,7 +2386,9 @@ fn notebook_file_data(
         "extension": extension,
         "mimeType": mime_type,
         "size": fs::metadata(path).map_err(|error| error.to_string())?.len(),
-        "storagePath": path.to_string_lossy(),
+        "storageKey": path.file_name().and_then(|value| value.to_str()).unwrap_or_default(),
+        "sha256": file_sha256(path)?,
+        "localState": "LOCAL_AVAILABLE",
         "relativePath": relative_path.unwrap_or_default(),
         "status": "ACTIVE",
         "ownerId": LOCAL_NOTEBOOK_OWNER
@@ -2619,6 +2713,9 @@ fn destroy_notebook_file(app: AppHandle, id: String) -> Result<(), String> {
     if record["archivedAt"].as_str().is_none() {
         return Err("请先 Archive 文件，再执行永久删除".into());
     }
+    if notebook_file_reference_count(&connection, &id)? > 0 {
+        return Err("文件仍被笔记或业务记录引用，不能永久删除".into());
+    }
     let path = notebook_file_path(&app, &record)?;
     fs::remove_file(path).map_err(|error| error.to_string())?;
     connection
@@ -2634,6 +2731,18 @@ fn destroy_notebook_file(app: AppHandle, id: String) -> Result<(), String> {
         .execute("DELETE FROM records WHERE id=?1", params![id])
         .map_err(|error| error.to_string())?;
     Ok(())
+}
+
+fn notebook_file_reference_count(connection: &Connection, id: &str) -> Result<i64, String> {
+    connection.query_row(
+        "SELECT COUNT(*) FROM records r WHERE r.deleted_at IS NULL AND r.id<>?1 AND (
+           json_extract(r.data_json,'$.fileId')=?1 OR
+           EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(json_extract(r.data_json,'$.fileIds')) THEN json_extract(r.data_json,'$.fileIds') ELSE '[]' END) WHERE value=?1) OR
+           instr(coalesce(json_extract(r.data_json,'$.contentHtml'),''),'jason-file://' || ?1)>0
+         )",
+        params![id],
+        |row| row.get(0),
+    ).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -6491,6 +6600,36 @@ mod tests {
         assert_eq!(revision, 2);
         let updates: i64 = connection.query_row("SELECT COUNT(*) FROM sync_outbox WHERE operation='UPDATE'", [], |row| row.get(0)).unwrap();
         assert_eq!(updates, 1);
+    }
+
+    #[test]
+    fn unsafe_note_image_references_become_missing_asset_nodes() {
+        for (source, expected_type) in [
+            ("blob:tauri://localhost/id", "blob"),
+            ("file:///tmp/image.png", "temporary-file"),
+            ("file:///var/folders/a.png", "temporary-file"),
+            ("http://localhost:5173/a.png", "localhost"),
+            ("https://files.test/a?X-Amz-Signature=secret", "presigned-url"),
+        ] {
+            let original = format!("<p>正文</p><img src=\"{source}\">");
+            let (safe, count) = repair_unsafe_note_image_html(&original);
+            assert_eq!(count, 1);
+            assert!(!safe.contains(source));
+            assert!(safe.contains("data-jason-missing-asset=\"true\""));
+            assert!(safe.contains(&format!("data-jason-original-reference-type=\"{expected_type}\"")));
+            assert!(safe.contains("正文"));
+        }
+    }
+
+    #[test]
+    fn referenced_notebook_file_counts_all_business_references() {
+        let connection = relationship_test_db();
+        put(&connection, "notebookFiles", "file-a", json!({"name":"a.png"}));
+        put(&connection, "notes", "note-a", json!({"title":"A","fileIds":["file-a"],"contentHtml":"<img src=\"jason-file://file-a\" data-jason-file-id=\"file-a\">"}));
+        put(&connection, "knowledge", "knowledge-a", json!({"title":"K","fileId":"file-a"}));
+        assert_eq!(notebook_file_reference_count(&connection, "file-a").unwrap(), 2);
+        connection.execute("UPDATE records SET deleted_at='1' WHERE id='note-a'", []).unwrap();
+        assert_eq!(notebook_file_reference_count(&connection, "file-a").unwrap(), 1);
     }
 
     #[test]
