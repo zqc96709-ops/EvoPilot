@@ -34,6 +34,8 @@ const NOTEBOOK_ENTITIES: &[&str] = &[
     "notebookFolders",
     "notebookFiles",
 ];
+const NOTEBOOK_CONTENT_ENTITIES: &[&str] = &["notes", "notebookFiles", "inbox"];
+const SCHEMA_VERSION: i64 = 18;
 const NOTEBOOK_MAX_FILE_SIZE: u64 = 1024 * 1024 * 1024;
 const NOTEBOOK_CHUNK_SIZE: usize = 2 * 1024 * 1024;
 const NOTEBOOK_EXTRACT_LIMIT: usize = 1_500_000;
@@ -701,6 +703,7 @@ fn db(app: &AppHandle) -> Result<Connection, String> {
     finance::migrate_budgets(&connection, &now())?;
     migrate_sync_v1(&connection)?;
     migrate_image_persistence(&connection, app)?;
+    migrate_notebook_category_ownership(&connection)?;
     Ok(connection)
 }
 
@@ -794,6 +797,106 @@ fn migrate_image_persistence(connection: &Connection, app: &AppHandle) -> Result
     Ok(())
 }
 
+fn repair_notebook_category_references(connection: &Connection) -> Result<usize, String> {
+    let rows = {
+        let mut statement = connection
+            .prepare("SELECT id,entity,data_json,created_at FROM records WHERE deleted_at IS NULL")
+            .map_err(|error| error.to_string())?;
+        let mapped = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(|error| error.to_string())?;
+        mapped
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?
+    };
+    let mut repaired = 0;
+    for (id, entity, raw, created_at) in rows {
+        if !NOTEBOOK_CONTENT_ENTITIES.contains(&entity.as_str()) && entity != "notebookFolders" {
+            continue;
+        }
+        let mut record: Value = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+        let Some(category_id) = string_field(&record, "notebookCategoryId") else {
+            continue;
+        };
+        if valid_reference(connection, &category_id, "notebookCategories", false)?.is_some() {
+            continue;
+        }
+        record
+            .as_object_mut()
+            .ok_or("Notebook 数据必须是对象")?
+            .remove("notebookCategoryId");
+        write_record(connection, &entity, &id, &record, Some(&created_at))?;
+        sync_relations(connection, &id, &record)?;
+        repaired += 1;
+    }
+    Ok(repaired)
+}
+
+fn migrate_notebook_category_ownership(connection: &Connection) -> Result<(), String> {
+    connection
+        .execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_records_notebook_category_active
+               ON records(json_extract(data_json,'$.notebookCategoryId'), entity, archived_at, deleted_at);",
+        )
+        .map_err(|error| error.to_string())?;
+    let migrated: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=?1)",
+            params![SCHEMA_VERSION],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if migrated {
+        return Ok(());
+    }
+    repair_notebook_category_references(connection)?;
+    connection
+        .execute(
+            "INSERT INTO schema_migrations(version,applied_at) VALUES(?1,?2)",
+            params![SCHEMA_VERSION, now()],
+        )
+        .map_err(|error| error.to_string())?;
+    connection
+        .execute(
+            "UPDATE sync_state SET schema_version=?1 WHERE schema_version<?1",
+            params![SCHEMA_VERSION],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn clear_notebook_category_ownership(connection: &Connection, category_id: &str) -> Result<usize, String> {
+    let records = all_records(connection)?;
+    let mut cleared = 0;
+    for record in records {
+        let entity = record["entity"].as_str().unwrap_or("").to_string();
+        if !NOTEBOOK_CONTENT_ENTITIES.contains(&entity.as_str()) && entity != "notebookFolders" {
+            continue;
+        }
+        if string_field(&record, "notebookCategoryId").as_deref() != Some(category_id) {
+            continue;
+        }
+        let id = record["id"].as_str().ok_or("Notebook 记录缺少 ID")?.to_string();
+        let created_at = record["createdAt"].as_str().ok_or("Notebook 记录缺少创建时间")?.to_string();
+        let mut updated = record;
+        updated
+            .as_object_mut()
+            .ok_or("Notebook 数据必须是对象")?
+            .remove("notebookCategoryId");
+        write_record(connection, &entity, &id, &updated, Some(&created_at))?;
+        sync_relations(connection, &id, &updated)?;
+        cleared += 1;
+    }
+    Ok(cleared)
+}
+
 fn migrate_sync_v1(connection: &Connection) -> Result<(), String> {
     ensure_column(connection, "records", "workspace_id", "TEXT NOT NULL DEFAULT 'local'")?;
     ensure_column(connection, "records", "revision", "INTEGER NOT NULL DEFAULT 1")?;
@@ -822,7 +925,7 @@ fn migrate_sync_v1(connection: &Connection) -> Result<(), String> {
            server_cursor INTEGER NOT NULL DEFAULT 0,
            snapshot_cursor INTEGER NOT NULL DEFAULT 0,
            last_synced_at TEXT,
-           schema_version INTEGER NOT NULL DEFAULT 17,
+           schema_version INTEGER NOT NULL DEFAULT 18,
            protocol_version INTEGER NOT NULL DEFAULT 1
          );
          CREATE TABLE IF NOT EXISTS sync_devices (
@@ -1548,7 +1651,7 @@ fn get_sync_status(app: AppHandle) -> Result<Value, String> {
     let (cursor, last_synced_at): (i64, Option<String>) = connection.query_row(
         "SELECT server_cursor,last_synced_at FROM sync_state WHERE workspace_id='local'", [], |row| Ok((row.get(0)?, row.get(1)?))
     ).map_err(|e| e.to_string())?;
-    Ok(json!({"pending":pending,"conflicts":conflicts,"serverCursor":cursor,"lastSyncedAt":last_synced_at,"protocolVersion":1,"schemaVersion":17}))
+    Ok(json!({"pending":pending,"conflicts":conflicts,"serverCursor":cursor,"lastSyncedAt":last_synced_at,"protocolVersion":1,"schemaVersion":SCHEMA_VERSION}))
 }
 
 #[tauri::command]
@@ -1596,9 +1699,9 @@ fn register_sync_device(app: AppHandle, name: String, platform: String) -> Resul
     let id = existing.unwrap_or_else(|| new_id("device"));
     let timestamp = now();
     connection.execute("INSERT INTO settings(key,value,updated_at) VALUES('sync.device_id',?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at", params![id,timestamp]).map_err(|e| e.to_string())?;
-    connection.execute("INSERT INTO sync_devices(device_id,name,platform,app_version,schema_version,protocol_version,last_seen_at) VALUES(?1,?2,?3,'0.1.0',17,1,?4) ON CONFLICT(device_id) DO UPDATE SET name=excluded.name,platform=excluded.platform,last_seen_at=excluded.last_seen_at,schema_version=excluded.schema_version", params![id,name,platform,timestamp]).map_err(|e| e.to_string())?;
+    connection.execute("INSERT INTO sync_devices(device_id,name,platform,app_version,schema_version,protocol_version,last_seen_at) VALUES(?1,?2,?3,'0.1.0',?4,1,?5) ON CONFLICT(device_id) DO UPDATE SET name=excluded.name,platform=excluded.platform,last_seen_at=excluded.last_seen_at,schema_version=excluded.schema_version", params![id,name,platform,SCHEMA_VERSION,timestamp]).map_err(|e| e.to_string())?;
     connection.execute("UPDATE sync_outbox SET device_id=?1 WHERE device_id='unregistered'", params![id]).map_err(|e| e.to_string())?;
-    Ok(json!({"deviceId":id,"name":name,"platform":platform,"schemaVersion":17,"protocolVersion":1}))
+    Ok(json!({"deviceId":id,"name":name,"platform":platform,"schemaVersion":SCHEMA_VERSION,"protocolVersion":1}))
 }
 
 #[tauri::command]
@@ -1655,6 +1758,7 @@ fn apply_sync_changes(app: AppHandle, changes: Vec<Value>, server_cursor: i64) -
                 connection.execute("UPDATE records SET revision=?2 WHERE id=?1", params![entity_id,revision]).map_err(|e| e.to_string())?;
             }
         }
+        repair_notebook_category_references(&connection)?;
         connection.execute("UPDATE sync_state SET server_cursor=max(server_cursor,?1),last_synced_at=?2 WHERE workspace_id='local'", params![server_cursor,now()]).map_err(|e| e.to_string())?;
         connection.execute("DELETE FROM settings WHERE key='sync.apply_mode'", []).map_err(|e| e.to_string())?;
         Ok(changes.len())
@@ -1794,6 +1898,9 @@ fn delete_record_from_connection(connection: &Connection, id: &str) -> Result<()
     {
         return Err("无权删除其他用户的 Notebook 内容".into());
     }
+    if entity == "notebookCategories" {
+        clear_notebook_category_ownership(connection, id)?;
+    }
     let deleted_at = now();
     if let Some(object) = data.as_object_mut() {
         object.remove("archivedAt");
@@ -1888,7 +1995,14 @@ fn apply_record_batch(
 #[tauri::command]
 fn delete_record(app: AppHandle, id: String) -> Result<(), String> {
     let connection = db(&app)?;
-    delete_record_from_connection(&connection, &id)
+    connection.execute_batch("BEGIN IMMEDIATE").map_err(|error| error.to_string())?;
+    match delete_record_from_connection(&connection, &id) {
+        Ok(()) => connection.execute_batch("COMMIT").map_err(|error| error.to_string()),
+        Err(error) => {
+            let _ = connection.execute_batch("ROLLBACK");
+            Err(error)
+        }
+    }
 }
 
 #[tauri::command]
@@ -6603,7 +6717,7 @@ mod tests {
     #[test]
     fn sync_v1_migration_is_idempotent_and_outbox_is_atomic() {
         let connection = Connection::open_in_memory().unwrap();
-        connection.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL); CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at TEXT NOT NULL); CREATE TABLE records(id TEXT PRIMARY KEY,entity TEXT NOT NULL,data_json TEXT NOT NULL,title TEXT NOT NULL DEFAULT '',body TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL,archived_at TEXT,deleted_at TEXT); CREATE TABLE relations(id TEXT PRIMARY KEY,from_id TEXT NOT NULL,to_id TEXT NOT NULL,relation_type TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(from_id,to_id,relation_type));").unwrap();
+        connection.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL); CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at TEXT NOT NULL); CREATE TABLE records(id TEXT PRIMARY KEY,entity TEXT NOT NULL,data_json TEXT NOT NULL,title TEXT NOT NULL DEFAULT '',body TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL,archived_at TEXT,deleted_at TEXT); CREATE VIRTUAL TABLE records_fts USING fts5(id UNINDEXED,entity UNINDEXED,title,body); CREATE TABLE relations(id TEXT PRIMARY KEY,from_id TEXT NOT NULL,to_id TEXT NOT NULL,relation_type TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(from_id,to_id,relation_type));").unwrap();
         migrate_sync_v1(&connection).unwrap();
         migrate_sync_v1(&connection).unwrap();
         connection.execute_batch("BEGIN IMMEDIATE; INSERT INTO records(id,entity,data_json,created_at,updated_at) VALUES('task-rollback','tasks','{}','1','1'); ROLLBACK;").unwrap();
@@ -6617,6 +6731,46 @@ mod tests {
         assert_eq!(revision, 2);
         let updates: i64 = connection.query_row("SELECT COUNT(*) FROM sync_outbox WHERE operation='UPDATE'", [], |row| row.get(0)).unwrap();
         assert_eq!(updates, 1);
+    }
+
+    #[test]
+    fn notebook_category_migration_repairs_legacy_references_and_sets_schema_18() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL); CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at TEXT NOT NULL); CREATE TABLE records(id TEXT PRIMARY KEY,entity TEXT NOT NULL,data_json TEXT NOT NULL,title TEXT NOT NULL DEFAULT '',body TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL,archived_at TEXT,deleted_at TEXT); CREATE VIRTUAL TABLE records_fts USING fts5(id UNINDEXED,entity UNINDEXED,title,body); CREATE TABLE relations(id TEXT PRIMARY KEY,from_id TEXT NOT NULL,to_id TEXT NOT NULL,relation_type TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(from_id,to_id,relation_type));").unwrap();
+        migrate_sync_v1(&connection).unwrap();
+        connection.execute("INSERT INTO records(id,entity,data_json,created_at,updated_at) VALUES('category-live','notebookCategories','{\"name\":\"内容灵感\"}','1','1')", []).unwrap();
+        connection.execute("INSERT INTO records(id,entity,data_json,created_at,updated_at) VALUES('note-legacy','notes','{\"title\":\"旧笔记\",\"notebookCategoryId\":\"category-missing\"}','1','1')", []).unwrap();
+        migrate_notebook_category_ownership(&connection).unwrap();
+        migrate_notebook_category_ownership(&connection).unwrap();
+
+        let schema: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
+        let sync_schema: i64 = connection.query_row("SELECT schema_version FROM sync_state WHERE workspace_id='local'", [], |row| row.get(0)).unwrap();
+        let index_exists: i64 = connection.query_row("SELECT COUNT(*) FROM pragma_index_list('records') WHERE name='idx_records_notebook_category_active'", [], |row| row.get(0)).unwrap();
+        assert_eq!(schema, SCHEMA_VERSION);
+        assert_eq!(sync_schema, SCHEMA_VERSION);
+        assert_eq!(index_exists, 1);
+        assert!(record_by_id(&connection, "note-legacy").unwrap().unwrap().get("notebookCategoryId").is_none());
+    }
+
+    #[test]
+    fn notebook_category_queries_remain_fast_with_5000_records() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL); CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at TEXT NOT NULL); CREATE TABLE records(id TEXT PRIMARY KEY,entity TEXT NOT NULL,data_json TEXT NOT NULL,title TEXT NOT NULL DEFAULT '',body TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL,archived_at TEXT,deleted_at TEXT); CREATE TABLE relations(id TEXT PRIMARY KEY,from_id TEXT NOT NULL,to_id TEXT NOT NULL,relation_type TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(from_id,to_id,relation_type));").unwrap();
+        migrate_sync_v1(&connection).unwrap();
+        migrate_notebook_category_ownership(&connection).unwrap();
+        connection.execute("INSERT INTO settings(key,value,updated_at) VALUES('sync.apply_mode','1','1')", []).unwrap();
+        let transaction = connection.unchecked_transaction().unwrap();
+        for index in 0..5_000 {
+            let category = if index % 2 == 0 { "{\"notebookCategoryId\":\"category-a\"}" } else { "{}" };
+            transaction.execute("INSERT INTO records(id,entity,data_json,created_at,updated_at) VALUES(?1,'notes',?2,'1','1')", params![format!("note-{index}"), category]).unwrap();
+        }
+        transaction.commit().unwrap();
+
+        let started = std::time::Instant::now();
+        let categorized: i64 = connection.query_row("SELECT COUNT(*) FROM records WHERE entity IN ('notes','notebookFiles','inbox') AND archived_at IS NULL AND deleted_at IS NULL AND json_extract(data_json,'$.notebookCategoryId')='category-a'", [], |row| row.get(0)).unwrap();
+        let unorganized: i64 = connection.query_row("SELECT COUNT(*) FROM records WHERE entity IN ('notes','notebookFiles','inbox') AND archived_at IS NULL AND deleted_at IS NULL AND (json_extract(data_json,'$.notebookCategoryId') IS NULL OR json_extract(data_json,'$.notebookCategoryId')='')", [], |row| row.get(0)).unwrap();
+        assert_eq!((categorized, unorganized), (2_500, 2_500));
+        assert!(started.elapsed() < std::time::Duration::from_millis(500));
     }
 
     #[test]
@@ -6635,6 +6789,48 @@ mod tests {
         assert_eq!(creates, 1);
         assert_eq!(updates, 1);
         assert!(payload.contains("ABC"));
+    }
+
+    #[test]
+    fn notebook_category_repair_keeps_valid_ownership_and_clears_dangling_references() {
+        let connection = relationship_test_db();
+        put(&connection, "notebookCategories", "category-live", json!({"name":"大码女装"}));
+        put(&connection, "notes", "note-live", json!({"title":"保留分类","status":"INBOX","notebookCategoryId":"category-live"}));
+        write_record(&connection, "inbox", "inbox-orphan", &json!({"title":"孤儿分类","notebookCategoryId":"category-deleted"}), None).unwrap();
+
+        assert_eq!(repair_notebook_category_references(&connection).unwrap(), 1);
+        assert_eq!(record_by_id(&connection, "note-live").unwrap().unwrap()["notebookCategoryId"], "category-live");
+        assert!(record_by_id(&connection, "inbox-orphan").unwrap().unwrap().get("notebookCategoryId").is_none());
+    }
+
+    #[test]
+    fn deleting_notebook_category_moves_contents_to_unorganized_without_deleting_them() {
+        let connection = relationship_test_db();
+        put(&connection, "notebookCategories", "category-a", json!({"name":"大码女装"}));
+        put(&connection, "notes", "note-a", json!({"title":"保留正文","content":"正文","status":"INBOX","notebookCategoryId":"category-a"}));
+        put(&connection, "notebookFiles", "file-a", json!({"name":"保留文件.pdf","notebookCategoryId":"category-a"}));
+
+        delete_record_from_connection(&connection, "category-a").unwrap();
+
+        assert!(record_by_id(&connection, "category-a").unwrap().is_none());
+        let note = record_by_id(&connection, "note-a").unwrap().unwrap();
+        let file = record_by_id(&connection, "file-a").unwrap().unwrap();
+        assert_eq!(note["content"], "正文");
+        assert!(note.get("notebookCategoryId").is_none());
+        assert!(file.get("notebookCategoryId").is_none());
+    }
+
+    #[test]
+    fn archiving_notebook_content_preserves_its_category_ownership() {
+        let connection = relationship_test_db();
+        put(&connection, "notebookCategories", "category-a", json!({"name":"大码女装"}));
+        put(&connection, "notes", "note-a", json!({"title":"归档后仍属于分类","notebookCategoryId":"category-a"}));
+
+        archive_record_from_connection(&connection, "note-a").unwrap();
+
+        let note = record_by_id(&connection, "note-a").unwrap().unwrap();
+        assert_eq!(note["notebookCategoryId"], "category-a");
+        assert!(note["archivedAt"].is_string());
     }
 
     #[test]

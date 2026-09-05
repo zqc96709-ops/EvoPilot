@@ -48,7 +48,7 @@ try {
   await execute('document.querySelector("[aria-label=\\"刷新指挥中心\\"]")?.click();return true')
   await responsive('open inbox', () => click('.sidebar .quick-capture', '收纳箱'), () => execute('return Boolean(document.querySelector(".notebook-space"))'), 500)
   const text = await execute('return document.querySelector(".notebook-space").innerText')
-  for (const expected of ['快速记录', '全部内容', '笔记', '链接', '图片', '视频', '文件', '语音', '稍后处理', '已归档', '管理分类', '今天收集', '本周收集', '有附件', '未分类', '立即收纳']) if (!text.includes(expected)) throw new Error(`Missing Unified Capture area: ${expected}`)
+  for (const expected of ['快速记录', '全部内容', '笔记', '链接', '图片', '视频', '文件', '语音', '稍后处理', '已归档', '管理分类', '今天收集', '本周收集', '有附件', '立即收纳']) if (!text.includes(expected)) throw new Error(`Missing Unified Capture area: ${expected}`)
   const layout = await execute(`const box=(selector)=>document.querySelector(selector).getBoundingClientRect().toJSON();const nav=box('.notebook-sidebar'),header=box('.notebook-workspace-title'),capture=box('.notebook-capture'),list=box('.notebook-main'),detail=box('.notebook-preview');return {nav,header,capture,list,detail,body:document.scrollingElement.scrollHeight,viewport:window.innerHeight}`)
   if (Math.abs(layout.nav.top - layout.header.top) > 2 || layout.capture.left < layout.nav.right - 1 || Math.abs(layout.capture.right - layout.detail.right) > 2 || Math.abs(layout.list.top - layout.detail.top) > 2 || layout.body > layout.viewport + 2) throw new Error(`Workspace grid boundary mismatch: ${JSON.stringify(layout)}`)
   await responsive('all content filter', () => click('.notebook-filter-group button', '全部内容'), () => execute('return document.querySelector(".notebook-filter-group button.active")?.textContent.includes("全部内容")'), 100)

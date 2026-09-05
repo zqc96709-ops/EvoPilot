@@ -22,6 +22,7 @@ import { filterTimelineItems, groupTimelineItems, timelineCausalEdges, timelineG
 import { api, type AiProviderId, type BackupInfo, type CaptureProviderConfig, type CaptureProviderId, type ChatMessage, type HackStartConfig, type NotebookFilePreview } from './api'
 import { durableNotebookHtml, imageFiles, notebookFileIds } from './notebookImages'
 import { NoteAutosaveController, readNoteRecovery, writeNoteRecovery, type NoteDraftSnapshot, type NoteSaveState } from './noteAutosave'
+import { belongsToNotebookCategory, isUnorganizedNotebookItem } from './notebookClassification'
 import {
   configFor, descriptionFor, durationMinutes, entities, isActive, isOverdue, isToday, linkedTo, localDateKey,
   percent, priorityLabel, recordDate, statusLabel, timeline, titleFor,
@@ -676,7 +677,7 @@ function NotebookView({ records, externalItems, captureConfig, onOpen, onRefresh
     if (scope === 'week') return createdWithinDays(record, 7)
     if (scope === 'attachments') return record.entity === 'notebookFiles' || Boolean(record.attachments)
     if (scope === 'later') return ['LATER', 'SNOOZED'].includes(String(record.status || '').toUpperCase()) || Boolean(record.snoozedUntil)
-    if (scope === 'inbox') return record.entity === 'inbox' || (!record.notebookCategoryId && !record.notebookFolderId && (record.entity !== 'notes' || record.status === 'INBOX'))
+    if (scope === 'inbox') return isUnorganizedNotebookItem(record)
     return true
   }
   const selectableItems = scope === 'archive' ? archived : activeItems.filter(matchesScope)
@@ -696,9 +697,8 @@ function NotebookView({ records, externalItems, captureConfig, onOpen, onRefresh
     if (record.entity === 'notebookFolders') return visibleFolders.some((folder) => folder.id === record.id)
     if (['notes', 'links', 'files', 'today', 'week', 'attachments', 'later'].includes(scope)) return true
     if (scope === 'favorites' && String(record.favorite) !== 'true') return false
-    if (scope === 'inbox' && record.entity === 'notes') return record.status === 'INBOX' && !record.notebookCategoryId && !record.notebookFolderId
-    if (scope === 'inbox') return !record.notebookCategoryId && !record.notebookFolderId
-    if (currentCategoryId && record.notebookCategoryId !== currentCategoryId) return false
+    if (scope === 'inbox') return isUnorganizedNotebookItem(record)
+    if (currentCategoryId && !belongsToNotebookCategory(record, currentCategoryId)) return false
     if (folderId && record.notebookFolderId !== folderId) return false
     if (!folderId && record.notebookFolderId) return false
     return true
@@ -854,7 +854,7 @@ function NotebookView({ records, externalItems, captureConfig, onOpen, onRefresh
         <header className="notebook-sidebar-title"><span>▣</span><div><strong>收纳箱</strong><small>快速记录，随手收纳，稍后整理</small></div></header>
         <div className="notebook-filter-group">
           {[
-            { id: 'inbox', icon: '▱', label: '未整理', count: activeItems.filter((item) => item.entity === 'inbox' || (!item.notebookCategoryId && !item.notebookFolderId && (item.entity !== 'notes' || item.status === 'INBOX'))).length },
+            { id: 'inbox', icon: '▱', label: '未整理', count: activeItems.filter(isUnorganizedNotebookItem).length },
             { id: 'all', icon: '▦', label: '全部内容', count: activeItems.length },
             { id: 'notes', icon: '▤', label: '笔记', count: activeItems.filter((item) => item.entity === 'notes').length },
             { id: 'links', icon: '⌁', label: '链接', count: activeItems.filter((item) => item.entity === 'inbox' || Boolean(item.url || item.sourceUrl)).length },
@@ -871,7 +871,7 @@ function NotebookView({ records, externalItems, captureConfig, onOpen, onRefresh
         <div className="notebook-category-filters">
           <header><span>▦</span><strong>分类</strong><button title="新建分类" onClick={() => { setCategoryDraft(''); setCategoryDialogOpen(true) }}>＋</button></header>
           <div className="notebook-category-list">
-            {categories.length ? categories.map((category) => <button key={category.id} className={scope === category.id ? 'active' : ''} onClick={() => selectScope(category.id)}><span>{titleFor(category)}</span><b>{activeItems.filter((item) => ['notes', 'notebookFiles', 'inbox'].includes(item.entity) && item.notebookCategoryId === category.id).length}</b></button>) : <p>还没有分类</p>}
+            {categories.length ? categories.map((category) => <button key={category.id} className={scope === category.id ? 'active' : ''} onClick={() => selectScope(category.id)}><span>{titleFor(category)}</span><b>{activeItems.filter((item) => belongsToNotebookCategory(item, category.id)).length}</b></button>) : <p>还没有分类</p>}
           </div>
           <button className="notebook-manage-categories" onClick={() => setCategoryMenuOpen(true)}>⚙ 管理分类</button>
         </div>
@@ -959,7 +959,6 @@ function NotebookView({ records, externalItems, captureConfig, onOpen, onRefresh
             { id: 'today', icon: '◉', label: '今天收集', count: activeItems.filter(createdToday).length },
             { id: 'week', icon: '◷', label: '本周收集', count: activeItems.filter((item) => createdWithinDays(item, 7)).length },
             { id: 'attachments', icon: '⌕', label: '有附件', count: activeItems.filter((item) => item.entity === 'notebookFiles' || Boolean(item.attachments)).length },
-            { id: 'inbox', icon: '○', label: '未分类', count: activeItems.filter((item) => !item.notebookCategoryId && !item.notebookFolderId).length },
           ].map((item) => <button key={item.id} className={scope === item.id ? 'active' : ''} onClick={() => selectScope(item.id)}><i>{item.icon}</i>{item.label}<span>{item.count}</span></button>)}
           {noteTags.length > 0 && <div className="notebook-tag-filter-inline"><strong>标签</strong><select aria-label="按标签筛选" value={tagFilter} onChange={(event) => { setTagFilter(event.target.value); selectScope('notes') }}><option value="">全部</option>{noteTags.map((tag) => <option key={tag} value={tag}>#{tag}</option>)}</select></div>}
         </div>
@@ -1000,7 +999,7 @@ function NotebookView({ records, externalItems, captureConfig, onOpen, onRefresh
       </aside>
     </div>
     {linkComposerOpen && <div className="overlay-backdrop notebook-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setLinkComposerOpen(false)}><form className="notebook-action-dialog" onSubmit={(event) => { event.preventDefault(); void addManualLink() }}><header><div><p>手动添加</p><h3>添加链接</h3></div><button type="button" onClick={() => setLinkComposerOpen(false)}>×</button></header><label><span>链接地址</span><input autoFocus value={linkDraft} onChange={(event) => setLinkDraft(event.target.value)} placeholder="https://example.com" /></label><small>链接只会进入收纳箱，不会自动关联项目、目标或任务。</small><footer><button type="button" className="button ghost" onClick={() => setLinkComposerOpen(false)}>取消</button><button className="button primary" type="submit" disabled={!linkDraft.trim() || linkSaving}>{linkSaving ? '正在添加…' : '确认添加'}</button></footer></form></div>}
-    {categoryMenuOpen && <div className="overlay-backdrop notebook-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setCategoryMenuOpen(false)}><section className="notebook-action-dialog notebook-category-menu"><header><div><p>收纳箱整理</p><h3>分类选项</h3></div><button onClick={() => setCategoryMenuOpen(false)}>×</button></header>{categories.length ? <div className="notebook-category-option-list">{categories.map((category) => <button key={category.id} className={scope === category.id ? 'active' : ''} onClick={() => void selectScope(category.id).then(() => setCategoryMenuOpen(false))}><span>{titleFor(category)}</span><b>{activeItems.filter((item) => ['notes', 'notebookFiles', 'inbox'].includes(item.entity) && item.notebookCategoryId === category.id).length}</b></button>)}</div> : <p className="notebook-category-empty">还没有分类，请先新建一个分类。</p>}<footer><button className="button" onClick={() => { setCategoryMenuOpen(false); setCategoryDraft(''); setCategoryDialogOpen(true) }}>＋ 新建分类</button></footer></section></div>}
+    {categoryMenuOpen && <div className="overlay-backdrop notebook-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setCategoryMenuOpen(false)}><section className="notebook-action-dialog notebook-category-menu"><header><div><p>收纳箱整理</p><h3>分类选项</h3></div><button onClick={() => setCategoryMenuOpen(false)}>×</button></header>{categories.length ? <div className="notebook-category-option-list">{categories.map((category) => <button key={category.id} className={scope === category.id ? 'active' : ''} onClick={() => void selectScope(category.id).then(() => setCategoryMenuOpen(false))}><span>{titleFor(category)}</span><b>{activeItems.filter((item) => belongsToNotebookCategory(item, category.id)).length}</b></button>)}</div> : <p className="notebook-category-empty">还没有分类，请先新建一个分类。</p>}<footer><button className="button" onClick={() => { setCategoryMenuOpen(false); setCategoryDraft(''); setCategoryDialogOpen(true) }}>＋ 新建分类</button></footer></section></div>}
     {categoryDialogOpen && <div className="overlay-backdrop notebook-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && !creatingCategory && setCategoryDialogOpen(false)}><form className="notebook-action-dialog" onSubmit={(event) => { event.preventDefault(); void createCategory() }}><header><div><p>收纳箱整理</p><h3>新建分类</h3></div><button type="button" disabled={creatingCategory} onClick={() => setCategoryDialogOpen(false)}>×</button></header><label><span>分类名称</span><input autoFocus value={categoryDraft} onChange={(event) => setCategoryDraft(event.target.value)} placeholder="例如：产品灵感、工作资料" /></label><small>分类只用于笔记、链接和文件的查找整理，不会关联 Jason OS 的项目、目标或任务。</small><footer><button type="button" className="button ghost" disabled={creatingCategory} onClick={() => setCategoryDialogOpen(false)}>取消</button><button className="button primary" type="submit" disabled={!categoryDraft.trim() || creatingCategory}>{creatingCategory ? '正在创建…' : '创建分类'}</button></footer></form></div>}
     {deleteIds.length > 0 && <div className="overlay-backdrop notebook-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && !deletingItems && setDeleteIds([])}><section className="notebook-action-dialog danger"><header><div><p>删除内容</p><h3>确定删除选中的 {deleteIds.length} 项？</h3></div><button disabled={deletingItems} onClick={() => setDeleteIds([])}>×</button></header><small>笔记、文件和链接删除后不会进入已归档。只有你确认后才会执行。</small><footer><button className="button ghost" disabled={deletingItems} onClick={() => setDeleteIds([])}>取消</button><button className="button danger" disabled={deletingItems} onClick={() => void deleteSelection()}>{deletingItems ? '正在删除…' : '确认删除'}</button></footer></section></div>}
   </div>

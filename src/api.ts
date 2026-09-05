@@ -9,7 +9,7 @@ import { cloudSync, type CloudSyncStatus } from './cloudSync'
 import { httpSyncTransport, synchronize } from './sync/client'
 import { TauriSqliteReplica } from './sync/tauriReplica'
 import { IndexedDbReplica } from './sync/indexedDbReplica'
-import { changedFields, SYNC_PROTOCOL_VERSION, type SyncMutation } from './sync/protocol'
+import { changedFields, CLIENT_SCHEMA_VERSION, SYNC_PROTOCOL_VERSION, type SyncMutation } from './sync/protocol'
 export type { ChatMessage } from './agent/types'
 
 export type AiModelOption = { id: string; label: string; description: string }
@@ -115,10 +115,10 @@ export const api = {
   async configureSyncV1(url: string, token: string): Promise<SyncV1Config> { if (browser()) { syncV1Url = url.trim().replace(/\/$/, ''); syncV1Token = token.trim(); localStorage.setItem('jason-sync-v1-url', syncV1Url); localStorage.setItem('jason-sync-v1-token', syncV1Token); return { url: syncV1Url, configured: Boolean(syncV1Url && syncV1Token) } }; const result = await invoke<SyncV1Config>('configure_sync_v1', { url, token }); syncV1Url = result.url; syncV1Token = result.token || token.trim(); return { url: result.url, configured: result.configured } },
   async testSyncV1(): Promise<{ ok: boolean; latencyMs: number }> { if (browser()) { const response = await fetch(`${syncV1Url}/devices`, { headers: { authorization: `Bearer ${syncV1Token}` } }); if (!response.ok) throw new Error(`同步服务验证失败：HTTP ${response.status}`); return { ok: true, latencyMs: 0 } }; return invoke('test_sync_v1') },
   async syncV1Status(): Promise<{ pending: number; conflicts: number; serverCursor: number; lastSyncedAt?: string; protocolVersion: number; schemaVersion: number }> {
-    if (browser()) { const db = await webDb(); return { pending: (await db.pending(100000)).length, conflicts: await db.conflictCount(), serverCursor: await db.cursor(), protocolVersion: 1, schemaVersion: 17 } }
+    if (browser()) { const db = await webDb(); return { pending: (await db.pending(100000)).length, conflicts: await db.conflictCount(), serverCursor: await db.cursor(), protocolVersion: 1, schemaVersion: CLIENT_SCHEMA_VERSION } }
     return invoke('get_sync_status')
   },
-  async buildProvenance(): Promise<BuildProvenance> { return browser() ? { appPath: window.location.href, appVersion: 'web', gitCommit: String(import.meta.env.VITE_GIT_COMMIT || 'development'), buildTime: String(import.meta.env.VITE_BUILD_TIME || 'development'), schemaVersion: 17, syncProtocolVersion: 1, workspaceId: 'local' } : invoke('get_build_provenance') },
+  async buildProvenance(): Promise<BuildProvenance> { return browser() ? { appPath: window.location.href, appVersion: 'web', gitCommit: String(import.meta.env.VITE_GIT_COMMIT || 'development'), buildTime: String(import.meta.env.VITE_BUILD_TIME || 'development'), schemaVersion: CLIENT_SCHEMA_VERSION, syncProtocolVersion: 1, workspaceId: 'local' } : invoke('get_build_provenance') },
   async archived(): Promise<RecordData[]> { return browser() ? (await (await webDb()).records()).filter((record) => record.archivedAt && !record.deletedAt) : invoke('list_archived') },
   async search(query: string, entities: Entity[] = []): Promise<RecordData[]> { return browser() ? (await (await webDb()).records()).filter(active).filter((record) => (!entities.length || entities.includes(record.entity)) && JSON.stringify(record).toLowerCase().includes(query.toLowerCase())) : entities.length ? invoke('search_records_filtered', { query, entities }) : invoke('search_records', { query }) },
   async relations(id: string): Promise<RecordData[]> {

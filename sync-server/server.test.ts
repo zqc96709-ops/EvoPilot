@@ -21,6 +21,18 @@ describe('local sync server', () => {
     expect(JSON.parse(snapshot.payload_json)).toMatchObject({ title: 'Mac', priority: 'HIGH' })
   })
 
+  it('keeps note content and category ownership through a disjoint merge, but conflicts on the same category field', () => {
+    const db = openSyncDatabase()
+    const note = (mutationId: string, deviceId: string, fields: string[], payload: Record<string, unknown>, baseRevision = 0) => ({ mutationId, workspaceId: 'local', deviceId, entityType: 'notes', entityId: 'note-category-a', operation: baseRevision ? 'UPDATE' : 'CREATE', baseRevision, changedFields: fields, payload, protocolVersion: 1, createdAt: new Date().toISOString() })
+    pushMutations(db, [note('create', 'mac', ['content', 'notebookCategoryId'], { id: 'note-category-a', content: '初始正文' })])
+    expect(pushMutations(db, [note('mac-content', 'mac', ['content'], { content: 'Mac 正文' }, 1)])[0].status).toBe('APPLIED')
+    expect(pushMutations(db, [note('web-category', 'web', ['notebookCategoryId'], { notebookCategoryId: 'category-a' }, 1)])[0].status).toBe('APPLIED')
+    const merged = JSON.parse((db.prepare('SELECT payload_json FROM records WHERE entity_id=?').get('note-category-a') as { payload_json: string }).payload_json)
+    expect(merged).toMatchObject({ content: 'Mac 正文', notebookCategoryId: 'category-a' })
+    expect(pushMutations(db, [note('mac-category', 'mac', ['notebookCategoryId'], { notebookCategoryId: 'category-b' }, 3)])[0].status).toBe('APPLIED')
+    expect(pushMutations(db, [note('web-category-conflict', 'web', ['notebookCategoryId'], { notebookCategoryId: 'category-c' }, 3)])[0]).toMatchObject({ status: 'CONFLICT', fields: ['notebookCategoryId'] })
+  })
+
   it('records same-field conflicts and tombstones prevent resurrection', () => {
     const db = openSyncDatabase()
     pushMutations(db, [mutation('m1', ['title'], { id: 'task-a', title: 'old' })])
