@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import './decisionFunnel.css'
 import DecisionLogRepository from './DecisionLogRepository'
 import { titleFor, type Entity, type RecordData } from './model'
 import { decisionDashboard, type DecisionPeriod } from './decisionDashboard'

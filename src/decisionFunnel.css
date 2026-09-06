@@ -1,0 +1,3 @@
+/* Keep the final “校准” stage inside the decision lifecycle panel. */
+.di-funnel,.di-trend{height:238px}
+.di-funnel>div{flex:1;grid-template-rows:repeat(5,minmax(22px,1fr));padding-bottom:16px}
