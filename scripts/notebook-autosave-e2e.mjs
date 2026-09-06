@@ -1,9 +1,9 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
 
-const binary = process.env.JASON_OS_E2E_BIN || '/Applications/Jason OS.app/Contents/MacOS/jason-os'
+const binary = process.env.JASON_OS_E2E_BIN || resolve('src-tauri/target/debug/bundle/macos/EVOPOLIT.app/Contents/MacOS/evopolit')
 const dataDir = await mkdtemp(join(tmpdir(), 'jason-os-note-autosave-e2e-'))
 const port = String(5500 + Math.floor(Math.random() * 200))
 const endpoint = `http://127.0.0.1:${port}`

@@ -4,7 +4,7 @@ import { dirname, join, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
 
 // Release-only: a debug Tauri binary can load an unrelated dev server.
-const binary = process.env.JASON_OS_E2E_BIN || resolve('src-tauri/target/release/bundle/macos/Jason OS.app/Contents/MacOS/jason-os')
+const binary = process.env.JASON_OS_E2E_BIN || resolve('src-tauri/target/debug/evopolit')
 const dataDir = await mkdtemp(join(tmpdir(), 'jason-os-results-dashboard-e2e-'))
 const screenshotPath = resolve('artifacts/results-dashboard-1536x1024.png')
 const port = String(5800 + Math.floor(Math.random() * 100))

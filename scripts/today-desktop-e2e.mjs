@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
 
-const binary = process.env.JASON_OS_E2E_BIN || resolve('src-tauri/target/debug/jason-os')
+const binary = process.env.JASON_OS_E2E_BIN || resolve('src-tauri/target/debug/evopolit')
 const dataDir = await mkdtemp(join(tmpdir(), 'jason-os-today-e2e-'))
 const screenshotPath = resolve('artifacts/today-cockpit-e2e.png')
 const port = String(5000 + Math.floor(Math.random() * 200))

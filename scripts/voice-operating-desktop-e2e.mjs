@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
 
-const binary = process.env.JASON_OS_E2E_BIN || resolve('src-tauri/target/debug/bundle/macos/Jason OS.app/Contents/MacOS/jason-os')
+const binary = process.env.JASON_OS_E2E_BIN || resolve('src-tauri/target/debug/bundle/macos/EVOPOLIT.app/Contents/MacOS/evopolit')
 const dataDir = await mkdtemp(join(tmpdir(), 'jason-os-voice-e2e-'))
 const port = String(5960 + Math.floor(Math.random() * 30))
 const endpoint = `http://127.0.0.1:${port}`
@@ -25,8 +25,11 @@ try {
   app = spawn(binary, [], { env: { ...process.env, JASON_OS_DATA_DIR: dataDir, TAURI_WEBDRIVER_PORT: port }, stdio: 'ignore' })
   await wait(() => request('/status').then((result) => result.value?.ready), 'webdriver')
   sessionId = (await request('/session', { capabilities: { alwaysMatch: { browserName: 'tauri' } } })).value.sessionId
-  await wait(() => execute('return Boolean(document.querySelector(".voice-operating-entry"))'), 'voice entry')
-  await execute('document.querySelector(".voice-operating-entry").click(); return true')
+  await wait(() => execute('return Boolean(document.querySelector(".account-footer"))'), 'account footer')
+  await execute('document.querySelector(".account-footer").click(); return true')
+  await wait(() => execute('return Boolean(document.querySelector(".settings-workspace"))'), 'settings workspace')
+  await execute('return [...document.querySelectorAll(".settings-workspace nav button")].find((node) => node.textContent.trim() === "语音")?.click() || false')
+  await execute('return [...document.querySelectorAll(".settings-workspace main button")].find((node) => node.textContent.includes("打开语音操作"))?.click() || false')
   await wait(() => execute('return document.querySelector(".voice-panel")?.innerText.includes("语音操作")'), 'voice panel')
   const initial = await execute('return document.querySelector(".voice-panel").innerText')
   if (!initial.includes('点击开始说话')) throw new Error(`Unexpected initial voice state: ${initial}`)

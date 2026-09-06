@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process'
 
 // Release embeds this repository's dist. Debug follows devUrl and can show an
 // unrelated project already running on localhost:5173.
-const binary = process.env.JASON_OS_E2E_BIN || resolve('src-tauri/target/release/bundle/macos/Jason OS.app/Contents/MacOS/jason-os')
+const binary = process.env.JASON_OS_E2E_BIN || resolve('src-tauri/target/debug/evopolit')
 const dataDir = await mkdtemp(join(tmpdir(), 'jason-os-project-dashboard-e2e-'))
 const screenshotPath = resolve('artifacts/project-dashboard-current.png')
 const port = String(5600 + Math.floor(Math.random() * 200))

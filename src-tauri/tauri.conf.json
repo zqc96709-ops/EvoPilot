@@ -1,6 +1,6 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "Jason OS",
+  "productName": "EVOPOLIT",
   "version": "0.1.0",
   "identifier": "com.jasonos.desktop",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Jason OS",
+        "title": "EVOPOLIT",
         "width": 1440,
         "height": 900,
         "resizable": true,

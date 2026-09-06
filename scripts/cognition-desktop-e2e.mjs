@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
 
-const binary = process.env.JASON_OS_E2E_BIN || resolve('src-tauri/target/debug/jason-os')
+const binary = process.env.JASON_OS_E2E_BIN || resolve('src-tauri/target/debug/evopolit')
 const dataDir = await mkdtemp(join(tmpdir(), 'jason-os-cognition-e2e-'))
 const screenshotPath = resolve('artifacts/cognitive-center-e2e.png')
 const port = String(5350 + Math.floor(Math.random() * 120)); const output = []

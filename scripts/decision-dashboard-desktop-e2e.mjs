@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
 
-const binary = process.env.JASON_OS_E2E_BIN || resolve('src-tauri/target/release/bundle/macos/Jason OS.app/Contents/MacOS/jason-os')
+const binary = process.env.JASON_OS_E2E_BIN || resolve('src-tauri/target/debug/evopolit')
 const repositoryFixtureCount = Number(process.env.JASON_OS_E2E_REPOSITORY_COUNT || 2000)
 const dataDir = await mkdtemp(join(tmpdir(), 'jason-os-decision-dashboard-e2e-'))
 const screenshotPath = resolve('artifacts/decision-dashboard-1536x1024.png')

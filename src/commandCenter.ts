@@ -1,4 +1,5 @@
 import { financeDashboard, projectEconomics } from './finance'
+import { resolveUserIdentity } from './product'
 import { durationMinutes, isActive, localDateKey, recordDate, titleFor, type RecordData } from './model'
 
 export type CommandPeriodKey = '7d' | '30d' | 'quarter' | 'year' | 'custom'
@@ -174,7 +175,7 @@ export function commandCenterDashboard(records: RecordData[], period: CommandPer
   const projectRecords = records.filter((record) => record.entity === 'projects')
   return {
     period,
-    profileName: String(records.find((record) => record.entity === 'profiles')?.nickname || records.find((record) => record.entity === 'profiles')?.name || 'Jason'),
+    profileName: resolveUserIdentity(records.find((record) => record.entity === 'profiles')).displayName,
     updatedAt: now.toISOString(),
     kpis: {
       goalAchievement: { label: '目标达成率', value: percentLabel(currentGoal), numeric: currentGoal, delta: delta(currentGoal, previousGoal), hint: currentGoal === null ? '需要目标进度或关键结果' : '当前目标 / KR 的平均完成率', formula: '优先使用活跃关键结果 currentValue ÷ targetValue；无 KR 时使用活跃目标 progress。', tone: currentGoal === null ? 'neutral' : currentGoal >= 80 ? 'good' : currentGoal >= 60 ? 'warn' : 'danger' },
