@@ -407,6 +407,11 @@ fn timeline_change_specs(entity: &str, before: &Value, after: &Value) -> Vec<Val
                 "normal",
             );
         }
+        "results" => {
+            add("status", "result_status_changed", "成果状态发生变化", "key");
+            add("evidenceStatus", "result_validation_changed", "成果验证状态发生变化", "key");
+            add("valueClassification", "result_value_classification_changed", "成果价值分类发生变化", "key");
+        }
         "workflowRuns" => {
             add("status", "workflow_run_status_changed", "工作链运行状态发生变化", "key");
         }
