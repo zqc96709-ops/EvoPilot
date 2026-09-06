@@ -26,6 +26,7 @@ dist-ssr
 # Local test artifacts
 .playwright-cli/
 output/
+artifacts/
 
 # Desktop build artifacts
 src-tauri/target/

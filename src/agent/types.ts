@@ -18,6 +18,8 @@ export type AgentContext = {
   localDate: string
   timeZone: string
   analysisMode?: 'timeline_readonly'
+  voiceMode?: boolean
+  voiceIntent?: string
   timelineSummary?: {
     mode: string
     range: string

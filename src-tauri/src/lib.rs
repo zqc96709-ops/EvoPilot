@@ -5124,6 +5124,22 @@ fn find_agent_action_by_key(connection: &Connection, key: &str) -> Result<Option
     ).optional().map_err(|error| error.to_string())
 }
 
+fn voice_mode(context: &Value) -> bool {
+    context.get("voiceMode").and_then(Value::as_bool).unwrap_or(false)
+}
+
+fn voice_audit_context(context: &Value) -> Value {
+    if !voice_mode(context) { return context.clone(); }
+    json!({
+        "voiceMode": true,
+        "voiceIntent": context.get("voiceIntent").cloned().unwrap_or(Value::Null),
+        "currentRoute": context.get("currentRoute").cloned().unwrap_or(Value::Null),
+        "currentEntityId": context.get("currentEntityId").cloned().unwrap_or(Value::Null),
+        "currentProjectId": context.get("currentProjectId").cloned().unwrap_or(Value::Null),
+        "currentTaskId": context.get("currentTaskId").cloned().unwrap_or(Value::Null)
+    })
+}
+
 fn create_agent_action(app: AppHandle, plan: &Value, context: &Value) -> Result<Value, String> {
     let tool = plan
         .get("toolName")
@@ -5160,7 +5176,8 @@ fn create_agent_action(app: AppHandle, plan: &Value, context: &Value) -> Result<
         "idempotencyKey": idempotency_key,
         "previewTitle": agent_preview_title(tool, &input),
         "previewFields": action_preview_fields(&input),
-        "context": context,
+        "context": voice_audit_context(context),
+        "source": if voice_mode(context) { "VOICE" } else { "AI" },
         "createdAt": now()
     });
     save_record(app, "agentActions".into(), action)
@@ -5865,15 +5882,19 @@ fn ask_chief_blocking(
             }
         }
     }
+    let is_voice_request = voice_mode(&page_context);
+    let audit_page_context = voice_audit_context(&page_context);
+    let response_answer = answer.clone();
     let run = json!({
         "id": new_id("agentRuns"), "agentType": format!("{}-agent-planner", provider), "provider": provider,
-        "input": question, "context": local_context, "pageContext": page_context, "output": answer,
+        "input": if is_voice_request { "[voice transcript not retained]" } else { &question }, "context": local_context, "pageContext": audit_page_context,
+        "output": if is_voice_request { "[voice response not retained]" } else { &answer },
         "actionId": action.as_ref().and_then(|value| value.get("actionId")).cloned(),
         "status": "completed", "model": model, "startedAt": now(), "completedAt": now()
     });
     let saved_run = save_record(app, "agentRuns".into(), run)?;
     Ok(
-        json!({"answer": saved_run["output"], "context": saved_run["context"], "action": action, "agentRun": saved_run}),
+        json!({"answer": response_answer, "context": saved_run["context"], "action": action, "agentRun": saved_run}),
     )
 }
 
@@ -5962,6 +5983,37 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn voice_audit_context_excludes_transcript_and_conversation() {
+        let source = json!({
+            "voiceMode": true,
+            "voiceIntent": "FAST_AI",
+            "currentRoute": "tasks",
+            "recentConversation": [{"role": "user", "content": "请创建一个不能留存的语音内容"}],
+            "globalContext": {"userQuery": "不能留存的语音内容"}
+        });
+        let audit = voice_audit_context(&source);
+        assert_eq!(audit["voiceMode"], true);
+        assert_eq!(audit["voiceIntent"], "FAST_AI");
+        assert!(audit.get("recentConversation").is_none());
+        assert!(audit.get("globalContext").is_none());
+        assert!(!audit.to_string().contains("不能留存的语音内容"));
+    }
+
+    #[test]
+    fn voice_runs_store_no_transcript_or_response_text() {
+        let transcript = "请把刚才的私密语音内容保存下来";
+        let response = "我不会保留那段私密语音内容";
+        let page_context = json!({"voiceMode": true, "voiceIntent": "FAST_AI"});
+        let stored = json!({
+            "input": if voice_mode(&page_context) { "[voice transcript not retained]" } else { transcript },
+            "output": if voice_mode(&page_context) { "[voice response not retained]" } else { response },
+            "pageContext": voice_audit_context(&page_context)
+        });
+        assert!(!stored.to_string().contains(transcript));
+        assert!(!stored.to_string().contains(response));
+    }
 
     #[test]
     fn notebook_storage_supports_safe_names_extractable_text_and_preview_encoding() {

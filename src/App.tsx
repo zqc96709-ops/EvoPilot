@@ -28,6 +28,10 @@ import { api, type AiProviderId, type BackupInfo, type CaptureProviderConfig, ty
 import { durableNotebookHtml, imageFiles, notebookFileIds } from './notebookImages'
 import { NoteAutosaveController, readNoteRecovery, writeNoteRecovery, type NoteDraftSnapshot, type NoteSaveState } from './noteAutosave'
 import { belongsToNotebookCategory, isUnorganizedNotebookItem } from './notebookClassification'
+import VoiceOperatingPanel from './voice/VoiceOperatingPanel'
+import { routeVoiceIntent } from './voice/intentRouter'
+import type { VoiceExecutionResult } from './voice/types'
+import './voice/voiceSidebar.css'
 import {
   configFor, descriptionFor, durationMinutes, entities, isActive, isOverdue, isToday, linkedTo, localDateKey,
   percent, priorityLabel, recordDate, statusLabel, timeline, titleFor,
@@ -52,6 +56,7 @@ const formatDate = (value: unknown, withTime = false) => {
   return date.toLocaleString('zh-CN', withTime ? { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' } : { year: 'numeric', month: 'short', day: 'numeric' })
 }
 const formatMinutes = (minutes: number) => minutes < 60 ? `${Math.round(minutes)} 分钟` : `${Math.floor(minutes / 60)} 小时 ${Math.round(minutes % 60)} 分钟`
+const pageTitleForVoice = (view: string) => ({ notebook: '收纳箱', tasks: '任务', projects: '项目', today: '今天', time: '时间', outcomes: '成果', finance: '财务', decisionCenter: '决策中心', cognition: '认知中心', command: '指挥中心' }[view] || '页面')
 const optionParts = (option: FieldOption) => typeof option === 'string' ? { value: option, label: option } : option
 const defaultStatus = (entity: Entity) => ({ tasks: 'todo', goals: 'active', projects: 'active', hypotheses: 'untested', experiments: 'planned', decisions: 'pending', inbox: 'unprocessed', notes: 'INBOX', notebookFiles: 'ACTIVE', results: 'PLANNED', deliverables: 'DRAFT', resultPackages: 'ACTIVE', workflows: 'ACTIVE', workflowVersions: 'EXPERIMENTAL', workflowRuns: 'PLANNED', workflowRunSteps: 'PLANNED', workflowImprovementProposals: 'DRAFT', financialAccounts: 'ACTIVE', financialCategories: 'ACTIVE', financialTransactions: 'POSTED' } as Partial<Record<Entity, string>>)[entity] || 'active'
 const tagsFor = (record: RecordData) => Array.isArray(record.tags) ? record.tags.map(String).map((tag) => tag.trim()).filter(Boolean) : String(record.tags || '').split(',').map((tag) => tag.trim()).filter(Boolean)
@@ -109,12 +114,16 @@ function App() {
   const [searchResults, setSearchResults] = useState<RecordData[]>([])
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [aiOpen, setAiOpen] = useState(false)
+  const [voiceOpen, setVoiceOpen] = useState(false)
+  const [voicePendingActionId, setVoicePendingActionId] = useState<string | null>(null)
   const [aiConfig, setAiConfig] = useState<HackStartConfig | null>(null)
   const [captureConfig, setCaptureConfig] = useState<CaptureProviderConfig | null>(null)
   const [externalItems, setExternalItems] = useState<ExternalItem[]>([])
   const [chat, setChat] = useState<ChatMessage[]>(() => { try { return JSON.parse(localStorage.getItem('jason-os-ai-chat') || '[]') } catch { return [] } })
   const [aiDraft, setAiDraft] = useState('')
   const [aiBusy, setAiBusy] = useState(false)
+  // Voice dialogue is deliberately session-only: transcripts must never enter chat localStorage.
+  const voiceConversation = useRef<ChatMessage[]>([])
   const [decisionModelIds, setDecisionModelIds] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem('jason-os-decision-model-ids') || '[]') } catch { return [] } })
   const [backups, setBackups] = useState<BackupInfo[]>([])
   const [profileSection, setProfileSection] = useState<ProfileSection>('basic')
@@ -247,8 +256,11 @@ function App() {
   const sendAi = async (preset?: string, contextOverride: Partial<AgentContext> = {}) => {
     const question = (preset || aiDraft).trim(); if (!question || aiBusy) return
     if (!aiConfig?.configured) { setView('settings'); setAiOpen(false); showNotice('请先配置任一 AI 服务商的 API Key。', 'danger'); return }
-    const nextChat = [...chat, { role: 'user' as const, content: question }]; setChat(nextChat); setAiDraft('')
-    const pending = [...chat].reverse().find((message) => message.action?.status === 'CONFIRM_REQUIRED')?.action
+    const isVoice = contextOverride.voiceMode === true
+    const conversation = isVoice ? voiceConversation.current : chat
+    const nextChat = [...conversation, { role: 'user' as const, content: question }]
+    if (!isVoice) { setChat(nextChat); setAiDraft('') }
+    const pending = [...conversation].reverse().find((message) => message.action?.status === 'CONFIRM_REQUIRED')?.action
     if (pending && /^(确认|确认保存|确认创建|执行|保存|开始执行)[。.!！]?$/.test(question)) { await confirmAiAction(pending.actionId, nextChat); return }
     if (pending && /^(取消|取消操作|不要保存|不保存)[。.!！]?$/.test(question)) { await cancelAiAction(pending.actionId); return }
     const intent = detectGlobalIntent(question, view)
@@ -259,9 +271,47 @@ function App() {
     const baseContext = { ...agentContext, ...contextOverride, recentConversation: nextChat.slice(-10).map(({ role, content }) => ({ role, content })) }
     const requestContext = { ...baseContext, globalContext: buildGlobalContext({ query: question, currentRoute: view, records, context: baseContext, relationIndex: contextRelationIndex, retrievedRecords }) }
     setAiBusy(true)
-    try { const result = await api.ask(question, requestContext, nextChat); setChat([...nextChat, { role: 'assistant', content: result.answer, action: result.action }]); await refresh() }
-    catch (error) { showNotice(`AI Agent 处理失败：${String(error)}`, 'danger') }
+    try {
+      const result = await api.ask(question, requestContext, nextChat)
+      const completedConversation = [...nextChat, { role: 'assistant' as const, content: result.answer, action: result.action }]
+      if (isVoice) voiceConversation.current = completedConversation.slice(-10)
+      else setChat(completedConversation)
+      await refresh()
+      return result
+    }
+    catch (error) { showNotice(`AI Agent 处理失败：${String(error)}`, 'danger'); return undefined }
     finally { setAiBusy(false) }
+  }
+  const executeVoiceAction = async (actionId: string): Promise<VoiceExecutionResult> => {
+    try {
+      const result = await api.confirmAiAction(actionId); await refresh(); setVoicePendingActionId(null)
+      const record = result.record; const label = record ? configFor(record.entity).singular : '操作'
+      return { state: 'DONE', message: result.duplicate ? `相同的${label}已执行，无需重复写入。` : `已完成：${record ? titleFor(record) : result.action.previewTitle || label}`, viewLabel: record ? `已保存到${label}` : undefined }
+    } catch (error) { return { state: 'ERROR', message: `执行失败：${String(error)}。没有写入成功。` } }
+  }
+  const cancelVoiceAction = async (actionId: string): Promise<VoiceExecutionResult> => {
+    try { await api.cancelAiAction(actionId); await refresh(); setVoicePendingActionId(null); return { state: 'CANCELLED', message: '已取消本次操作，没有写入任何记录。' } }
+    catch (error) { return { state: 'ERROR', message: `取消失败：${String(error)}` } }
+  }
+  const runVoiceTranscript = async (transcript: string): Promise<VoiceExecutionResult> => {
+    const intent = routeVoiceIntent(transcript)
+    if (intent.intent === 'OPEN_PAGE' && intent.page) { setView(intent.page as View); return { state: 'DONE', message: `已打开${pageTitleForVoice(intent.page)}。` } }
+    if (intent.intent === 'SEARCH_SIMPLE' && intent.query) { setSearchQuery(intent.query); setSearchOpen(true); return { state: 'DONE', message: `正在搜索：${intent.query}` } }
+    if (intent.intent === 'START_TIMER') {
+      if (running) return { state: 'ERROR', message: `已有计时正在运行：${titleFor(running)}。` }
+      await startTimerNow({ title: '语音计时', source: 'voice' }); return { state: 'DONE', message: '已开始计时。' }
+    }
+    if (intent.intent === 'STOP_TIMER') {
+      if (!running) return { state: 'ERROR', message: '当前没有正在运行的计时。' }
+      await stopTimer(); return { state: 'DONE', message: '已停止计时并记录实际投入。' }
+    }
+    if (intent.intent === 'CONFIRM') return voicePendingActionId ? executeVoiceAction(voicePendingActionId) : { state: 'ERROR', message: '当前没有等待确认的语音操作。' }
+    if (intent.intent === 'CANCEL') return voicePendingActionId ? cancelVoiceAction(voicePendingActionId) : { state: 'CANCELLED', message: '已取消，没有执行任何操作。' }
+    if (!aiConfig?.configured) { setView('settings'); return { state: 'ERROR', message: '复杂语音操作需要已配置的 AI 服务商；已打开“设置与数据”。' } }
+    const response = await sendAi(transcript, { voiceMode: true, voiceIntent: intent.intent })
+    if (!response) return { state: 'ERROR', message: 'AI 未能完成语音请求；没有执行写入。' }
+    if (response.action?.status === 'CONFIRM_REQUIRED') { setVoicePendingActionId(response.action.actionId); return { state: 'AWAITING_CONFIRMATION', actionId: response.action.actionId, message: response.action.previewTitle || '已生成操作预览，请确认后执行。' } }
+    return { state: 'DONE', message: response.answer, actionId: response.action?.actionId }
   }
   const saveAiProvider = async (provider: AiProviderId, apiKey: string, model: string) => {
     try { setAiConfig(await api.configureAiProvider(provider, apiKey, model)); showNotice(`${provider === 'deepseek' ? 'DeepSeek' : provider === 'minimax' ? 'MiniMax Token Plan' : provider === 'volc-agent-plan' ? '火山引擎 Agent Plan' : 'HackStart'} 配置已保存，连通性测试通过。`) }
@@ -308,6 +358,7 @@ function App() {
       sidebarOpen={effectiveSidebarOpen} onToggleSidebar={toggleSidebar} onProfile={(section) => { setProfileSection(section); setView('profile') }} onSettings={() => setView('settings')} onAiNews={() => setView('aiNews')} aiNewsActive={view === 'aiNews'} onAi={() => setAiOpen(true)} onPalette={() => setPaletteOpen(true)} aiConfigured={Boolean(aiConfig?.configured)}
     />
     <aside className="sidebar">
+      <button className="voice-operating-entry" onClick={() => setVoiceOpen(true)}><span>🎙</span><div><strong>语音操作</strong><small>点击开始说话，让 AI 操作整个系统</small></div></button>
       <button className="quick-capture" onClick={() => setView('notebook')}><span>▱</span><div><strong>收纳箱</strong><small>收集与笔记 · ⌘ ⇧ Space</small></div></button>
       <nav>{nav.map((group) => <section key={group.group}><p>{group.group}</p>{group.items.map((item) => <Fragment key={item.view}><button className={item.view === 'cognition' ? ['cognition', 'knowledge', 'reviews', 'insights', 'principles', 'mentalModels'].includes(view) ? 'active' : '' : view === item.view ? 'active' : ''} onClick={() => { setView(item.view); if (item.view === 'decisionCenter') setDecisionCenterTab('overview'); if (item.view !== 'projects') setSelectedProjectId(null) }}><span>{item.icon}</span>{item.label}</button>{item.view === 'cognition' && ['cognition', 'knowledge', 'reviews', 'insights', 'principles', 'mentalModels'].includes(view) && <div className="cognition-sidebar-tabs">{([['cognition', '总览'], ['insights', '洞见'], ['reviews', '复盘'], ['knowledge', '知识'], ['principles', '原则'], ['mentalModels', '思维模型']] as Array<[View, string]>).map(([target, label]) => <button key={target} className={(target === 'cognition' ? view === 'cognition' : view === target) ? 'active' : ''} onClick={() => setView(target)}>— <span>{label}</span></button>)}</div>}</Fragment>)}</section>)}</nav>
       <div className="sidebar-bottom-actions"><button className={`running-card ${running ? 'live' : ''}`} onClick={() => running ? stopTimer() : startTimer()}>{running ? <><span className="pulse" /><div><strong>{titleFor(running)}</strong><small>点击停止并记录时间</small></div></> : <><span>▶</span><div><strong>开始计时</strong><small>记录现实投入</small></div></>}</button><button className={`sidebar-settings ${view === 'settings' ? 'active' : ''}`} onClick={() => setView('settings')}><span>⚙</span>设置与数据</button></div>
@@ -335,6 +386,7 @@ function App() {
     {searchOpen && <SearchOverlay query={searchQuery} results={searchResults} selectedEntities={searchEntities} onToggleEntity={(entity) => setSearchEntities((current) => current.includes(entity) ? current.filter((item) => item !== entity) : [...current, entity])} onOpen={openRecord} onClose={() => setSearchOpen(false)} />}
     {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} actions={paletteActions({ setSearchOpen, setPaletteOpen, openCreate, startTimer, setAiOpen, setView })} />}
     {aiOpen && <><div className="ai-resize-handle" role="separator" aria-label="调整 AI 助理宽度" onPointerDown={(event) => { event.preventDefault(); setAiResizing(true) }} /><AiDrawer config={aiConfig} chat={chat} draft={aiDraft} busy={aiBusy} context={contextRecords} onDraft={setAiDraft} onSend={sendAi} onConfirmAction={confirmAiAction} onCancelAction={cancelAiAction} onViewAction={viewAiActionResult} onSelectModel={(provider, model) => saveAiProvider(provider, '', model)} onClose={() => setAiOpen(false)} onSettings={() => { setAiOpen(false); setView('settings') }} /></>}
+    {voiceOpen && <VoiceOperatingPanel onClose={() => { voiceConversation.current = []; setVoicePendingActionId(null); setVoiceOpen(false) }} onTranscript={runVoiceTranscript} onConfirm={executeVoiceAction} onCancel={cancelVoiceAction} />}
     {timerStart && <TimerStartModal initial={timerStart} records={records} onClose={() => setTimerStart(null)} onStart={startTimerNow} />}
     {editing && <RecordModal config={editing.config} record={editing.record} initial={editing.initial} records={records} onClose={() => setEditing(null)} onSave={saveRecord} />}
     {detailId && <RecordDrawer record={records.find((record) => record.id === detailId)} records={records} onClose={() => setDetailId(null)} onEdit={(record) => setEditing({ config: configFor(record.entity), record })} onArchive={archiveRecord} onCreate={openCreate} onOpen={openRecord} onStartTimer={startTimer} onAddModel={addModelToDecision} />}
