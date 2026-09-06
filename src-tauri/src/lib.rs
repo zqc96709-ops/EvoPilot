@@ -45,6 +45,7 @@ const ENTITIES: &[&str] = &[
     "goals",
     "keyResults",
     "projects",
+    "projectMilestones",
     "tasks",
     "hypotheses",
     "experiments",

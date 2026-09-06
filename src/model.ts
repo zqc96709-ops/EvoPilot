@@ -1,6 +1,6 @@
 import { timelineOccurredAt, timelineRecords } from './timeline'
 export type Entity =
-  | 'goals' | 'keyResults' | 'projects' | 'tasks' | 'hypotheses' | 'experiments' | 'timeLogs' | 'results' | 'deliverables' | 'resultPackages'
+  | 'goals' | 'keyResults' | 'projects' | 'projectMilestones' | 'tasks' | 'hypotheses' | 'experiments' | 'timeLogs' | 'results' | 'deliverables' | 'resultPackages'
   | 'workflows' | 'workflowVersions' | 'workflowSteps' | 'workflowGates' | 'workflowRuns' | 'workflowRunSteps' | 'workflowMetricDefinitions' | 'workflowImprovementProposals'
   | 'reviews' | 'knowledge' | 'insights' | 'principles' | 'mentalModels' | 'mentalModelUsages'
   | 'decisions' | 'notes' | 'notebookCategories' | 'notebookFolders' | 'notebookFiles' | 'inbox' | 'events' | 'people' | 'dataRecords' | 'attachments' | 'timelineEvents' | 'agentRuns' | 'agentActions'
@@ -82,6 +82,11 @@ export const entities: EntityConfig[] = [
     { key: 'blockers', label: '阻塞', multiline: true }, { key: 'nextAction', label: '下一步行动', multiline: true },
     { key: 'sourceDecisionId', label: '来源决策', relation: 'decisions' }, { key: 'sourceOpportunityId', label: '来源机会', relation: 'opportunities' }, { key: 'sourceSignalIds', label: '来源信号', relation: 'signals', multiple: true },
     { key: 'workflowRunId', label: '当前工作链', relation: 'workflowRuns' },
+  ] },
+  { entity: 'projectMilestones', label: '项目里程碑', singular: '里程碑', icon: '◇', titleKey: 'title', description: '项目计划与交付节点；用于判断真实项目推进。', fields: [
+    { key: 'title', label: '里程碑' }, { key: 'projectId', label: '项目', relation: 'projects' }, { key: 'dueDate', label: '截止日期', type: 'date' },
+    { key: 'status', label: '状态', type: 'select', options: [option('planned', '计划中'), option('in_progress', '推进中'), option('completed', '已完成'), option('blocked', '受阻'), option('cancelled', '已取消')] },
+    { key: 'importance', label: '重要性', type: 'select', options: priorities }, { key: 'completedAt', label: '完成时间', type: 'datetime-local' }, { key: 'description', label: '说明', multiline: true },
   ] },
   { entity: 'tasks', label: '任务', singular: '任务', icon: '□', titleKey: 'title', description: '任务是可以立即执行的下一步行动。', fields: [
     { key: 'title', label: '任务' }, { key: 'description', label: '说明', multiline: true }, { key: 'decisionId', label: '来源决策', relation: 'decisions' }, { key: 'projectId', label: '所属项目', relation: 'projects' },
