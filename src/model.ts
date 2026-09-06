@@ -50,7 +50,7 @@ const option = (value: string, label = value): FieldOption => ({ value, label })
 const statuses = {
   goal: [option('active', '进行中'), option('planned', '计划中'), option('paused', '已暂停'), option('completed', '已完成'), option('archived', '已归档')],
   project: [option('active', '进行中'), option('planned', '计划中'), option('blocked', '受阻'), option('paused', '已暂停'), option('completed', '已完成')],
-  task: [option('inbox', '收集箱'), option('todo', '待办'), option('in_progress', '进行中'), option('waiting', '等待中'), option('completed', '已完成'), option('cancelled', '已取消')],
+  task: [option('inbox', '收集箱'), option('todo', '待办'), option('in_progress', '进行中'), option('waiting', '等待中'), option('blocked', '受阻'), option('completed', '已完成'), option('cancelled', '已取消')],
   hypothesis: [option('untested', '未测试'), option('testing', '测试中'), option('validated', '已验证'), option('rejected', '已否定'), option('inconclusive', '无结论')],
   decision: [option('pending', '待决定'), option('decided', '已决定'), option('monitoring', '观察中'), option('validated', '已验证'), option('partially_correct', '部分正确'), option('wrong', '错误'), option('unknown', '未知')],
 }
@@ -90,7 +90,7 @@ export const entities: EntityConfig[] = [
     { key: 'importance', label: '重要程度', type: 'select', options: [option('important', '重要'), option('not_important', '不重要')] },
     { key: 'urgency', label: '紧急程度', type: 'select', options: [option('urgent', '紧急'), option('not_urgent', '不紧急')] },
     { key: 'dueDate', label: '截止日期', type: 'date' }, { key: 'dueAt', label: '具体时间', type: 'datetime-local' },
-    { key: 'estimateMinutes', label: '预估分钟', type: 'number' }, { key: 'tags', label: '标签（逗号分隔）' },
+    { key: 'estimateMinutes', label: '预估分钟', type: 'number' }, { key: 'tags', label: '标签（逗号分隔）' }, { key: 'blockedSince', label: '受阻开始时间', type: 'datetime-local', readOnly: true },
     { key: 'dependencyIds', label: '依赖任务', relation: 'tasks', multiple: true }, { key: 'completedAt', label: '完成时间', type: 'datetime-local' },
   ] },
   { entity: 'hypotheses', label: '假设', singular: '假设', icon: '⌁', titleKey: 'title', description: '用实验和证据验证，而不是用感觉判断。', fields: [

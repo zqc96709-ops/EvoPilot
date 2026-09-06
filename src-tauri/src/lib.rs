@@ -1531,6 +1531,28 @@ fn validate_research_result_snapshot(existing: &Value, incoming: &Value) -> Resu
     Ok(())
 }
 
+fn apply_task_execution_fields(data: &mut Value, existing: Option<&Value>, timestamp: &str) {
+    if data.get("status").and_then(Value::as_str) == Some("blocked") {
+        let has_blocked_since = data
+            .get("blockedSince")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty());
+        if !has_blocked_since {
+            let previous = existing
+                .and_then(|record| record.get("blockedSince"))
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(timestamp)
+                .to_string();
+            if let Some(object) = data.as_object_mut() {
+                object.insert("blockedSince".into(), Value::String(previous));
+            }
+        }
+    } else if let Some(object) = data.as_object_mut() {
+        object.remove("blockedSince");
+    }
+}
+
 #[tauri::command]
 fn initialize_database(app: AppHandle) -> Result<Value, String> {
     let connection = db(&app)?;
@@ -1835,6 +1857,10 @@ fn save_record(app: AppHandle, entity: String, mut data: Value) -> Result<Value,
     if entity == "decisions" && existing.is_none() {
         finance::freeze_decision_snapshot(&connection, &mut data, &now())?;
     }
+    let saved_at = now();
+    if entity == "tasks" {
+        apply_task_execution_fields(&mut data, existing.as_ref(), &saved_at);
+    }
     ensure_external_source_capacity(&connection, &entity, &id, &data)?;
     let created_at = existing
         .as_ref()
@@ -1842,11 +1868,11 @@ fn save_record(app: AppHandle, entity: String, mut data: Value) -> Result<Value,
         .and_then(Value::as_str)
         .or_else(|| data.get("createdAt").and_then(Value::as_str))
         .map(str::to_string)
-        .unwrap_or_else(now);
+        .unwrap_or_else(|| saved_at.clone());
     let normalized = normalize_record(&connection, &entity, &data, true)?;
     finance::validate_transition(&entity, existing.as_ref(), &normalized)?;
     finance::validate_allocation(&connection, &entity, &id, &normalized)?;
-    let enriched = apply_timeline_metadata(&entity, &normalized, &created_at, &now());
+    let enriched = apply_timeline_metadata(&entity, &normalized, &created_at, &saved_at);
     if entity == "timeLogs" && enriched["isRunning"].as_bool().unwrap_or(false) {
         let another_running: bool = connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM records WHERE entity='timeLogs' AND id<>?1 AND archived_at IS NULL AND deleted_at IS NULL AND json_extract(data_json,'$.isRunning')=1)",
@@ -6861,6 +6887,21 @@ mod tests {
         assert_eq!(notebook_file_reference_count(&connection, "file-a").unwrap(), 2);
         connection.execute("UPDATE records SET deleted_at='1' WHERE id='note-a'", []).unwrap();
         assert_eq!(notebook_file_reference_count(&connection, "file-a").unwrap(), 1);
+    }
+
+    #[test]
+    fn task_blocked_since_is_set_once_and_cleared_when_unblocked() {
+        let mut blocked = json!({"status":"blocked"});
+        apply_task_execution_fields(&mut blocked, None, "2026-09-06T10:00:00Z");
+        assert_eq!(blocked["blockedSince"], "2026-09-06T10:00:00Z");
+
+        let mut still_blocked = json!({"status":"blocked"});
+        apply_task_execution_fields(&mut still_blocked, Some(&blocked), "2026-09-07T10:00:00Z");
+        assert_eq!(still_blocked["blockedSince"], "2026-09-06T10:00:00Z");
+
+        let mut unblocked = json!({"status":"todo", "blockedSince":"2026-09-06T10:00:00Z"});
+        apply_task_execution_fields(&mut unblocked, Some(&still_blocked), "2026-09-08T10:00:00Z");
+        assert!(unblocked.get("blockedSince").is_none());
     }
 
     #[test]

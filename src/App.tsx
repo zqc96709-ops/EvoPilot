@@ -12,6 +12,8 @@ import FinanceIntelligenceView from './FinanceIntelligenceView'
 import TodayCockpitView from './TodayCockpitView'
 import TimeIntelligenceView from './TimeIntelligenceView'
 import CognitiveCenterView from './CognitiveCenterView'
+import TaskExecutionDashboardView from './TaskExecutionDashboardView'
+import type { TaskDashboardPeriod } from './taskExecutionDashboard'
 import type { CognitivePeriod, CognitiveTab } from './cognitiveIntelligence'
 import { type ExternalItem } from './externalIntelligence'
 import { createResearchPlan, getConfiguredProviders, parseResearchSources, resolveResearchSources, type ResearchPlan, type ResearchSourcePlan } from './researchPlanner'
@@ -32,7 +34,7 @@ import {
 type View = 'command' | 'today' | 'tasks' | 'time' | 'projects' | 'outcomes' | 'finance' | 'notebook' | 'cognition' | 'knowledge' | 'reviews' | 'insights' | 'principles' | 'mentalModels' | 'decisions' | 'events' | 'people' | 'timeline' | 'aiNews' | 'settings' | 'profile'
 type EditState = { config: EntityConfig; record?: RecordData; initial?: Partial<RecordData> }
 type Notice = { text: string; tone?: 'success' | 'danger' }
-type TaskView = 'list' | 'kanban' | 'matrix' | 'calendar'
+type TaskView = 'overview' | 'list' | 'kanban' | 'matrix' | 'calendar'
 type ThemePreference = 'dark' | 'light' | 'auto'
 const resolvedTheme = (theme: ThemePreference) => theme === 'auto' ? (new Date().getHours() >= 7 && new Date().getHours() < 19 ? 'light' : 'dark') : theme
 type ProfileSection = 'basic' | 'personal' | 'ai'
@@ -187,7 +189,7 @@ function App() {
   const archiveRecord = async (id: string) => { await api.archive(id); await refresh(); setDetailId(null); if (selectedProjectId === id) setSelectedProjectId(null); showNotice('已归档，可在设置中恢复。') }
   const restoreRecord = async (id: string) => { await api.restore(id); await refresh(); showNotice('记录已恢复。') }
   const completeTask = async (task: RecordData) => { await api.save('tasks', { ...task, status: 'completed', completedAt: new Date().toISOString() }); await refresh(); showNotice('任务已完成。') }
-  const restoreTask = async (task: RecordData) => { await api.save('tasks', { ...task, status: 'todo', completedAt: '' }); await refresh(); showNotice('任务已恢复为待办。') }
+  const restoreTask = async (task: RecordData) => { await api.save('tasks', { ...task, status: 'todo' }); await refresh(); showNotice('任务已恢复为待办。') }
   const startTimer = (context?: Partial<RecordData>) => {
     if (running) { showNotice('已有计时正在运行。', 'danger'); return }
     setTimerStart(context || {})
@@ -304,7 +306,7 @@ function App() {
       <div className="sidebar-bottom-actions"><button className={`running-card ${running ? 'live' : ''}`} onClick={() => running ? stopTimer() : startTimer()}>{running ? <><span className="pulse" /><div><strong>{titleFor(running)}</strong><small>点击停止并记录时间</small></div></> : <><span>▶</span><div><strong>开始计时</strong><small>记录现实投入</small></div></>}</button><button className={`sidebar-settings ${view === 'settings' ? 'active' : ''}`} onClick={() => setView('settings')}><span>⚙</span>设置与数据</button></div>
     </aside>
     <main className="main-content">
-      {!['notebook', 'command', 'today', 'time', 'cognition', 'knowledge', 'reviews', 'insights', 'principles', 'mentalModels'].includes(view) && <div className="page-heading"><div><p className="eyebrow">JASON OS · PERSONAL OPERATING SYSTEM</p><h1>{pageTitle}</h1></div>{!['command', 'aiNews', 'timeline', 'outcomes', 'finance', 'profile', 'settings'].includes(view) && <button className="button primary" onClick={() => openCreate(viewEntity(view))}>＋ 新建</button>}</div>}
+      {!['notebook', 'command', 'today', 'time', 'cognition', 'knowledge', 'reviews', 'insights', 'principles', 'mentalModels'].includes(view) && <div className="page-heading"><div><p className="eyebrow">JASON OS · PERSONAL OPERATING SYSTEM</p><h1>{pageTitle}</h1>{view === 'tasks' && <small className="page-heading-subtitle">洞察执行健康、识别阻塞与积压、保持行动与目标一致</small>}</div>{!['command', 'aiNews', 'timeline', 'outcomes', 'finance', 'profile', 'settings'].includes(view) && <button className="button primary" onClick={() => openCreate(viewEntity(view))}>＋ {view === 'tasks' ? '新建任务' : '新建'}</button>}</div>}
       {view === 'command' && <CommandCenter records={records} onOpen={openRecord} onView={setView} onRefresh={refresh} />}
       {view === 'today' && <TodayView records={records} running={running} onOpen={openRecord} onComplete={completeTask} onRestore={restoreTask} onStartTimer={startTimer} onStopTimer={stopTimer} onCreate={openCreate} />}
       {view === 'tasks' && <TasksView records={records} onOpen={openRecord} onEdit={(record) => setEditing({ config: configFor('tasks'), record })} onComplete={completeTask} onStartTimer={startTimer} onCreate={(initial) => openCreate('tasks', initial)} />}
@@ -379,11 +381,12 @@ function TodayView({ records, running, onOpen, onComplete, onRestore, onStartTim
 }
 
 function TasksView({ records, onOpen, onEdit, onComplete, onStartTimer, onCreate }: { records: RecordData[]; onOpen: (record: RecordData) => void; onEdit: (record: RecordData) => void; onComplete: (record: RecordData) => void; onStartTimer: (record: RecordData) => void; onCreate: (initial?: Partial<RecordData>) => void }) {
-  const [mode, setMode] = useState<TaskView>('list'); const [filter, setFilter] = useState<'all' | 'today' | 'upcoming' | 'overdue'>('all')
+  const [mode, setMode] = useState<TaskView>('overview'); const [filter, setFilter] = useState<'all' | 'today' | 'upcoming' | 'overdue'>('all'); const [period, setPeriod] = useState<TaskDashboardPeriod>('30d')
   const tasks = records.filter((record) => record.entity === 'tasks' && isActive(record)).filter((task) => filter === 'all' || filter === 'today' && isToday(task.dueDate) || filter === 'upcoming' && Boolean(task.dueDate) && String(task.dueDate) > today() || filter === 'overdue' && isOverdue(task))
-  return <div className={`tasks-page ${mode === 'calendar' ? 'calendar-v2-mode' : ''}`}>{mode !== 'calendar' && <div className="toolbar"><div className="segmented">{(['all', 'today', 'upcoming', 'overdue'] as const).map((item) => <button key={item} className={filter === item ? 'active' : ''} onClick={() => setFilter(item)}>{{ all: '全部', today: '今天', upcoming: '即将到期', overdue: '已逾期' }[item]}</button>)}</div><div className="segmented">{(['list', 'kanban', 'matrix', 'calendar'] as const).map((item) => <button key={item} className={mode === item ? 'active' : ''} onClick={() => setMode(item)}>{{ list: '列表', kanban: '看板', matrix: '四象限', calendar: '日历' }[item]}</button>)}</div></div>}
+  return <div className={`tasks-page ${mode === 'calendar' ? 'calendar-v2-mode' : ''}`}><div className="task-view-tabs">{(['overview', 'list', 'kanban', 'matrix', 'calendar'] as const).map((item) => <button key={item} className={mode === item ? 'active' : ''} onClick={() => setMode(item)}>{{ overview: '总览', list: '列表', kanban: '看板', matrix: '四象限', calendar: '日历' }[item]}</button>)}</div>{mode !== 'overview' && mode !== 'calendar' && <div className="toolbar"><div className="segmented">{(['all', 'today', 'upcoming', 'overdue'] as const).map((item) => <button key={item} className={filter === item ? 'active' : ''} onClick={() => setFilter(item)}>{{ all: '全部', today: '今天', upcoming: '即将到期', overdue: '已逾期' }[item]}</button>)}</div></div>}
+    {mode === 'overview' && <TaskExecutionDashboardView records={records} period={period} onPeriod={setPeriod} onOpen={onOpen} />}
     {mode === 'list' && <section className="work-panel">{tasks.length ? tasks.map((task) => <ActionTask key={task.id} task={task} records={records} onOpen={onOpen} onEdit={onEdit} onComplete={onComplete} onTimer={onStartTimer} />) : <GuidedEmpty icon="□" title="这个视图里没有任务" text="任务应该代表可执行的下一步，并关联项目或目标。" action="创建任务" onAction={() => onCreate()} />}</section>}
-    {mode === 'kanban' && <div className="kanban">{(['inbox', 'todo', 'in_progress', 'waiting'] as const).map((status) => <section key={status}><header><h3>{statusLabel(status)}</h3><span>{tasks.filter((task) => task.status === status).length}</span></header>{tasks.filter((task) => task.status === status).map((task) => <article key={task.id} onClick={() => onOpen(task)}><strong>{titleFor(task)}</strong><small>{relationName(task.projectId, records) || '未分配项目'}</small><footer><span className={`priority ${task.priority || 'medium'}`}>{priorityLabel(task.priority)}</span><span>{formatDate(task.dueDate)}</span></footer></article>)}</section>)}</div>}
+    {mode === 'kanban' && <div className="kanban">{(['inbox', 'todo', 'in_progress', 'waiting', 'blocked'] as const).map((status) => <section key={status}><header><h3>{statusLabel(status)}</h3><span>{tasks.filter((task) => task.status === status).length}</span></header>{tasks.filter((task) => task.status === status).map((task) => <article key={task.id} onClick={() => onOpen(task)}><strong>{titleFor(task)}</strong><small>{relationName(task.projectId, records) || '未分配项目'}</small><footer><span className={`priority ${task.priority || 'medium'}`}>{priorityLabel(task.priority)}</span><span>{formatDate(task.dueDate)}</span></footer></article>)}</section>)}</div>}
     {mode === 'matrix' && <TaskMatrixBoard tasks={tasks} records={records} onOpen={onOpen} onCreate={onCreate} />}
     {mode === 'calendar' && <TaskCalendarBoard tasks={tasks} records={records} onOpen={onOpen} onCreate={onCreate} onTaskView={setMode} />}
   </div>
