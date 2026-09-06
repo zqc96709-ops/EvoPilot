@@ -57,7 +57,7 @@ const statuses = {
 const priorities = [option('high', '高'), option('medium', '中'), option('low', '低')]
 
 export const entities: EntityConfig[] = [
-  { entity: 'profiles', label: '我的档案', singular: '档案', icon: '◌', titleKey: 'title', description: 'Jason OS 的长期个人与 AI 上下文；不作为业务模块或左侧导航。', fields: [
+  { entity: 'profiles', label: '我的档案', singular: '档案', icon: '◌', titleKey: 'title', description: 'EVOPOLIT 的长期个人与 AI 上下文；不作为业务模块或左侧导航。', fields: [
     { key: 'title', label: '档案名称' }, { key: 'name', label: '姓名' }, { key: 'nickname', label: '昵称' }, { key: 'avatar', label: '头像 URL（可选）' },
     { key: 'occupation', label: '职业 / 身份' }, { key: 'role', label: '当前角色' }, { key: 'organization', label: '公司 / 组织' }, { key: 'workDomains', label: '主要工作领域（逗号分隔）' },
     { key: 'longTermDirection', label: '长期方向', multiline: true }, { key: 'currentFocus', label: '当前重点（逗号分隔）' }, { key: 'workStyle', label: '我的工作方式', multiline: true }, { key: 'decisionStyle', label: '我的决策方式', multiline: true }, { key: 'commonTools', label: '常用工具（逗号分隔）' }, { key: 'otherContext', label: '其他长期背景', multiline: true },
@@ -212,7 +212,7 @@ export const entities: EntityConfig[] = [
     { key: 'notebookCategoryId', label: 'Notebook 分类', relation: 'notebookCategories' }, { key: 'notebookFolderId', label: 'Notebook 文件夹', relation: 'notebookFolders' },
     { key: 'favorite', label: '收藏', type: 'select', options: [option('false', '否'), option('true', '是')] },
   ] },
-  { entity: 'notebookCategories', label: 'Notebook 分类', singular: '分类', icon: '▦', titleKey: 'name', description: 'Notebook 内部的自定义分类；不是 Jason OS Project。', fields: [
+  { entity: 'notebookCategories', label: 'Notebook 分类', singular: '分类', icon: '▦', titleKey: 'name', description: 'Notebook 内部的自定义分类；不是 EVOPOLIT Project。', fields: [
     { key: 'name', label: '分类名称' }, { key: 'description', label: '说明', multiline: true }, { key: 'sortOrder', label: '排序', type: 'number' }, { key: 'parentNotebookCategoryId', label: '上级分类', relation: 'notebookCategories' },
   ] },
   { entity: 'notebookFolders', label: 'Notebook 文件夹', singular: '文件夹', icon: '□', titleKey: 'name', description: '用于整理 Notebook 笔记与文件，支持子文件夹。', fields: [
@@ -269,7 +269,7 @@ export const entities: EntityConfig[] = [
     { key: 'signalIds', label: '来源信号', relation: 'signals', multiple: true }, { key: 'opportunityId', label: '来源机会', relation: 'opportunities' }, { key: 'sourceNoteId', label: '来源笔记', relation: 'notes' },
     { key: 'principleIds', label: '调用原则', relation: 'principles', multiple: true }, { key: 'mentalModelIds', label: '调用思维模型', relation: 'mentalModels', multiple: true },
   ] },
-  { entity: 'externalSources', label: '情报源', singular: '情报源', icon: '◉', titleKey: 'name', description: '定义 Jason OS 应持续观察的关键词、账号、竞品和主题。', fields: [
+  { entity: 'externalSources', label: '情报源', singular: '情报源', icon: '◉', titleKey: 'name', description: '定义 EVOPOLIT 应持续观察的关键词、账号、竞品和主题。', fields: [
     { key: 'name', label: '名称' }, { key: 'type', label: '类型', type: 'select', options: [option('LINK', '固定链接'), option('KEYWORD', '关键词'), option('ACCOUNT', '账号'), option('COMPETITOR', '竞品'), option('MARKET', '市场'), option('TOPIC', '主题')] },
     { key: 'platform', label: '平台', type: 'select', options: ['网页', '微信公众号', '抖音', '小红书', 'X', 'Instagram', 'Facebook', 'Reddit', 'TikTok', 'YouTube'] }, { key: 'query', label: '关键词 / 账号' }, { key: 'url', label: '公开链接' },
     { key: 'status', label: '状态', type: 'select', options: [option('active', '启用'), option('paused', '暂停'), option('unsupported', '接口待接入')] }, { key: 'pollInterval', label: '同步频率', type: 'select', options: [option('manual', '仅手动'), option('daily', '应用打开时每日一次')] },
@@ -298,7 +298,7 @@ export const entities: EntityConfig[] = [
   { entity: 'researchThreads', label: '调研主题', singular: '调研主题', icon: '◌', titleKey: 'title', description: '一个调研主题可包含多轮需求、执行与结果快照；不会自动合并历史调研。', fields: [
     { key: 'title', label: '主题名称' }, { key: 'summary', label: '主题说明', multiline: true }, { key: 'status', label: '状态', type: 'select', options: [option('ACTIVE', '进行中'), option('COMPLETED', '已完成'), option('ARCHIVED', '已归档')] }, { key: 'primaryProjectId', label: '主要项目（可选）', relation: 'projects' }, { key: 'tags', label: '标签（逗号分隔）' },
   ] },
-  { entity: 'researchRequests', label: '调研需求', singular: '调研需求', icon: '⌕', titleKey: 'title', description: '在收纳箱中提出外部调研需求；确认前不会执行，也不会自动关联 Jason OS。', fields: [
+  { entity: 'researchRequests', label: '调研需求', singular: '调研需求', icon: '⌕', titleKey: 'title', description: '在收纳箱中提出外部调研需求；确认前不会执行，也不会自动关联 EVOPOLIT。', fields: [
     { key: 'title', label: '调研标题' }, { key: 'request', label: '调研要求', multiline: true }, { key: 'status', label: '状态', type: 'select', options: [option('DRAFT', '方案待确认'), option('RUNNING', '调研中'), option('COMPLETED', '已完成'), option('FAILED', '未完成'), option('CANCELLED', '已取消')] },
     { key: 'researchThreadId', label: '所属调研主题', relation: 'researchThreads' }, { key: 'scope', label: '调研范围' }, { key: 'dimensions', label: '研究维度' }, { key: 'deliverables', label: '交付内容' }, { key: 'sourceSelectionMode', label: '情报源选择模式' }, { key: 'allowedProviderIds', label: '手动允许的 Provider', multiline: true }, { key: 'researchMode', label: '调研深度' }, { key: 'sourcePlan', label: '情报源方案', multiline: true }, { key: 'selectedSourceKeys', label: '已选择情报源', multiline: true }, { key: 'executionStatus', label: '执行结果' },
     { key: 'notebookCategoryId', label: '收纳箱分类', relation: 'notebookCategories' }, { key: 'tags', label: '标签（逗号分隔）' }, { key: 'startedAt', label: '开始时间', type: 'datetime-local', readOnly: true }, { key: 'completedAt', label: '完成时间', type: 'datetime-local', readOnly: true },
@@ -306,7 +306,7 @@ export const entities: EntityConfig[] = [
   { entity: 'researchRuns', label: '调研运行', singular: '调研运行', icon: '▶', titleKey: 'title', description: '一次确认后的调研执行；保留方案、范围与 Provider 运行快照。', fields: [
     { key: 'title', label: '运行标题' }, { key: 'researchThreadId', label: '所属调研主题', relation: 'researchThreads' }, { key: 'researchRequestId', label: '调研需求', relation: 'researchRequests' }, { key: 'status', label: '状态', type: 'select', options: [option('RUNNING', '调研中'), option('COMPLETED', '已完成'), option('PARTIAL', '部分完成'), option('FAILED', '未完成'), option('CANCELLED', '已取消')] }, { key: 'planSnapshot', label: '方案快照', multiline: true, readOnly: true }, { key: 'scopeSnapshot', label: '范围快照', multiline: true, readOnly: true }, { key: 'providerRunIds', label: 'Provider 运行 ID', multiline: true, readOnly: true }, { key: 'startedAt', label: '开始时间', type: 'datetime-local', readOnly: true }, { key: 'completedAt', label: '完成时间', type: 'datetime-local', readOnly: true },
   ] },
-  { entity: 'researchResults', label: '调研结果', singular: '调研结果', icon: '◈', titleKey: 'title', description: '外部调研的结果与证据；由用户决定是否分类、存入知识或关联 Jason OS。', fields: [
+  { entity: 'researchResults', label: '调研结果', singular: '调研结果', icon: '◈', titleKey: 'title', description: '外部调研的结果与证据；由用户决定是否分类、存入知识或关联 EVOPOLIT。', fields: [
     { key: 'title', label: '结果标题' }, { key: 'summary', label: '调研摘要（兼容）', multiline: true }, { key: 'executiveSummary', label: '执行摘要', multiline: true, readOnly: true }, { key: 'scopeSnapshot', label: '范围快照', multiline: true, readOnly: true }, { key: 'planSnapshot', label: '方案快照', multiline: true, readOnly: true }, { key: 'metricsSummary', label: '指标概览', multiline: true, readOnly: true }, { key: 'sourceCoverage', label: '来源覆盖', multiline: true, readOnly: true }, { key: 'missingData', label: '数据缺口', multiline: true, readOnly: true }, { key: 'limitations', label: '局限说明', multiline: true, readOnly: true }, { key: 'confidence', label: '置信度', readOnly: true }, { key: 'recommendations', label: '建议', multiline: true, readOnly: true }, { key: 'userNotes', label: '用户备注', multiline: true }, { key: 'evidenceUrls', label: '证据链接', multiline: true, readOnly: true }, { key: 'evidenceItemIds', label: '标准化证据内容 ID', multiline: true, readOnly: true }, { key: 'researchRunIds', label: '旧 Provider 运行 ID', multiline: true, readOnly: true }, { key: 'provenanceCount', label: '来源追溯数量', type: 'number', readOnly: true }, { key: 'researchThreadId', label: '所属调研主题', relation: 'researchThreads' }, { key: 'researchRequestId', label: '来源调研需求', relation: 'researchRequests' }, { key: 'researchRunId', label: '来源调研运行', relation: 'researchRuns' },
     { key: 'status', label: '状态', type: 'select', options: [option('COMPLETED', '已完成'), option('PARTIAL', '部分完成'), option('FAILED', '未完成')] }, { key: 'notebookCategoryId', label: '收纳箱分类', relation: 'notebookCategories' }, { key: 'tags', label: '标签（逗号分隔）' }, { key: 'completedAt', label: '完成时间', type: 'datetime-local', readOnly: true },
   ] },

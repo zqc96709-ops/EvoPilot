@@ -6,7 +6,7 @@ const entityNames = () => entities.map((item) => item.entity)
 describe('Notebook information space', () => {
   it('registers independent category, folder and file entities', () => {
     expect(entityNames()).toEqual(expect.arrayContaining(['notes', 'notebookCategories', 'notebookFolders', 'notebookFiles']))
-    expect(entities.find((item) => item.entity === 'notebookCategories')?.description).toContain('不是 Jason OS Project')
+    expect(entities.find((item) => item.entity === 'notebookCategories')?.description).toContain('不是 EVOPOLIT Project')
   })
 
   it('does not require notes or files to link to Jason OS business objects', () => {
