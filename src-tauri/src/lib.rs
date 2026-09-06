@@ -1604,6 +1604,76 @@ fn list_records(app: AppHandle, entity: String) -> Result<Vec<Value>, String> {
         .map_err(|e| e.to_string())
 }
 
+fn decision_text(record: &Value, key: &str) -> String {
+    record.get(key).and_then(Value::as_str).unwrap_or("").trim().to_string()
+}
+
+fn decision_validation(record: &Value) -> String {
+    let explicit = decision_text(record, "validationStatus");
+    if !explicit.is_empty() { return explicit; }
+    match decision_text(record, "status").as_str() {
+        "validated" => "SUPPORTED".into(),
+        "partially_correct" => "PARTIALLY_SUPPORTED".into(),
+        "wrong" => "CONTRADICTED".into(),
+        "unknown" => "INCONCLUSIVE".into(),
+        _ => "PENDING".into(),
+    }
+}
+
+fn decision_stage(record: &Value) -> String {
+    if decision_validation(record) != "PENDING" { return "CALIBRATED".into(); }
+    if !decision_text(record, "actualOutcome").is_empty() || !decision_text(record, "outcome").is_empty() || decision_text(record, "executionStatus") == "EXECUTED" { return "VALIDATING".into(); }
+    if decision_text(record, "executionStatus") == "IN_PROGRESS" { return "IN_PROGRESS".into(); }
+    if !decision_text(record, "selectedOption").is_empty() || !decision_text(record, "ceoDecision").is_empty() || decision_text(record, "choiceStatus") == "DECIDED" || decision_text(record, "status") == "decided" { return "DECIDED".into(); }
+    "PENDING".into()
+}
+
+fn decision_date(record: &Value) -> String {
+    ["decisionAt", "date", "createdAt", "updatedAt"].into_iter().map(|key| decision_text(record, key)).find(|value| !value.is_empty()).unwrap_or_default()
+}
+
+fn iso_date_millis(value: &str) -> Option<i128> {
+    let mut parts = value.get(..10)?.split('-').map(str::parse::<i64>);
+    let mut year = parts.next()?.ok()?;
+    let month = parts.next()?.ok()?;
+    let day = parts.next()?.ok()?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) { return None; }
+    year -= if month <= 2 { 1 } else { 0 };
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let month_offset = if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * (month + month_offset) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    Some(((era * 146097 + day_of_era - 719468) as i128) * 86_400_000)
+}
+
+#[tauri::command]
+fn query_decision_records(app: AppHandle, query: Value) -> Result<Value, String> {
+    let object = query.as_object().ok_or("决策查询参数无效")?;
+    let text = |key: &str| object.get(key).and_then(Value::as_str).unwrap_or("").trim().to_string();
+    let stage = text("stage"); let importance = text("importance"); let risk = text("riskLevel"); let project_id = text("projectId"); let validation = text("validationStatus"); let period = text("period"); let sort = text("sort"); let search = text("search").to_lowercase();
+    let limit = object.get("limit").and_then(Value::as_u64).unwrap_or(50).clamp(1, 100) as usize;
+    let offset = object.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let connection = db(&app)?;
+    let mut statement = connection.prepare("SELECT id, entity, data_json, created_at, updated_at FROM records WHERE entity='decisions' AND archived_at IS NULL AND deleted_at IS NULL").map_err(|e| e.to_string())?;
+    let rows = statement.query_map([], |row| Ok(value_to_record(row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))).map_err(|e| e.to_string())?;
+    let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as i128;
+    let mut records = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?.into_iter().filter(|record| {
+        let matches_search = search.is_empty() || serde_json::to_string(record).unwrap_or_default().to_lowercase().contains(&search);
+        let matches_stage = stage.is_empty() || stage == "ALL" || decision_stage(record) == stage;
+        let matches_importance = importance.is_empty() || importance == "ALL" || decision_text(record, "importance").to_uppercase() == importance;
+        let matches_risk = risk.is_empty() || risk == "ALL" || decision_text(record, "riskLevel").to_uppercase() == risk;
+        let matches_project = project_id.is_empty() || project_id == "ALL" || decision_text(record, "projectId") == project_id;
+        let matches_validation = validation.is_empty() || validation == "ALL" || decision_validation(record) == validation;
+        let matches_period = if period == "30d" || period == "90d" || period == "YEAR" { let days: i128 = if period == "30d" { 30 } else if period == "90d" { 90 } else { 365 }; let value = decision_date(record); value.parse::<i128>().ok().or_else(|| iso_date_millis(&value)).map(|millis| millis >= now_ms - days * 86_400_000).unwrap_or(true) } else { true };
+        matches_search && matches_stage && matches_importance && matches_risk && matches_project && matches_validation && matches_period
+    }).collect::<Vec<_>>();
+    let rank = |record: &Value| match decision_text(record, "importance").to_uppercase().as_str() { "CRITICAL" => 4, "HIGH" => 3, "MEDIUM" => 2, "LOW" => 1, _ => 0 };
+    records.sort_by(|left, right| match sort.as_str() { "IMPORTANCE" => rank(right).cmp(&rank(left)).then_with(|| decision_date(right).cmp(&decision_date(left))), "VALIDATION_DUE" => decision_text(left, "validationDueAt").cmp(&decision_text(right, "validationDueAt")), "UPDATED_AT" => decision_text(right, "updatedAt").cmp(&decision_text(left, "updatedAt")), _ => decision_date(right).cmp(&decision_date(left)) });
+    let total = records.len();
+    Ok(json!({ "records": records.into_iter().skip(offset).take(limit).collect::<Vec<_>>(), "total": total }))
+}
+
 #[tauri::command]
 fn list_sync_records(app: AppHandle) -> Result<Vec<Value>, String> {
     let connection = db(&app)?;
@@ -5829,6 +5899,7 @@ pub fn run() {
             list_external_items,
             cleanup_external_cache,
             list_records,
+            query_decision_records,
             list_sync_records,
             merge_remote_records,
             get_sync_status,

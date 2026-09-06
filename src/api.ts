@@ -10,6 +10,7 @@ import { httpSyncTransport, synchronize } from './sync/client'
 import { TauriSqliteReplica } from './sync/tauriReplica'
 import { IndexedDbReplica } from './sync/indexedDbReplica'
 import { changedFields, CLIENT_SCHEMA_VERSION, SYNC_PROTOCOL_VERSION, type SyncMutation } from './sync/protocol'
+import { filterDecisionLogRecords, type DecisionLogPage, type DecisionLogQuery } from './decisionLog'
 export type { ChatMessage } from './agent/types'
 
 export type AiModelOption = { id: string; label: string; description: string }
@@ -27,6 +28,7 @@ export type NotebookFilePreview = { kind: 'text' | 'pdf' | 'image' | 'audio' | '
 export type NotebookStorageConfig = { maxFileSize: number; chunkSize: number }
 export type BuildProvenance = { appPath: string; appVersion: string; gitCommit: string; buildTime: string; schemaVersion: number; syncProtocolVersion: number; deviceId?: string; workspaceId: string }
 export type SyncV1Config = { url: string; configured: boolean; token?: string }
+export type { DecisionLogPage, DecisionLogQuery } from './decisionLog'
 
 const key = 'jason-os-browser-records'
 const browser = () => !('__TAURI_INTERNALS__' in window)
@@ -121,6 +123,7 @@ export const api = {
   async buildProvenance(): Promise<BuildProvenance> { return browser() ? { appPath: window.location.href, appVersion: 'web', gitCommit: String(import.meta.env.VITE_GIT_COMMIT || 'development'), buildTime: String(import.meta.env.VITE_BUILD_TIME || 'development'), schemaVersion: CLIENT_SCHEMA_VERSION, syncProtocolVersion: 1, workspaceId: 'local' } : invoke('get_build_provenance') },
   async archived(): Promise<RecordData[]> { return browser() ? (await (await webDb()).records()).filter((record) => record.archivedAt && !record.deletedAt) : invoke('list_archived') },
   async search(query: string, entities: Entity[] = []): Promise<RecordData[]> { return browser() ? (await (await webDb()).records()).filter(active).filter((record) => (!entities.length || entities.includes(record.entity)) && JSON.stringify(record).toLowerCase().includes(query.toLowerCase())) : entities.length ? invoke('search_records_filtered', { query, entities }) : invoke('search_records', { query }) },
+  async queryDecisions(query: DecisionLogQuery): Promise<DecisionLogPage> { return browser() ? filterDecisionLogRecords(await (await webDb()).records(), query) : invoke('query_decision_records', { query }) },
   async relations(id: string): Promise<RecordData[]> {
     if (!browser()) return invoke('list_relations', { id })
     return (await (await webDb()).records()).filter(active).filter((record) => record.id !== id && Object.entries(record).some(([field, value]) => field.endsWith('Id') && value === id || field.endsWith('Ids') && String(value || '').split(',').map((part) => part.trim()).includes(id)))
