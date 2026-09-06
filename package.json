@@ -19,6 +19,7 @@
     "test:tasks:e2e": "node scripts/task-dashboard-desktop-e2e.mjs",
     "test:projects:e2e": "node scripts/project-dashboard-desktop-e2e.mjs",
     "test:results:e2e": "node scripts/results-dashboard-desktop-e2e.mjs",
+    "test:decisions:e2e": "node scripts/decision-dashboard-desktop-e2e.mjs",
     "test:sync:web:e2e": "node scripts/web-local-first-e2e.mjs",
     "test:sync:minio:e2e": "node scripts/minio-sync-e2e.mjs",
     "sync:server": "node sync-server/server.mjs",

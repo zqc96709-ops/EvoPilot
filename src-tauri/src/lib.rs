@@ -427,12 +427,13 @@ fn timeline_change_specs(entity: &str, before: &Value, after: &Value) -> Vec<Val
         "workflowImprovementProposals" => {
             add("status", "workflow_improvement_status_changed", "工作链改进提案状态发生变化", "key");
         }
-        "decisions" => add(
-            "status",
-            "decision_status_changed",
-            "决策状态发生变化",
-            "key",
-        ),
+        "decisions" => {
+            add("status", "decision_status_changed", "决策状态发生变化", "key");
+            add("choiceStatus", "decision_choice_changed", "决策选择状态发生变化", "key");
+            add("executionStatus", "decision_execution_changed", "决策执行状态发生变化", "key");
+            add("validationStatus", "decision_validation_changed", "决策校准结论发生变化", "key");
+            add("riskLevel", "decision_risk_changed", "决策风险等级发生变化", "key");
+        }
         "signals" => add(
             "status",
             "signal_status_changed",

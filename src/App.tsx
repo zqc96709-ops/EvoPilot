@@ -16,6 +16,7 @@ import TaskExecutionDashboardView from './TaskExecutionDashboardView'
 import type { TaskDashboardPeriod } from './taskExecutionDashboard'
 import ProjectIntelligenceView from './ProjectIntelligenceView'
 import ResultsIntelligenceView from './ResultsIntelligenceView'
+import DecisionIntelligenceView from './DecisionIntelligenceView'
 import type { CognitivePeriod, CognitiveTab } from './cognitiveIntelligence'
 import { type ExternalItem } from './externalIntelligence'
 import { createResearchPlan, getConfiguredProviders, parseResearchSources, resolveResearchSources, type ResearchPlan, type ResearchSourcePlan } from './researchPlanner'
@@ -33,7 +34,7 @@ import {
   type Entity, type EntityConfig, type FieldOption, type RecordData,
 } from './model'
 
-type View = 'command' | 'today' | 'tasks' | 'time' | 'projects' | 'outcomes' | 'finance' | 'notebook' | 'cognition' | 'knowledge' | 'reviews' | 'insights' | 'principles' | 'mentalModels' | 'decisions' | 'events' | 'people' | 'timeline' | 'aiNews' | 'settings' | 'profile'
+type View = 'command' | 'today' | 'tasks' | 'time' | 'projects' | 'outcomes' | 'finance' | 'notebook' | 'cognition' | 'knowledge' | 'reviews' | 'insights' | 'principles' | 'mentalModels' | 'decisionCenter' | 'decisions' | 'events' | 'people' | 'timeline' | 'aiNews' | 'settings' | 'profile'
 type EditState = { config: EntityConfig; record?: RecordData; initial?: Partial<RecordData> }
 type Notice = { text: string; tone?: 'success' | 'danger' }
 type TaskView = 'overview' | 'list' | 'kanban' | 'matrix' | 'calendar'
@@ -178,9 +179,9 @@ function App() {
     await api.save('decisions', {
       title: question.slice(0, 80), problem: question, context: `决策类型：${classification.decisionTypeLabel}；决策视角：${lens ? titleFor(lens) : '未匹配'}`,
       decisionType: classification.decisionType, decisionTypeLabel: classification.decisionTypeLabel, impactLevel: classification.impact,
-      urgencyLevel: classification.urgency, reversibility: classification.reversibility, confidence,
+      urgencyLevel: classification.urgency, reversibility: classification.reversibility, suggestedReversibility: classification.reversibility, confidence,
       decisionLevel: classification.impact === 'high' ? 'STRATEGIC' : classification.impact === 'medium' ? 'MATERIAL' : 'OPERATIONAL',
-      status: ceoDecision ? 'decided' : 'pending', date: today(), lensId: lens?.id, mentalModelIds: models.map(({ model }) => model.id), frameworkIds: frameworks.map((framework) => framework.id),
+      suggestedImportance: classification.impact, status: ceoDecision ? 'decided' : 'pending', choiceStatus: ceoDecision ? 'DECIDED' : 'PENDING', executionStatus: 'NOT_STARTED', validationStatus: 'PENDING', date: today(), decisionAt: ceoDecision ? new Date().toISOString() : '', lensId: lens?.id, mentalModelIds: models.map(({ model }) => model.id), frameworkIds: frameworks.map((framework) => framework.id),
       assumptions: assumptions.join('\n'), evidence: '', options: options.join('\n'), risks: counterCase.join('\n'),
       supportingCase: supportingCase.join('\n'), counterCase: counterCase.join('\n'), biasAnalysis: JSON.stringify(biases), modelTensions: JSON.stringify(tensions),
       opportunityCost, informationGaps: informationGaps.join('\n'), minimumValidation, recommendation, ceoDecision, executionPlan: ceoDecision ? '待创建执行任务：根据 CEO 最终决定拆分下一步行动。' : '', outcome: '', reviewId: '',
@@ -280,7 +281,7 @@ function App() {
     { group: '聚焦', items: [{ view: 'today', label: '今天', icon: '◉' }, { view: 'tasks', label: '任务', icon: '□' }, { view: 'time', label: '时间', icon: '◷' }] },
     { group: '工作', items: [{ view: 'projects', label: '项目', icon: '◈' }, { view: 'outcomes', label: '成果', icon: '✓' }, { view: 'finance', label: '财务', icon: '¥' }] },
     { group: '认知', items: [{ view: 'cognition', label: '认知中心', icon: '⌘' }] },
-    { group: '决策', items: [{ view: 'decisions', label: '决策日志', icon: '◆' }] },
+    { group: '决策', items: [{ view: 'decisionCenter', label: '决策中心', icon: '◆' }, { view: 'decisions', label: '决策日志', icon: '≡' }] },
     { group: '情境', items: [{ view: 'events', label: '事件', icon: '●' }, { view: 'people', label: '人物', icon: '♙' }, { view: 'timeline', label: '时间线', icon: '⌁' }] },
   ]
   const pageTitle = view === 'profile' ? '我的档案' : view === 'notebook' ? '收纳箱' : view === 'aiNews' ? 'AI News Radar' : nav.flatMap((group) => group.items).find((item) => item.view === view)?.label || (view === 'settings' ? '设置' : 'Jason OS')
@@ -308,7 +309,7 @@ function App() {
       <div className="sidebar-bottom-actions"><button className={`running-card ${running ? 'live' : ''}`} onClick={() => running ? stopTimer() : startTimer()}>{running ? <><span className="pulse" /><div><strong>{titleFor(running)}</strong><small>点击停止并记录时间</small></div></> : <><span>▶</span><div><strong>开始计时</strong><small>记录现实投入</small></div></>}</button><button className={`sidebar-settings ${view === 'settings' ? 'active' : ''}`} onClick={() => setView('settings')}><span>⚙</span>设置与数据</button></div>
     </aside>
     <main className="main-content">
-      {!['notebook', 'command', 'today', 'time', 'outcomes', 'cognition', 'knowledge', 'reviews', 'insights', 'principles', 'mentalModels'].includes(view) && <div className="page-heading"><div><p className="eyebrow">JASON OS · PERSONAL OPERATING SYSTEM</p><h1>{pageTitle}</h1>{view === 'tasks' && <small className="page-heading-subtitle">洞察执行健康、识别阻塞与积压、保持行动与目标一致</small>}{view === 'projects' && <small className="page-heading-subtitle">从想法到结果，追踪每个项目的健康度、投入与交付。</small>}</div>{!['command', 'aiNews', 'timeline', 'outcomes', 'finance', 'profile', 'settings'].includes(view) && <button className="button primary" onClick={() => openCreate(viewEntity(view))}>＋ {view === 'tasks' ? '新建任务' : view === 'projects' ? '新建项目' : '新建'}</button>}</div>}
+      {!['notebook', 'command', 'today', 'time', 'outcomes', 'cognition', 'knowledge', 'reviews', 'insights', 'principles', 'mentalModels', 'decisionCenter'].includes(view) && <div className="page-heading"><div><p className="eyebrow">JASON OS · PERSONAL OPERATING SYSTEM</p><h1>{pageTitle}</h1>{view === 'tasks' && <small className="page-heading-subtitle">洞察执行健康、识别阻塞与积压、保持行动与目标一致</small>}{view === 'projects' && <small className="page-heading-subtitle">从想法到结果，追踪每个项目的健康度、投入与交付。</small>}</div>{!['command', 'aiNews', 'timeline', 'outcomes', 'finance', 'profile', 'settings'].includes(view) && <button className="button primary" onClick={() => openCreate(viewEntity(view))}>＋ {view === 'tasks' ? '新建任务' : view === 'projects' ? '新建项目' : '新建'}</button>}</div>}
       {view === 'command' && <CommandCenter records={records} onOpen={openRecord} onView={setView} onRefresh={refresh} />}
       {view === 'today' && <TodayView records={records} running={running} onOpen={openRecord} onComplete={completeTask} onRestore={restoreTask} onStartTimer={startTimer} onStopTimer={stopTimer} onCreate={openCreate} />}
       {view === 'tasks' && <TasksView records={records} onOpen={openRecord} onEdit={(record) => setEditing({ config: configFor('tasks'), record })} onComplete={completeTask} onStartTimer={startTimer} onCreate={(initial) => openCreate('tasks', initial)} />}
@@ -318,7 +319,8 @@ function App() {
       {view === 'finance' && <FinanceView records={records} onOpen={openRecord} onCreate={openCreate} onRefresh={() => void refresh()} onAskAi={() => void sendAi('基于当前财务总览，最近最值得 CEO 关注的财务问题是什么？请只基于已聚合的趋势、项目资本配置与关注事项解释。')} />}
       {view === 'notebook' && <NotebookView records={records} externalItems={externalItems} captureConfig={captureConfig} onOpen={openRecord} onRefresh={refresh} onNotice={showNotice} onAi={(question, context) => { setAiOpen(true); void sendAi(question, context) }} />}
       {(['cognition', 'knowledge', 'reviews', 'insights', 'principles', 'mentalModels'] as View[]).includes(view) && <CognitiveCenterView records={records} tab={cognitiveTab} period={cognitivePeriod} onPeriod={setCognitivePeriod} onTab={(tab) => setView(tab === 'overview' ? 'cognition' : tab)} onOpen={openRecord} onCreate={() => openCreate(cognitiveEntity as Entity)} onAi={() => { setAiOpen(true); if (aiConfig?.configured) void sendAi('基于当前认知中心的真实记录，哪些事项值得我优先复盘、验证或沉淀？不要自动修改任何认知状态。') }} domainContent={cognitiveDomainContent} />}
-      {view === 'decisions' && <DecisionsView records={records} onOpen={openRecord} onCreate={() => openCreate('decisions', { date: today(), status: 'pending' })} />}
+      {view === 'decisionCenter' && <DecisionIntelligenceView records={records} onOpen={openRecord} onCreate={openCreate} />}
+      {view === 'decisions' && <DecisionsView records={records} onOpen={openRecord} onCreate={() => openCreate('decisions', { date: today(), status: 'pending', choiceStatus: 'PENDING', executionStatus: 'NOT_STARTED', validationStatus: 'PENDING' })} />}
       {(view === 'events' || view === 'people') && <ContextView entity={view} records={records} onOpen={openRecord} onCreate={openCreate} />}
       {view === 'timeline' && <TimelineView records={records} onOpen={openRecord} onAiAnalyze={(question, context) => { setAiOpen(true); void sendAi(question, context) }} />}
       {view === 'profile' && <ProfileView profile={records.find((record) => record.entity === 'profiles')} initialSection={profileSection} onSave={saveProfile} />}
@@ -335,7 +337,7 @@ function App() {
   </div>
 }
 
-const viewEntity = (view: View): Entity => ({ command: 'inbox', today: 'tasks', tasks: 'tasks', time: 'timeLogs', projects: 'projects', outcomes: 'results', finance: 'financialTransactions', notebook: 'notes', cognition: 'insights', knowledge: 'knowledge', reviews: 'reviews', insights: 'insights', principles: 'principles', mentalModels: 'mentalModels', decisions: 'decisions', events: 'events', people: 'people', timeline: 'events', aiNews: 'inbox', settings: 'inbox', profile: 'profiles' }[view] as Entity)
+const viewEntity = (view: View): Entity => ({ command: 'inbox', today: 'tasks', tasks: 'tasks', time: 'timeLogs', projects: 'projects', outcomes: 'results', finance: 'financialTransactions', notebook: 'notes', cognition: 'insights', knowledge: 'knowledge', reviews: 'reviews', insights: 'insights', principles: 'principles', mentalModels: 'mentalModels', decisionCenter: 'decisions', decisions: 'decisions', events: 'events', people: 'people', timeline: 'events', aiNews: 'inbox', settings: 'inbox', profile: 'profiles' }[view] as Entity)
 
 function GlobalHeader({ query, onQuery, onSearchFocus, sidebarOpen, onToggleSidebar, onProfile, onSettings, onAiNews, aiNewsActive, onAi, onPalette, aiConfigured }: { query: string; onQuery: (value: string) => void; onSearchFocus: () => void; sidebarOpen: boolean; onToggleSidebar: () => void; onProfile: (section: ProfileSection) => void; onSettings: () => void; onAiNews: () => void; aiNewsActive: boolean; onAi: () => void; onPalette: () => void; aiConfigured: boolean }) {
   const [profileMenuOpen, setProfileMenuOpen] = useState(false)

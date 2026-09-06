@@ -49,7 +49,7 @@ try {
   await execute(`const select=document.querySelector('.ceo-command-controls select');select.value='7d';select.dispatchEvent(new Event('change',{bubbles:true}));return true`)
   await wait(() => execute('return document.querySelector(".ceo-command-controls select")?.value==="7d"'), 'period switch')
   await clickContaining('关键项目风险', '.ceo-kpi')
-  await wait(() => execute('return Boolean(document.querySelector(".projects-page"))'), 'risk KPI drilldown')
+  await wait(() => execute('return Boolean(document.querySelector(".project-intelligence"))'), 'risk KPI drilldown')
   await clickText('⌂指挥中心', '.sidebar nav button')
   await wait(() => execute('return Boolean(document.querySelector(".ceo-command-center"))'), 'back to command center')
   if (!await execute('return document.querySelector(".ceo-command-controls select")?.value==="7d"')) throw new Error('Period state was not retained across drilldown')
