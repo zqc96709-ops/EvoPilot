@@ -172,6 +172,7 @@ function App() {
     const handler = (event: KeyboardEvent) => {
       if (event.metaKey && event.key.toLowerCase() === 'k') { event.preventDefault(); setPaletteOpen(true) }
       if (event.metaKey && event.shiftKey && event.code === 'Space') { event.preventDefault(); setView('notebook') }
+      if (event.metaKey && (event.key === '[' || event.key === ']') && window.location.hash.startsWith('#settings')) { event.preventDefault(); if (event.key === '[') window.history.back(); else window.history.forward() }
       if (event.key === 'Escape') { setPaletteOpen(false); setSearchOpen(false); setAiOpen(false); setDetailId(null) }
     }
     window.addEventListener('keydown', handler); return () => window.removeEventListener('keydown', handler)
