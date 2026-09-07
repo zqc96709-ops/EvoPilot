@@ -3,6 +3,7 @@ import type { FormEvent } from 'react'
 import './App.css'
 import './productShell.css'
 import { PRODUCT_EYEBROW, PRODUCT_NAME, PRODUCT_SEARCH_PLACEHOLDER, PRODUCT_TAGLINE, resolveUserIdentity } from './product'
+import { profileSavePayload } from './profile'
 import { buildAgentContext, buildContextRelationIndex, buildGlobalContext, detectGlobalIntent, shouldRetrieveGlobalContext } from './agent/contextEngine'
 import type { AgentAction, AgentContext } from './agent/types'
 import { buildRadarData, radarCategories, type RadarCategory, type RadarData, type RadarStory } from './aiNews'
@@ -194,8 +195,7 @@ function App() {
     await api.save(entity, data); await refresh(); setEditing(null); showNotice('已保存到本机。') }
   const saveProfile = async (data: Record<string, string>) => {
     const existing = records.find((record) => record.entity === 'profiles')
-    const title = data.nickname || data.displayName || data.name || data.role || '我的档案'
-    await api.save('profiles', { id: existing?.id, ...data, title })
+    await api.save('profiles', profileSavePayload(existing, data))
     await refresh(); showNotice('我的档案已保存到本机。')
   }
   const saveDecisionAnalysis = async (question: string, analysis: DecisionAnalysis, ceoDecision = '') => {
