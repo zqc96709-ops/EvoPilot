@@ -6,7 +6,7 @@ import type { CaptureProviderConfig } from './api'
 const source = { id: 'source-1', entity: 'externalSources', name: 'TikTok 大码女装', url: 'https://example.com/tiktok', platform: 'TikTok', status: 'active', createdAt: '1', updatedAt: '1' } as RecordData
 
 describe('research request planning', () => {
-  it('plans a TikTok request from saved public sources without creating Jason OS relations', () => {
+  it('plans a TikTok request from saved public sources without creating EvoPilot relations', () => {
     const plan = createResearchPlan('调研美国 TikTok 大码女装近30天爆款、竞品和价格带', [source], null)
     expect(plan.scope).toContain('TikTok')
     expect(plan.dimensions).toEqual(expect.arrayContaining(['内容趋势', '竞品动态', '价格带']))

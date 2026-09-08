@@ -16,14 +16,14 @@ const tool = (name: string, description: string, entity: Entity, actionType: Too
 }
 const importWorkspaceDocumentToNotebook: ToolDefinition = {
   name: 'importWorkspaceDocumentToNotebook',
-  description: '把用户明确指定、且位于 EVOPOLIT docs/ 目录内的本地文档复制到 Notebook Inbox。源文件保持不变，执行前必须确认。',
+  description: '把用户明确指定、且位于 EvoPilot docs/ 目录内的本地文档复制到 Notebook Inbox。源文件保持不变，执行前必须确认。',
   entity: 'notebookFiles', actionType: 'CREATE', riskLevel: 'MEDIUM_WRITE', requiresConfirmation: true,
-  inputSchema: { type: 'object', properties: { name: { type: 'string', description: '保存到 Notebook 后显示的文件名' }, sourcePath: { type: 'string', description: '用户明确提供的 EVOPOLIT docs 文件路径' }, notebookCategoryId: { type: 'string' }, notebookFolderId: { type: 'string' } }, required: ['name', 'sourcePath'], additionalProperties: false },
+  inputSchema: { type: 'object', properties: { name: { type: 'string', description: '保存到 Notebook 后显示的文件名' }, sourcePath: { type: 'string', description: '用户明确提供的 EvoPilot docs 文件路径' }, notebookCategoryId: { type: 'string' }, notebookFolderId: { type: 'string' } }, required: ['name', 'sourcePath'], additionalProperties: false },
   outputSchema, idempotencyKey: 'importWorkspaceDocumentToNotebook:normalized-input', permission: 'local_write',
 }
 
 export const toolRegistry: ToolDefinition[] = [
-  tool('readWorkspaceDocument', '读取用户明确指定、且位于 EVOPOLIT docs/ 目录内的本地 Markdown、TXT、JSON 或 CSV 文档；只读，不修改文件。', 'dataRecords', 'READ', 'READ', false),
+  tool('readWorkspaceDocument', '读取用户明确指定、且位于 EvoPilot docs/ 目录内的本地 Markdown、TXT、JSON 或 CSV 文档；只读，不修改文件。', 'dataRecords', 'READ', 'READ', false),
   tool('getProfile', '读取当前用户的我的档案与 AI 上下文；仅在当前问题相关时使用。', 'profiles', 'READ', 'READ', false),
   tool('updateProfile', '更新当前用户的我的档案；必须先向用户展示变更预览并等待确认。', 'profiles', 'UPDATE', 'MEDIUM_WRITE', true),
   importWorkspaceDocumentToNotebook,

@@ -5,10 +5,10 @@ import type { RecordData } from './model'
  * remain on their existing `com.jasonos.desktop` namespace so an installed update
  * never creates a second local workspace.
  */
-export const PRODUCT_NAME = 'EVOPOLIT'
+export const PRODUCT_NAME = 'EvoPilot'
 export const PRODUCT_TAGLINE = '个人操作系统'
 export const PRODUCT_EYEBROW = `${PRODUCT_NAME} · PERSONAL OPERATING SYSTEM`
-export const PRODUCT_SEARCH_PLACEHOLDER = `搜索任何内容 / 询问 ${PRODUCT_NAME}...`
+export const PRODUCT_SEARCH_PLACEHOLDER = '搜索任何内容 / 询问 AI...'
 
 const text = (value: unknown) => String(value || '').trim()
 

@@ -1,8 +1,8 @@
-# Jason OS 创作与交付 SOP
+# EvoPilot 创作与交付 SOP
 
-> **用途**：把 Jason OS 从产品定位、架构约束、模块开发、UI 验证到桌面应用交付，整理成可复用的标准作业流程。  
-> **适用对象**：独立开发者、小团队、产品型 AI Coding 工作流。  
-> **当前项目**：Jason OS V3，React + TypeScript + Vite + Tauri + Rust + SQLite。  
+> **用途**：把 EvoPilot 从产品定位、架构约束、模块开发、UI 验证到桌面应用交付，整理成可复用的标准作业流程。
+> **适用对象**：独立开发者、小团队、产品型 AI Coding 工作流。
+> **当前项目**：EvoPilot，React + TypeScript + Vite + Tauri + Rust + SQLite。
 > **核心原则**：先确认真实架构，再做最小增量；Local-first；用户最终控制；每个阶段均可验证、可回滚、可交付。
 
 ---
@@ -11,14 +11,14 @@
 
 ### 0.1 产品一句话
 
-Jason OS 是一个 **Local-first、Desktop-first 的 Personal Operating System**：
+EvoPilot 是一个 **Local-first、Desktop-first 的 Personal Operating System**：
 
 ```text
 Capture → Plan → Focus → Work → Time → Result → Review
 → Insight → Principle → Mental Model → Decision → Action
 ```
 
-Notebook 是其中独立的 **Personal Information Space**：用户可以自由记录、保存、组织资料；只有主动选择时才与 Jason OS 业务对象建立关系。
+Notebook 是其中独立的 **Personal Information Space**：用户可以自由记录、保存、组织资料；只有主动选择时才与 EvoPilot 业务对象建立关系。
 
 ### 0.2 不可违反的边界
 
@@ -98,7 +98,7 @@ AI Context、Tool Registry、Action Confirmation
 Git remote 与工作区状态
 ```
 
-### Jason OS 当前可复用能力
+### EvoPilot 当前可复用能力
 
 | 能力 | 真实实现 | 新模块策略 |
 |---|---|---|
@@ -248,7 +248,7 @@ Understand → Automatically Modify Everything
 | 用户意图 | AI 行为 | 是否可自动写入 |
 |---|---|---|
 | “总结这个文件” | 读取已提取文本，给出摘要 | 否 |
-| “有哪些潜在关联” | 搜索 Jason OS，给出候选与理由 | 否 |
+| “有哪些潜在关联” | 搜索 EvoPilot，给出候选与理由 | 否 |
 | “保存这段话到 Notebook” | 生成 createNote Action 预览 | 需确认 |
 | “沉淀为思维模型” | 生成草案 / Action 预览 | 需确认 |
 
@@ -342,7 +342,7 @@ git -c http.proxy= -c https.proxy= push origin main
 ### 8.1 交付包内容
 
 ```text
-Jason OS.app                 # macOS 桌面应用
+EvoPilot.app                 # macOS 桌面应用
 README.md                    # 安装与基本使用
 JASON_OS_创作SOP.md          # 本文档
 版本说明 / Release Notes
@@ -359,7 +359,7 @@ pnpm tauri build
 产物：
 
 ```text
-src-tauri/target/release/bundle/macos/Jason OS.app
+src-tauri/target/release/bundle/macos/EvoPilot.app
 ```
 
 ### 8.3 交付前检查
@@ -377,7 +377,7 @@ src-tauri/target/release/bundle/macos/Jason OS.app
 ### 8.4 隐私说明模板
 
 ```markdown
-Jason OS 默认采用本地优先存储。
+EvoPilot 默认采用本地优先存储。
 业务数据、Notebook 文件与备份保存在用户本机应用数据目录。
 AI 功能仅在用户主动配置并调用第三方模型服务时发送必要上下文。
 请勿将 API Key、数据库、备份或个人附件提交到 Git 仓库。
@@ -419,7 +419,7 @@ AI 功能仅在用户主动配置并调用第三方模型服务时发送必要�
 
 当前项目最适合以两个层次交付：
 
-1. **产品包**：`Jason OS.app` + 安装指南 + 隐私说明。
+1. **产品包**：`EvoPilot.app` + 安装指南 + 隐私说明。
 2. **创作包**：本文 SOP + 源码 + 架构说明 + 脱敏演示数据。
 
 如果要让其他开发者复刻：先让其阅读本文的 Phase 0、1、3、5、7；不要只交付 UI 截图或零散 prompt。

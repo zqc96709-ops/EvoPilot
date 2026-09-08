@@ -110,7 +110,7 @@ export const api = {
     if (!syncV1Url || !syncV1Token) throw new Error('尚未配置 VITE_JASON_SYNC_URL / VITE_JASON_SYNC_TOKEN。')
     if (browser()) return synchronize(await webDb(), httpSyncTransport(syncV1Url, syncV1Token))
     const ios = navigator.userAgent.includes('iPhone') || navigator.userAgent.includes('iPad')
-    await invoke('register_sync_device', { name: ios ? 'EVOPOLIT iOS' : 'EVOPOLIT Mac', platform: ios ? 'IOS' : 'MAC' })
+    await invoke('register_sync_device', { name: ios ? 'EvoPilot iOS' : 'EvoPilot Mac', platform: ios ? 'IOS' : 'MAC' })
     return synchronize(new TauriSqliteReplica(), httpSyncTransport(syncV1Url, syncV1Token))
   },
   async getSyncV1Config(): Promise<SyncV1Config> { return loadSyncV1Config() },

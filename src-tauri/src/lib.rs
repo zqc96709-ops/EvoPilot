@@ -3219,7 +3219,7 @@ fn restore_backup(app: AppHandle, path: String) -> Result<(), String> {
         .canonicalize()
         .map_err(|e| e.to_string())?;
     if !source.starts_with(&backups_dir) {
-        return Err("只能恢复 EVOPOLIT 备份目录中的文件".into());
+        return Err("只能恢复 EvoPilot 备份目录中的文件".into());
     }
     let target = data_dir(&app)?.join("jason-os.sqlite3");
     let safety = data_dir(&app)?
@@ -3920,7 +3920,7 @@ fn html_meta(html: &str, key: &str) -> String {
 fn fetch_web_metadata(url: &str) -> Result<Value, String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(20))
-        .user_agent("Mozilla/5.0 EVOPOLIT/3.1")
+        .user_agent("Mozilla/5.0 EvoPilot/3.1")
         .build()
         .map_err(|error| error.to_string())?;
     let response = client.get(url).send().map_err(|error| error.to_string())?;
@@ -5637,7 +5637,7 @@ fn resolve_workspace_document_path(
                 .unwrap_or(false)
         });
         if !allowed {
-        return Err("只允许读取 EVOPOLIT docs/ 目录内的文档".into());
+        return Err("只允许读取 EvoPilot docs/ 目录内的文档".into());
         }
         if !is_workspace_document(&canonical) {
             return Err("仅支持读取 Markdown、TXT、JSON 或 CSV 文档".into());
@@ -5648,7 +5648,7 @@ fn resolve_workspace_document_path(
         }
         return Ok(canonical);
     }
-    Err("未找到指定的 EVOPOLIT docs 文档".into())
+    Err("未找到指定的 EvoPilot docs 文档".into())
 }
 
 fn read_workspace_document_file(app: &AppHandle, requested_path: &str) -> Result<Value, String> {
@@ -5780,7 +5780,7 @@ fn ask_chief_blocking(
         .map_err(|error| error.to_string())?;
     let page_json =
         serde_json::to_string_pretty(&page_context).map_err(|error| error.to_string())?;
-    let system = r#"你是 EVOPOLIT 的 AI Agent，也是用户的首席助理。你既能分析，也能通过受控 Action System 操作 EVOPOLIT。
+    let system = r#"你是 EvoPilot 的 AI Agent，也是用户的首席助理。你既能分析，也能通过受控 Action System 操作 EvoPilot。
 必须只返回一个 JSON 对象，禁止 Markdown 代码块。格式：
 {"mode":"chat|action","answer":"给用户看的简体中文","intent":"意图","toolName":"注册工具名","input":{},"missingFields":[]}
 规则：
@@ -5803,7 +5803,7 @@ fn ask_chief_blocking(
 17. AI 创建 Outcome、账户、分类或财务流水只能生成 Action 预览。财务流水默认 DRAFT，禁止直接创建 POSTED 流水、自动付款、增加预算或修改账户余额。
 18. 用户说“保存到 Notebook”“记一条想法”“随手记下来”时使用 createNote 生成 Action 预览，intent=SAVE_NOTE 或 CREATE_NOTE；Note 不要求分类或关联，title 必填，content 可选。
 19. 当用户要求理解、总结或查找 Notebook 文件时，只能使用文件已提取文本和 Metadata；若 extractStatus 不是 READY，必须说明文件仍可保存但尚无可用正文。AI 可以提出潜在关联候选和理由，但绝不能创建、删除或移动 Relation。
-20. 当相关本地记录中存在 type=WORKSPACE_DOCUMENT 时，其 content 是用户明确授权读取的 EVOPOLIT docs 文档。必须直接基于该内容回答，不得声称“没有直接读取本地文件的工具”。如果存在 WORKSPACE_DOCUMENT_ERROR，则说明错误原因和允许的 docs/ 路径范围。
+20. 当相关本地记录中存在 type=WORKSPACE_DOCUMENT 时，其 content 是用户明确授权读取的 EvoPilot docs 文档。必须直接基于该内容回答，不得声称“没有直接读取本地文件的工具”。如果存在 WORKSPACE_DOCUMENT_ERROR，则说明错误原因和允许的 docs/ 路径范围。
 21. 用户明确要求把 WORKSPACE_DOCUMENT 保存、导入或复制到 Notebook 时，使用 importWorkspaceDocumentToNotebook 生成 Action 预览，input 必须包含 name 和 sourcePath。该操作只复制 docs 文件到 Notebook Inbox，不修改源文件；必须等待用户确认后执行。
 22. type=PROFILE_CONTEXT 是用户主动保存的长期个人与 AI 上下文。只在它与当前问题直接相关时使用，不能机械复述、不能暴露无关私人资料；当前用户问题和当前页面上下文优先于 Profile。
 23. AI 默认只能读取 Profile。用户明确要求更新我的档案时，只有在存在真实 Profile ID 且字段明确时，才使用 updateProfile 生成 Action 预览；绝不能声称已更新，必须等待用户确认后才写入。
@@ -5820,7 +5820,7 @@ fn ask_chief_blocking(
             }
         }
     }
-    messages.push(json!({"role":"user","content":format!("当前页面上下文：\n{page_json}\n\nEVOPOLIT Schema Registry：\n{schema_json}\n\n允许使用的 Tool Registry：\n{tools_json}\n\n相关本地记录与可调用思维模型：\n{context_json}\n\n当前用户请求：\n{question}")}));
+    messages.push(json!({"role":"user","content":format!("当前页面上下文：\n{page_json}\n\nEvoPilot Schema Registry：\n{schema_json}\n\n允许使用的 Tool Registry：\n{tools_json}\n\n相关本地记录与可调用思维模型：\n{context_json}\n\n当前用户请求：\n{question}")}));
     let (response_json, _) = call_provider(&provider, &key, &model, system, &messages, 2800)?;
     let raw = provider_response_text(&provider, &response_json);
     if raw.trim().is_empty() {
@@ -5977,7 +5977,7 @@ pub fn run() {
             cancel_ai_action
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Jason OS");
+        .expect("error while running EvoPilot");
 }
 
 #[cfg(test)]

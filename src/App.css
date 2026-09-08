@@ -202,7 +202,7 @@ button,input,textarea,select{border-radius:var(--radius)}
 .notebook-file-actions .button { font-size: 12px; padding: 8px 10px; }
 .button.danger { color: #fff; background: #b44848; border-color: #b44848; }
 
-/* Notebook redesign: use the Jason OS shell typography and a single, quiet workspace. */
+/* Notebook redesign: use the EvoPilot shell typography and a single, quiet workspace. */
 .notebook-space,
 .notebook-space button,
 .notebook-space input,
@@ -1322,7 +1322,7 @@ html[data-theme='light'] { background: #fafaf7; color-scheme: light; }
 
 @media(max-width:760px){.cloud-sync-fields{grid-template-columns:1fr}.cloud-sync-fields .button{width:100%}}
 
-/* Jason OS 3.0: Results Center + Work Chain */
+/* EvoPilot: Results Center + Work Chain */
 .results-center-actions,.project-results-actions,.workchain-header>div:last-child{display:flex;flex-wrap:wrap;gap:7px}
 .results-center-actions{margin-left:auto}
 .results-tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin-top:12px}
@@ -1375,7 +1375,7 @@ html[data-theme='light'] { background: #fafaf7; color-scheme: light; }
 @media(max-width:1180px){.fi-analysis-row{grid-template-columns:minmax(0,1.25fr) minmax(190px,.6fr)}.fi-project-income{grid-column:1 / -1}.fi-capital-row{grid-template-columns:minmax(0,1fr) minmax(250px,.55fr)}.fi-attention{grid-column:1 / -1}.fi-bottom{grid-template-columns:1fr}.fi-quick>div{grid-template-columns:repeat(6,minmax(55px,1fr))}}@media(max-width:860px){.fi-header{align-items:flex-start;flex-direction:column}.fi-controls{justify-content:flex-start;flex-wrap:wrap}.fi-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}.fi-kpis>button:nth-child(3){border-right:0}.fi-kpis>button:nth-child(-n+3){border-bottom:1px solid #263849}.fi-analysis-row,.fi-capital-row{grid-template-columns:1fr}.fi-project-income,.fi-attention{grid-column:auto}.fi-filters{flex-wrap:wrap}.fi-table-head,.fi-table>button{min-width:660px}}@media(max-width:620px){.finance-intelligence{padding:14px}.fi-controls label{width:100%;justify-content:space-between}.fi-controls input{width:98px}.fi-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.fi-kpis>button:nth-child(3){border-right:1px solid #263849}.fi-kpis>button:nth-child(2),.fi-kpis>button:last-child{border-right:0}.fi-kpis>button:nth-child(-n+4){border-bottom:1px solid #263849}.fi-project-bars>button{grid-template-columns:65px minmax(0,1fr) 58px}.fi-bottom{grid-template-columns:1fr}.fi-quick>div{grid-template-columns:repeat(3,minmax(0,1fr))}}
 .fi-controls select,.fi-filters select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,#91a3b2 50%),linear-gradient(135deg,#91a3b2 50%,transparent 50%);background-position:calc(100% - 12px) 12px,calc(100% - 8px) 12px;background-size:4px 4px,4px 4px;background-repeat:no-repeat;padding-right:23px}.fi-filters select{background-color:#111d27}
 
-/* Finance uses the shared Jason OS canvas instead of a separate blue dashboard skin. */
+/* Finance uses the shared EvoPilot canvas instead of a separate blue dashboard skin. */
 .finance-route .main-content{max-width:none;margin:0;padding:22px clamp(18px,2vw,34px) 52px;background:radial-gradient(circle at 75% -20%,rgba(94,121,73,.18),transparent 32%),var(--bg)}
 .finance-intelligence{max-width:none;width:100%;padding:0;color:var(--text)}
 .fi-card,.fi-ai,.fi-quick{border-color:var(--line);background:var(--panel)}
@@ -1403,7 +1403,7 @@ html[data-theme='light'] { background: #fafaf7; color-scheme: light; }
 .fi-quick button{background:var(--panel-2);color:var(--muted)}
 .fi-quick i{background:var(--lime-soft);color:var(--lime)}
 
-/* Today keeps its execution layout, but now lives on the shared Jason OS shell and palette. */
+/* Today keeps its execution layout, but now lives on the shared EvoPilot shell and palette. */
 .app-shell.today-route{--header:64px;--bg:#10120f;--panel:#171a15;--panel-2:#1c201a;--panel-3:#22271f;--line:#30362d;--line-strong:#444d3d;--text:#edf0e8;--muted:#979f92;--muted-2:#747c70;--lime:#c4e38a;--lime-2:#a9cb6c;--lime-soft:#27331f;grid-template-rows:var(--header) minmax(0,1fr);background:radial-gradient(circle at 75% -20%,rgba(94,121,73,.18),transparent 32%),var(--bg)}
 .today-route .sidebar{top:var(--header);height:calc(100vh - var(--header));padding:16px 12px;background:#141713}
 .today-route .quick-capture{display:flex}
@@ -1593,7 +1593,7 @@ html[data-theme='light'] { background: #fafaf7; color-scheme: light; }
 .notebook-toolbar-more > div button,.notebook-toolbar-more > div .notebook-color-control { width: 100%; height: 27px; display: flex; align-items: center; gap: 6px; padding: 0 7px; color: var(--inbox-text); font-size: 10px; }
 .notebook-save-state{min-width:52px;color:var(--inbox-muted);font-size:9px;text-align:right;white-space:nowrap}.notebook-save-state.dirty,.notebook-save-state.saving{color:var(--warning)}.notebook-save-state.saved{color:var(--lime)}.notebook-save-state.error{color:var(--danger)}
 
-/* Keep the same Jason OS lime hierarchy when the workspace follows the light theme. */
+/* Keep the same EvoPilot lime hierarchy when the workspace follows the light theme. */
 .light-theme .main-content:has(.notebook-space) { background:radial-gradient(circle at 75% -20%,rgba(141,174,98,.14),transparent 32%),var(--bg); }
 .light-theme .notebook-space .notebook-capture { background:#fff; }
 .light-theme .notebook-space .notebook-sidebar { background:#fbfcf8; }
@@ -1612,7 +1612,7 @@ html[data-theme='light'] { background: #fafaf7; color-scheme: light; }
   .notebook-toolbar-more { display: block; }
 }
 
-/* Time Intelligence — shared Jason OS palette, dense desktop analytics. */
+/* Time Intelligence — shared EvoPilot palette, dense desktop analytics. */
 .time-route .main-content{max-width:none;margin:0;padding:18px clamp(16px,1.7vw,28px) 32px;background:radial-gradient(circle at 75% -20%,rgba(94,121,73,.18),transparent 32%),var(--bg)}
 .time-intelligence{display:grid;gap:10px;min-width:0;color:var(--text)}
 .ti-header{display:grid;grid-template-columns:minmax(300px,1fr) auto auto;align-items:center;gap:14px;min-height:58px}

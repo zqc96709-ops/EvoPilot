@@ -1,8 +1,8 @@
 [package]
 name = "evopolit"
 version = "0.1.0"
-description = "EVOPOLIT local-first personal operating system"
-authors = ["EVOPOLIT"]
+description = "EvoPilot local-first personal operating system"
+authors = ["EvoPilot"]
 edition = "2021"
 rust-version = "1.77.2"
 

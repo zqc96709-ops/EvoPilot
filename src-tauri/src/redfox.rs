@@ -208,7 +208,7 @@ pub fn normalize_response(url: &str, endpoint: &str, raw: &Value) -> Value {
 
 pub fn capture(api_key: &str, url: &str) -> Result<RedfoxCapture, String> {
     let (endpoint, body) = request_for_url(url)?;
-    let client = provider_http::client(Duration::from_secs(25), Some("EVOPOLIT/3.1 ExternalIntelligence"))?;
+    let client = provider_http::client(Duration::from_secs(25), Some("EvoPilot/3.1 ExternalIntelligence"))?;
     let response = client
         .post(endpoint)
         .header("REDFOX_API_KEY", api_key)

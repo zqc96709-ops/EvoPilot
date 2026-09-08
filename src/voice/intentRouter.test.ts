@@ -5,7 +5,8 @@ describe('Voice deterministic intent router', () => {
   it('does not send deterministic navigation or timer commands to an LLM', () => {
     expect(routeVoiceIntent('开始计时')).toMatchObject({ intent: 'START_TIMER', reason: 'deterministic', confidence: 'HIGH' })
     expect(routeVoiceIntent('打开决策中心')).toMatchObject({ intent: 'OPEN_PAGE', page: 'decisionCenter', reason: 'deterministic' })
-    expect(routeVoiceIntent('搜索 Jason OS 项目')).toMatchObject({ intent: 'SEARCH_SIMPLE', query: 'Jason OS 项目', reason: 'deterministic' })
+    expect(routeVoiceIntent('打开今天')).toMatchObject({ intent: 'OPEN_PAGE', page: 'today', reason: 'deterministic', confidence: 'HIGH' })
+    expect(routeVoiceIntent('搜索 EvoPilot 项目')).toMatchObject({ intent: 'SEARCH_SIMPLE', query: 'EvoPilot 项目', reason: 'deterministic' })
   })
 
   it('keeps confirmation and cancellation deterministic', () => {
@@ -14,7 +15,7 @@ describe('Voice deterministic intent router', () => {
   })
 
   it('routes only complex cross-domain reasoning to the strong path', () => {
-    expect(routeVoiceIntent('Jason OS 最近是不是投入太多但成果太少？')).toMatchObject({ intent: 'STRONG_AI', reason: 'strong_ai' })
+    expect(routeVoiceIntent('EvoPilot 最近是不是投入太多但成果太少？')).toMatchObject({ intent: 'STRONG_AI', reason: 'strong_ai' })
     expect(routeVoiceIntent('创建明天的高优任务')).toMatchObject({ intent: 'FAST_AI', reason: 'fast_ai' })
   })
 })

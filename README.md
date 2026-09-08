@@ -1,4 +1,4 @@
-# Jason OS V3
+# EvoPilot
 
 Local-first、Desktop-first 的个人操作系统，用来连接：
 
@@ -6,7 +6,7 @@ Local-first、Desktop-first 的个人操作系统，用来连接：
 
 ## 下载与安装
 
-到 [GitHub Releases](https://github.com/zqc96709-ops/jason-os/releases) 下载最新版 `.dmg`，打开后将 `Jason OS.app` 拖入“应用程序”目录。
+到 [GitHub Releases](https://github.com/zqc96709-ops/jason-os/releases) 下载最新版 `.dmg`，打开后将 `EvoPilot.app` 拖入“应用程序”目录。
 
 当前首发包仅支持 Apple Silicon Mac（M1、M2、M3、M4）。由于尚未使用 Apple Developer ID 公证，macOS 可能提示“无法验证开发者”；请仅从本仓库下载，并在 Finder 中按住 Control 点击 App 后选择“打开”。
 
@@ -48,12 +48,12 @@ HackStart API Key 保存于 应用私有凭据文件（权限 0600），不写�
 
 ## 网页端与跨设备同步
 
-Jason OS 采用 Local-first：Mac 的 SQLite 始终是本地副本，云端只用于用户确认后的跨设备同步。网页/PWA 部署、Supabase RLS、域名绑定和验收步骤见 [`docs/WEB_AND_SYNC_SETUP.md`](docs/WEB_AND_SYNC_SETUP.md)。
+EvoPilot 采用 Local-first：Mac 的 SQLite 始终是本地副本，云端只用于用户确认后的跨设备同步。网页/PWA 部署、Supabase RLS、域名绑定和验收步骤见 [`docs/WEB_AND_SYNC_SETUP.md`](docs/WEB_AND_SYNC_SETUP.md)。
 
 ## 构建产物
 
 ```text
-src-tauri/target/debug/bundle/macos/Jason OS.app
+src-tauri/target/debug/bundle/macos/EvoPilot.app
 ```
 
 ## AI 服务商

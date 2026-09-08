@@ -1,6 +1,6 @@
 {
-  "name": "Jason OS",
-  "short_name": "Jason OS",
+  "name": "EvoPilot",
+  "short_name": "EvoPilot",
   "description": "Local-first personal operating system",
   "start_url": "/",
   "display": "standalone",

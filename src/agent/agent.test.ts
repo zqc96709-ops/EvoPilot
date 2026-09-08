@@ -6,7 +6,7 @@ import type { RecordData } from '../model'
 
 const record = (entity: RecordData['entity'], id: string, data: Record<string, unknown> = {}) => ({ id, entity, createdAt: '', updatedAt: '', ...data }) as RecordData
 
-describe('Jason OS Agent registries and context', () => {
+describe('EvoPilot Agent registries and context', () => {
   it('describes the MentalModel schema and save tool', () => {
     expect(schemaFor('mentalModels')?.requiredFields).toContain('name')
     expect(toolFor('createMentalModel')).toMatchObject({ entity: 'mentalModels', riskLevel: 'LOW_WRITE', requiresConfirmation: false })
