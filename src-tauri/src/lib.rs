@@ -865,6 +865,13 @@ fn repair_referenced_notebook_file_tombstones(connection: &Connection) -> Result
             .map_err(|error| error.to_string())?
     };
     let mut repaired = 0;
+    let sync_outbox_exists: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_outbox')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
     for (id, raw) in rows {
         if notebook_file_reference_count(connection, &id)? == 0 {
             continue;
@@ -901,8 +908,43 @@ fn repair_referenced_notebook_file_tombstones(connection: &Connection) -> Result
                 params![id, title, body],
             )
             .map_err(|error| error.to_string())?;
+        if sync_outbox_exists {
+            connection
+                .execute(
+                    "DELETE FROM sync_outbox WHERE entity_type='notebookFiles' AND entity_id=?1 AND operation='DELETE'",
+                    params![id],
+                )
+                .map_err(|error| error.to_string())?;
+        }
         sync_relations(connection, &id, &data)?;
         repaired += 1;
+    }
+    if !sync_outbox_exists {
+        return Ok(repaired);
+    }
+    let pending_delete_ids = {
+        let mut statement = connection
+            .prepare(
+                "SELECT DISTINCT entity_id FROM sync_outbox
+                 WHERE entity_type='notebookFiles' AND operation='DELETE'",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| error.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?;
+        rows
+    };
+    for id in pending_delete_ids {
+        if notebook_file_reference_count(connection, &id)? > 0 {
+            connection
+                .execute(
+                    "DELETE FROM sync_outbox WHERE entity_type='notebookFiles' AND entity_id=?1 AND operation='DELETE'",
+                    params![id],
+                )
+                .map_err(|error| error.to_string())?;
+        }
     }
     Ok(repaired)
 }
@@ -7085,7 +7127,9 @@ mod tests {
 
     #[test]
     fn referenced_notebook_file_cannot_be_soft_deleted_and_legacy_tombstone_is_restored() {
-        let connection = relationship_test_db();
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL); CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at TEXT NOT NULL); CREATE TABLE records(id TEXT PRIMARY KEY,entity TEXT NOT NULL,data_json TEXT NOT NULL,title TEXT NOT NULL DEFAULT '',body TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL,archived_at TEXT,deleted_at TEXT); CREATE VIRTUAL TABLE records_fts USING fts5(id UNINDEXED,entity UNINDEXED,title,body); CREATE TABLE relations(id TEXT PRIMARY KEY,from_id TEXT NOT NULL,to_id TEXT NOT NULL,relation_type TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(from_id,to_id,relation_type));").unwrap();
+        migrate_sync_v1(&connection).unwrap();
         put(&connection, "notebookFiles", "file-a", json!({"name":"a.png"}));
         put(&connection, "notes", "note-a", json!({"title":"A","fileIds":["file-a"],"contentHtml":"<img src=\"jason-file://file-a\" data-jason-file-id=\"file-a\">"}));
 
@@ -7096,6 +7140,8 @@ mod tests {
         let restored = record_by_id(&connection, "file-a").unwrap().unwrap();
         assert!(restored.get("deletedAt").is_none());
         assert_eq!(restored["id"], "file-a");
+        let pending_deletes: i64 = connection.query_row("SELECT COUNT(*) FROM sync_outbox WHERE entity_id='file-a' AND operation='DELETE'", [], |row| row.get(0)).unwrap();
+        assert_eq!(pending_deletes, 0);
     }
 
     #[test]
