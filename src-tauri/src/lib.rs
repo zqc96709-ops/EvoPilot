@@ -710,6 +710,7 @@ fn db(app: &AppHandle) -> Result<Connection, String> {
     finance::migrate_budgets(&connection, &now())?;
     migrate_sync_v1(&connection)?;
     migrate_image_persistence(&connection, app)?;
+    repair_referenced_notebook_file_tombstones(&connection)?;
     migrate_notebook_category_ownership(&connection)?;
     Ok(connection)
 }
@@ -841,6 +842,66 @@ fn repair_notebook_category_references(connection: &Connection) -> Result<usize,
             .remove("notebookCategoryId");
         write_record(connection, &entity, &id, &record, Some(&created_at))?;
         sync_relations(connection, &id, &record)?;
+        repaired += 1;
+    }
+    Ok(repaired)
+}
+
+fn repair_referenced_notebook_file_tombstones(connection: &Connection) -> Result<usize, String> {
+    let rows = {
+        let mut statement = connection
+            .prepare(
+                "SELECT id,data_json FROM records
+                 WHERE entity='notebookFiles' AND deleted_at IS NOT NULL",
+            )
+            .map_err(|error| error.to_string())?;
+        let mapped = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|error| error.to_string())?;
+        mapped
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())?
+    };
+    let mut repaired = 0;
+    for (id, raw) in rows {
+        if notebook_file_reference_count(connection, &id)? == 0 {
+            continue;
+        }
+        let mut data: Value = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+        let object = data
+            .as_object_mut()
+            .ok_or("Notebook 文件数据必须是对象")?;
+        object.remove("archivedAt");
+        object.remove("deletedAt");
+        object.insert("updatedAt".into(), Value::String(now()));
+        let (title, body) = title_body(&data);
+        let updated_at = now();
+        connection
+            .execute(
+                "UPDATE records
+                 SET data_json=?2,title=?3,body=?4,updated_at=?5,archived_at=NULL,deleted_at=NULL
+                 WHERE id=?1",
+                params![
+                    id,
+                    serde_json::to_string(&data).map_err(|error| error.to_string())?,
+                    title,
+                    body,
+                    updated_at,
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        connection
+            .execute("DELETE FROM records_fts WHERE id=?1", params![id])
+            .map_err(|error| error.to_string())?;
+        connection
+            .execute(
+                "INSERT INTO records_fts (id, entity, title, body) VALUES (?1, 'notebookFiles', ?2, ?3)",
+                params![id, title, body],
+            )
+            .map_err(|error| error.to_string())?;
+        sync_relations(connection, &id, &data)?;
         repaired += 1;
     }
     Ok(repaired)
@@ -2003,6 +2064,9 @@ fn delete_record_from_connection(connection: &Connection, id: &str) -> Result<()
     }
     if entity == "notebookCategories" {
         clear_notebook_category_ownership(connection, id)?;
+    }
+    if entity == "notebookFiles" && notebook_file_reference_count(connection, id)? > 0 {
+        return Err("文件仍被笔记或业务记录引用，不能删除".into());
     }
     let deleted_at = now();
     if let Some(object) = data.as_object_mut() {
@@ -7017,6 +7081,21 @@ mod tests {
         assert_eq!(notebook_file_reference_count(&connection, "file-a").unwrap(), 2);
         connection.execute("UPDATE records SET deleted_at='1' WHERE id='note-a'", []).unwrap();
         assert_eq!(notebook_file_reference_count(&connection, "file-a").unwrap(), 1);
+    }
+
+    #[test]
+    fn referenced_notebook_file_cannot_be_soft_deleted_and_legacy_tombstone_is_restored() {
+        let connection = relationship_test_db();
+        put(&connection, "notebookFiles", "file-a", json!({"name":"a.png"}));
+        put(&connection, "notes", "note-a", json!({"title":"A","fileIds":["file-a"],"contentHtml":"<img src=\"jason-file://file-a\" data-jason-file-id=\"file-a\">"}));
+
+        assert!(delete_record_from_connection(&connection, "file-a").is_err());
+        connection.execute("UPDATE records SET deleted_at='1',data_json=json_set(data_json,'$.deletedAt','1') WHERE id='file-a'", []).unwrap();
+
+        assert_eq!(repair_referenced_notebook_file_tombstones(&connection).unwrap(), 1);
+        let restored = record_by_id(&connection, "file-a").unwrap().unwrap();
+        assert!(restored.get("deletedAt").is_none());
+        assert_eq!(restored["id"], "file-a");
     }
 
     #[test]
