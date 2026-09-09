@@ -4,6 +4,7 @@ import './App.css'
 import './productShell.css'
 import { PRODUCT_EYEBROW, PRODUCT_NAME, PRODUCT_SEARCH_PLACEHOLDER, PRODUCT_TAGLINE, resolveUserIdentity } from './product'
 import { profileSavePayload } from './profile'
+import { readPersistedValue } from './navigationPersistence'
 import { buildAgentContext, buildContextRelationIndex, buildGlobalContext, detectGlobalIntent, shouldRetrieveGlobalContext } from './agent/contextEngine'
 import type { AgentAction, AgentContext } from './agent/types'
 import { buildRadarData, radarCategories, type RadarCategory, type RadarData, type RadarStory } from './aiNews'
@@ -42,7 +43,8 @@ import {
   type Entity, type EntityConfig, type FieldOption, type RecordData,
 } from './model'
 
-type View = 'command' | 'today' | 'tasks' | 'time' | 'projects' | 'outcomes' | 'finance' | 'notebook' | 'cognition' | 'knowledge' | 'reviews' | 'insights' | 'principles' | 'mentalModels' | 'decisionCenter' | 'decisions' | 'events' | 'people' | 'timeline' | 'aiNews' | 'settings' | 'profile'
+const views = ['command', 'today', 'tasks', 'time', 'projects', 'outcomes', 'finance', 'notebook', 'cognition', 'knowledge', 'reviews', 'insights', 'principles', 'mentalModels', 'decisionCenter', 'decisions', 'events', 'people', 'timeline', 'aiNews', 'settings', 'profile'] as const
+type View = typeof views[number]
 type EditState = { config: EntityConfig; record?: RecordData; initial?: Partial<RecordData> }
 type Notice = { text: string; tone?: 'success' | 'danger' }
 type TaskView = 'overview' | 'list' | 'kanban' | 'matrix' | 'calendar'
@@ -100,7 +102,7 @@ const useThreePaneResize = (storageKey: string, defaults: PaneSizes) => {
 
 function App() {
   const [records, setRecords] = useState<RecordData[]>([])
-  const [view, setView] = useState<View>(() => localStorage.getItem('jason-os-decision-center-open') === 'true' ? 'decisionCenter' : 'command')
+  const [view, setView] = useState<View>(() => readPersistedValue(localStorage.getItem('evopilot-last-view'), views, localStorage.getItem('jason-os-decision-center-open') === 'true' ? 'decisionCenter' : 'command'))
   const [sidebarOpen, setSidebarOpen] = useState(() => localStorage.getItem('jason-os-sidebar-open') !== 'false')
   const [themePreference, setThemePreference] = useState<ThemePreference>(() => { const stored = localStorage.getItem('jason-os-theme'); return stored === 'light' || stored === 'auto' ? stored : 'dark' })
   const [sidebarPeek, setSidebarPeek] = useState(false)
@@ -147,6 +149,7 @@ function App() {
   useEffect(() => { localStorage.setItem('jason-os-sidebar-open', String(sidebarOpen)) }, [sidebarOpen])
   useEffect(() => { localStorage.setItem('jason-os-ai-width', String(aiWidth)) }, [aiWidth])
   useEffect(() => { localStorage.setItem('jason-os-decision-center-tab', decisionCenterTab) }, [decisionCenterTab])
+  useEffect(() => { localStorage.setItem('evopilot-last-view', view) }, [view])
   useEffect(() => { localStorage.setItem('jason-os-decision-center-open', String(view === 'decisionCenter' || view === 'decisions')) }, [view])
   useEffect(() => {
     const openSettingsRoute = () => {

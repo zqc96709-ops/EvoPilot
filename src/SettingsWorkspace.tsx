@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { api, type AiProviderId, type BackupInfo, type CaptureProviderConfig, type CaptureProviderId, type HackStartConfig } from './api'
 import type { RecordData } from './model'
 import { PRODUCT_NAME, resolveUserIdentity } from './product'
+import { readPersistedValue } from './navigationPersistence'
 import './settingsWorkspace.css'
 
 export type SettingsSection = 'account' | 'general' | 'appearance' | 'ai' | 'voice' | 'sync' | 'data' | 'storage' | 'notifications' | 'providers' | 'privacy' | 'shortcuts' | 'help' | 'about' | 'logout'
@@ -12,7 +13,7 @@ const sections: Array<{ id: SettingsSection; label: string; group: string }> = [
 
 const sectionFromHash = (): SettingsSection => {
   const value = window.location.hash.replace(/^#(?:settings(?:\/)?|settings-data\/?)/, '').replace(/^\//, '') as SettingsSection
-  return sections.some((section) => section.id === value) ? value : 'account'
+  return readPersistedValue(value || localStorage.getItem('evopilot-settings-section'), sections.map((section) => section.id), 'account')
 }
 
 type Props = {
@@ -47,7 +48,7 @@ export default function SettingsWorkspace(props: Props) {
   const [provenance, setProvenance] = useState<Awaited<ReturnType<typeof api.buildProvenance>> | null>(null)
   const [cloudStatus, setCloudStatus] = useState(api.cloudStatus())
   const identity = useMemo(() => resolveUserIdentity(props.profile), [props.profile])
-  const select = (next: SettingsSection) => { setSection(next); window.location.hash = `settings/${next}` }
+  const select = (next: SettingsSection) => { setSection(next); localStorage.setItem('evopilot-settings-section', next); window.location.hash = `settings/${next}` }
 
   useEffect(() => { setProfileDraft({ nickname: String(props.profile?.nickname || ''), displayName: String(props.profile?.displayName || ''), name: String(props.profile?.name || ''), email: String(props.profile?.email || ''), avatar: String(props.profile?.avatar || '') }) }, [props.profile])
   useEffect(() => { const update = () => setSection(sectionFromHash()); window.addEventListener('hashchange', update); return () => window.removeEventListener('hashchange', update) }, [])
