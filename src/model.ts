@@ -1,7 +1,7 @@
 import { timelineOccurredAt, timelineRecords } from './timeline'
 export type Entity =
   | 'goals' | 'keyResults' | 'projects' | 'projectMilestones' | 'tasks' | 'hypotheses' | 'experiments' | 'timeLogs' | 'results' | 'deliverables' | 'resultPackages'
-  | 'capabilityPacks' | 'capabilityAssets' | 'capabilityAssetVersions' | 'capabilityPackItems' | 'packApplications' | 'packApplicationItems' | 'templateInstances' | 'capabilityImprovementProposals'
+  | 'capabilityPacks' | 'capabilityAssets' | 'capabilityAssetVersions' | 'capabilityPackItems' | 'capabilityWorkspaceFolders' | 'capabilityWorkspaceEntries' | 'packApplications' | 'packApplicationItems' | 'templateInstances' | 'capabilityImprovementProposals'
   | 'workflows' | 'workflowVersions' | 'workflowSteps' | 'workflowGates' | 'workflowRuns' | 'workflowRunSteps' | 'workflowMetricDefinitions' | 'workflowImprovementProposals'
   | 'reviews' | 'knowledge' | 'insights' | 'principles' | 'mentalModels' | 'mentalModelUsages'
   | 'decisions' | 'notes' | 'notebookCategories' | 'notebookFolders' | 'notebookFiles' | 'inbox' | 'events' | 'people' | 'dataRecords' | 'attachments' | 'timelineEvents' | 'agentRuns' | 'agentActions'
@@ -159,6 +159,12 @@ export const entities: EntityConfig[] = [
   ] },
   { entity: 'capabilityPackItems', label: '能力包引用', singular: '能力包引用', icon: '↗', titleKey: 'title', description: '能力包内的顺序与引用元数据；不复制能力资产。', fields: [
     { key: 'title', label: '显示名称' }, { key: 'packId', label: '能力包', relation: 'capabilityPacks' }, { key: 'capabilityAssetId', label: '能力资产', relation: 'capabilityAssets' }, { key: 'capabilityAssetVersionId', label: '指定版本（可选）', relation: 'capabilityAssetVersions' }, { key: 'section', label: '所属分区' }, { key: 'orderIndex', label: '排序', type: 'number' }, { key: 'required', label: '是否必选', type: 'select', options: [option('true', '必选'), option('false', '可选')] },
+  ] },
+  { entity: 'capabilityWorkspaceFolders', label: '能力工作区文件夹', singular: '文件夹', icon: '□', titleKey: 'title', description: '能力包内的虚拟文件夹；仅组织引用，不依赖磁盘目录。', fields: [
+    { key: 'title', label: '文件夹名称' }, { key: 'packId', label: '能力包', relation: 'capabilityPacks' }, { key: 'parentId', label: '上级文件夹', relation: 'capabilityWorkspaceFolders' }, { key: 'orderIndex', label: '排序', type: 'number' },
+  ] },
+  { entity: 'capabilityWorkspaceEntries', label: '能力工作区条目', singular: '工作区条目', icon: '↗', titleKey: 'title', description: '能力包内对文件、笔记和可执行资产的虚拟组织引用；不复制原始内容。', fields: [
+    { key: 'title', label: '显示名称' }, { key: 'packId', label: '能力包', relation: 'capabilityPacks' }, { key: 'folderId', label: '所属文件夹', relation: 'capabilityWorkspaceFolders' }, { key: 'targetType', label: '条目类型' }, { key: 'targetId', label: '目标记录 ID' }, { key: 'orderIndex', label: '排序', type: 'number' },
   ] },
   { entity: 'packApplications', label: '能力包应用', singular: '能力包应用', icon: '▶', titleKey: 'title', description: '把某一能力包的精确版本快照应用到真实项目；原始模板始终不被修改。', fields: [
     { key: 'title', label: '应用名称' }, { key: 'packId', label: '能力包', relation: 'capabilityPacks' }, { key: 'projectId', label: '项目', relation: 'projects' }, { key: 'goalId', label: '目标', relation: 'goals' }, { key: 'status', label: '状态', type: 'select', options: [option('APPLIED', '已应用'), option('COMPLETED', '已完成'), option('ARCHIVED', '已归档')] }, { key: 'packSnapshot', label: '应用快照（JSON）', multiline: true }, { key: 'appliedAt', label: '应用时间', type: 'datetime-local' },

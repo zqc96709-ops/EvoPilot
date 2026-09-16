@@ -35,7 +35,7 @@ const NOTEBOOK_ENTITIES: &[&str] = &[
     "notebookFiles",
 ];
 const NOTEBOOK_CONTENT_ENTITIES: &[&str] = &["notes", "notebookFiles", "inbox"];
-const SCHEMA_VERSION: i64 = 19;
+const SCHEMA_VERSION: i64 = 20;
 const NOTEBOOK_CATEGORY_SCHEMA_VERSION: i64 = 18;
 const NOTEBOOK_MAX_FILE_SIZE: u64 = 1024 * 1024 * 1024;
 const NOTEBOOK_CHUNK_SIZE: usize = 2 * 1024 * 1024;
@@ -58,6 +58,8 @@ const ENTITIES: &[&str] = &[
     "capabilityAssets",
     "capabilityAssetVersions",
     "capabilityPackItems",
+    "capabilityWorkspaceFolders",
+    "capabilityWorkspaceEntries",
     "packApplications",
     "packApplicationItems",
     "templateInstances",
@@ -722,6 +724,7 @@ fn db(app: &AppHandle) -> Result<Connection, String> {
     repair_referenced_notebook_file_tombstones(&connection)?;
     migrate_notebook_category_ownership(&connection)?;
     migrate_capability_system(&connection)?;
+    migrate_capability_workspace(&connection)?;
     Ok(connection)
 }
 
@@ -990,6 +993,25 @@ fn migrate_capability_system(connection: &Connection) -> Result<(), String> {
             "UPDATE sync_state SET schema_version=19 WHERE schema_version<19",
             [],
         )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn migrate_capability_workspace(connection: &Connection) -> Result<(), String> {
+    connection.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_records_capability_workspace_folder
+           ON records(entity, json_extract(data_json,'$.packId'), json_extract(data_json,'$.parentId'), json_extract(data_json,'$.orderIndex'));
+         CREATE INDEX IF NOT EXISTS idx_records_capability_workspace_entry
+           ON records(entity, json_extract(data_json,'$.packId'), json_extract(data_json,'$.folderId'), json_extract(data_json,'$.orderIndex'));"
+    ).map_err(|error| error.to_string())?;
+    let migrated: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=20)", [], |row| row.get(0)
+    ).map_err(|error| error.to_string())?;
+    if !migrated {
+        connection.execute("INSERT INTO schema_migrations(version,applied_at) VALUES(20,?1)", params![now()])
+            .map_err(|error| error.to_string())?;
+    }
+    connection.execute("UPDATE sync_state SET schema_version=20 WHERE schema_version<20", [])
         .map_err(|error| error.to_string())?;
     Ok(())
 }
@@ -1319,6 +1341,7 @@ fn expected_entity(key: &str) -> Option<&'static str> {
         "capabilityAssetVersionId" | "sourceCapabilityAssetVersionId" | "previousVersionId" | "nextVersionId" | "currentVersionId" => Some("capabilityAssetVersions"),
         "packId" => Some("capabilityPacks"),
         "packItemId" => Some("capabilityPackItems"),
+        "folderId" | "parentId" => Some("capabilityWorkspaceFolders"),
         "packApplicationId" => Some("packApplications"),
         "templateInstanceId" => Some("templateInstances"),
         "executionTaskId" => Some("tasks"),
@@ -6359,6 +6382,8 @@ mod tests {
             "capabilityAssets",
             "capabilityAssetVersions",
             "capabilityPackItems",
+            "capabilityWorkspaceFolders",
+            "capabilityWorkspaceEntries",
             "packApplications",
             "packApplicationItems",
             "templateInstances",
@@ -6843,10 +6868,11 @@ mod tests {
         connection.execute_batch("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL); CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at TEXT NOT NULL); CREATE TABLE records(id TEXT PRIMARY KEY,entity TEXT NOT NULL,data_json TEXT NOT NULL,title TEXT NOT NULL DEFAULT '',body TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL,archived_at TEXT,deleted_at TEXT); CREATE TABLE relations(id TEXT PRIMARY KEY,from_id TEXT NOT NULL,to_id TEXT NOT NULL,relation_type TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(from_id,to_id,relation_type));").unwrap();
         migrate_sync_v1(&connection).unwrap();
         migrate_capability_system(&connection).unwrap();
-        migrate_capability_system(&connection).unwrap();
+        migrate_capability_workspace(&connection).unwrap();
+        migrate_capability_workspace(&connection).unwrap();
         let schema: i64 = connection.query_row("SELECT schema_version FROM sync_state WHERE workspace_id='local'", [], |row| row.get(0)).unwrap();
-        let index_count: i64 = connection.query_row("SELECT COUNT(*) FROM pragma_index_list('records') WHERE name='idx_records_capability_asset_version'", [], |row| row.get(0)).unwrap();
-        assert_eq!(schema, 19);
+        let index_count: i64 = connection.query_row("SELECT COUNT(*) FROM pragma_index_list('records') WHERE name='idx_records_capability_workspace_entry'", [], |row| row.get(0)).unwrap();
+        assert_eq!(schema, 20);
         assert_eq!(index_count, 1);
     }
 
