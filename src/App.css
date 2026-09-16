@@ -265,6 +265,9 @@ button,input,textarea,select{border-radius:var(--radius)}
 .notebook-space .notebook-preview-card p { display: -webkit-box; margin: 0; overflow: hidden; color: var(--muted); font-size: 10px; line-height: 1.55; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
 .notebook-space .notebook-preview-card small { display: block; margin-top: 9px; color: var(--muted-2); font-size: 9px; }
 .notebook-space .notebook-inline-preview { max-height: 210px; margin: 12px 14px 0; border-color: #343b31; border-radius: 6px; background: #11140f; }
+.notebook-space .notebook-capability-action { display: flex; justify-content: flex-end; padding: 10px 14px 0; }
+.notebook-space .notebook-capability-action .button,
+.notebook-space .notebook-inline-preview + .button { margin: 10px 14px 0; }
 .notebook-space .notebook-text-preview { padding: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #b7c0af; font-size: 10px; line-height: 1.6; }
 .notebook-space .notebook-media-preview { max-height: 210px; }
 .notebook-space .notebook-pdf-preview { height: 210px; }
