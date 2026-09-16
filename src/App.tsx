@@ -28,6 +28,7 @@ import { createResearchPlan, getConfiguredProviders, parseResearchSources, resol
 import { calendarDateKey, taskCalendarItems, type CalendarScope } from './calendar'
 import { taskMatrixQuadrants, taskQuadrant } from './taskMatrix'
 import { compareWorkChainRuns, workChainScorecard } from './workchain'
+import { capabilityApplicationPlan, currentCapabilityVersion, packItemsFor } from './capability'
 import { filterTimelineItems, groupTimelineItems, timelineCausalEdges, timelineGoalId, timelineProjectId, timelineProjection, timelineTimestamp, timelineEntityTypes, visibleTimelineCausalEdges, type TimelineCausalEdge, type TimelineFilter, type TimelineProjectionItem, type TimelineRange } from './timeline'
 import { api, type AiProviderId, type BackupInfo, type CaptureProviderConfig, type CaptureProviderId, type ChatMessage, type HackStartConfig, type NotebookFilePreview } from './api'
 import { durableNotebookHtml, imageFiles, notebookFileIds } from './notebookImages'
@@ -64,7 +65,7 @@ const formatDate = (value: unknown, withTime = false) => {
 const formatMinutes = (minutes: number) => minutes < 60 ? `${Math.round(minutes)} 分钟` : `${Math.floor(minutes / 60)} 小时 ${Math.round(minutes % 60)} 分钟`
 const pageTitleForVoice = (view: string) => ({ notebook: '收纳箱', tasks: '任务', projects: '项目', today: '今天', time: '时间', outcomes: '成果', finance: '财务', decisionCenter: '决策中心', cognition: '认知中心', command: '指挥中心' }[view] || '页面')
 const optionParts = (option: FieldOption) => typeof option === 'string' ? { value: option, label: option } : option
-const defaultStatus = (entity: Entity) => ({ tasks: 'todo', goals: 'active', projects: 'active', hypotheses: 'untested', experiments: 'planned', decisions: 'pending', inbox: 'unprocessed', notes: 'INBOX', notebookFiles: 'ACTIVE', results: 'PLANNED', deliverables: 'DRAFT', resultPackages: 'ACTIVE', workflows: 'ACTIVE', workflowVersions: 'EXPERIMENTAL', workflowRuns: 'PLANNED', workflowRunSteps: 'PLANNED', workflowImprovementProposals: 'DRAFT', financialAccounts: 'ACTIVE', financialCategories: 'ACTIVE', financialTransactions: 'POSTED' } as Partial<Record<Entity, string>>)[entity] || 'active'
+const defaultStatus = (entity: Entity) => ({ tasks: 'todo', goals: 'active', projects: 'active', hypotheses: 'untested', experiments: 'planned', decisions: 'pending', inbox: 'unprocessed', notes: 'INBOX', notebookFiles: 'ACTIVE', results: 'PLANNED', deliverables: 'DRAFT', resultPackages: 'ACTIVE', capabilityPacks: 'DRAFT', capabilityAssets: 'DRAFT', capabilityAssetVersions: 'DRAFT', capabilityPackItems: 'ACTIVE', packApplications: 'APPLIED', packApplicationItems: 'ACTIVE', templateInstances: 'ACTIVE', capabilityImprovementProposals: 'DRAFT', workflows: 'ACTIVE', workflowVersions: 'EXPERIMENTAL', workflowRuns: 'PLANNED', workflowRunSteps: 'PLANNED', workflowImprovementProposals: 'DRAFT', financialAccounts: 'ACTIVE', financialCategories: 'ACTIVE', financialTransactions: 'POSTED' } as Partial<Record<Entity, string>>)[entity] || 'active'
 const tagsFor = (record: RecordData) => Array.isArray(record.tags) ? record.tags.map(String).map((tag) => tag.trim()).filter(Boolean) : String(record.tags || '').split(',').map((tag) => tag.trim()).filter(Boolean)
 
 type PaneSizes = { left: number; right: number }
@@ -197,6 +198,74 @@ function App() {
       await Promise.all(sameAsset.map((record) => api.save('deliverables', { ...record, status: 'SUPERSEDED' })))
     }
     await api.save(entity, data); await refresh(); setEditing(null); showNotice('已保存到本机。') }
+  const applyCapabilityPack = async (pack: RecordData, projectId: string) => {
+    const project = records.find((record) => record.id === projectId && record.entity === 'projects')
+    if (!project) throw new Error('请选择有效项目。')
+    const items = packItemsFor(records, pack.id)
+    const plan = capabilityApplicationPlan(records, pack.id)
+    if (!items.length) throw new Error('能力包尚未引用任何能力资产。')
+    if (plan.length !== items.length) throw new Error('能力包中存在尚未发布或无效的资产版本，请先完成版本确认。')
+    if (!plan.length) throw new Error('能力包没有可用的能力资产引用。')
+    const application = await api.save('packApplications', {
+      title: `${titleFor(project)} · ${titleFor(pack)}`,
+      packId: pack.id,
+      projectId: project.id,
+      goalId: project.goalId,
+      status: 'APPLIED',
+      appliedAt: new Date().toISOString(),
+      packSnapshot: JSON.stringify({ packId: pack.id, packTitle: titleFor(pack), packVersion: pack.packVersion || 'v1', items: plan.map(({ packItem, asset, version }) => ({ packItemId: packItem.id, capabilityAssetId: asset.id, capabilityAssetVersionId: version?.id, assetKind: asset.assetKind })) }),
+    })
+    for (const { packItem, asset, version, instanceKind, createsExecutionTask } of plan) {
+      let instance: RecordData | undefined
+      if (instanceKind && version) {
+        instance = await api.save('templateInstances', {
+          title: `${titleFor(project)} · ${titleFor(asset)}`,
+          instanceKind,
+          sourceCapabilityAssetVersionId: version.id,
+          packApplicationId: application.id,
+          projectId: project.id,
+          status: 'DRAFT',
+          contentSnapshot: version.content || '',
+          schemaSnapshot: instanceKind === 'TABLE' ? version.structuredData || '' : '',
+          itemsSnapshot: instanceKind === 'CHECKLIST' ? version.structuredData || '' : '',
+        })
+      }
+      const executionTask = createsExecutionTask ? await api.save('tasks', {
+        title: `执行：${titleFor(asset)}`,
+        description: `来自能力包「${titleFor(pack)}」的 ${String(version?.versionNumber || '未编号')} 快照。请按能力资产内容执行并记录结果。`,
+        projectId: project.id,
+        goalId: project.goalId,
+        status: 'todo',
+        priority: 'medium',
+      }) : undefined
+      const applied = await api.save('packApplicationItems', {
+        title: titleFor(asset),
+        packApplicationId: application.id,
+        packItemId: packItem.id,
+        capabilityAssetId: asset.id,
+        capabilityAssetVersionId: version?.id,
+        templateInstanceId: instance?.id,
+        executionTaskId: executionTask?.id,
+        status: 'APPLIED',
+      })
+      await api.addRelation(application.id, applied.id, 'capability:APPLIED_ITEM')
+      if (version) await api.addRelation(applied.id, version.id, 'capability:VERSION_SNAPSHOT')
+      if (executionTask) await api.addRelation(applied.id, executionTask.id, 'capability:EXECUTION_TASK')
+    }
+    await api.addRelation(application.id, project.id, 'capability:PROJECT_APPLICATION')
+    await refresh()
+    showNotice(`已将「${titleFor(pack)}」以当前版本快照应用到项目；模板原件未被修改。`)
+  }
+  const publishCapabilityVersion = async (asset: RecordData, version: RecordData) => {
+    if (version.entity !== 'capabilityAssetVersions' || version.capabilityAssetId !== asset.id) throw new Error('能力版本与资产不匹配。')
+    if (version.status === 'ACTIVE') return
+    const current = currentCapabilityVersion(records, asset)
+    if (current && current.id !== version.id) await api.save('capabilityAssetVersions', { ...current, status: 'SUPERSEDED' })
+    await api.save('capabilityAssetVersions', { ...version, status: 'ACTIVE', publishedAt: new Date().toISOString(), promotedAt: new Date().toISOString() })
+    await api.save('capabilityAssets', { ...asset, status: 'ACTIVE', currentVersionId: version.id })
+    await refresh()
+    showNotice(`已将「${titleFor(version)}」设为当前正式版本。`)
+  }
   const saveProfile = async (data: Record<string, string>) => {
     const existing = records.find((record) => record.entity === 'profiles')
     await api.save('profiles', profileSavePayload(existing, data))
@@ -264,7 +333,7 @@ function App() {
   const viewAiActionResult = (action: AgentAction) => {
     const record = action.result && 'id' in action.result && 'entity' in action.result ? action.result as RecordData : undefined
     if (!record) return
-    const targetView = ({ tasks: 'tasks', timeLogs: 'time', projects: 'projects', results: 'outcomes', deliverables: 'outcomes', resultPackages: 'outcomes', workflows: 'projects', workflowVersions: 'projects', workflowSteps: 'projects', workflowGates: 'projects', workflowRuns: 'projects', workflowRunSteps: 'projects', workflowMetricDefinitions: 'projects', workflowImprovementProposals: 'projects', financialAccounts: 'finance', financialCategories: 'finance', financialTransactions: 'finance', signals: 'notebook', opportunities: 'notebook', externalSources: 'notebook', intelligenceBriefs: 'notebook', knowledge: 'knowledge', reviews: 'reviews', insights: 'insights', principles: 'principles', mentalModels: 'mentalModels', decisions: 'decisionCenter', events: 'events', people: 'people' } as Partial<Record<Entity, View>>)[record.entity]
+    const targetView = ({ tasks: 'tasks', timeLogs: 'time', projects: 'projects', results: 'outcomes', deliverables: 'outcomes', resultPackages: 'outcomes', capabilityPacks: 'outcomes', capabilityAssets: 'outcomes', capabilityAssetVersions: 'outcomes', capabilityPackItems: 'outcomes', packApplications: 'outcomes', packApplicationItems: 'outcomes', templateInstances: 'outcomes', capabilityImprovementProposals: 'outcomes', workflows: 'projects', workflowVersions: 'projects', workflowSteps: 'projects', workflowGates: 'projects', workflowRuns: 'projects', workflowRunSteps: 'projects', workflowMetricDefinitions: 'projects', workflowImprovementProposals: 'projects', financialAccounts: 'finance', financialCategories: 'finance', financialTransactions: 'finance', signals: 'notebook', opportunities: 'notebook', externalSources: 'notebook', intelligenceBriefs: 'notebook', knowledge: 'knowledge', reviews: 'reviews', insights: 'insights', principles: 'principles', mentalModels: 'mentalModels', decisions: 'decisionCenter', events: 'events', people: 'people' } as Partial<Record<Entity, View>>)[record.entity]
     if (targetView) setView(targetView)
     setAiOpen(false); openRecord(record)
   }
@@ -386,7 +455,7 @@ function App() {
       {view === 'tasks' && <TasksView records={records} onOpen={openRecord} onEdit={(record) => setEditing({ config: configFor('tasks'), record })} onComplete={completeTask} onStartTimer={startTimer} onCreate={(initial) => openCreate('tasks', initial)} />}
       {view === 'time' && <TimeView records={records} running={running} onStartTimer={startTimer} onStopTimer={stopTimer} onOpen={openRecord} onEdit={(record) => setEditing({ config: configFor('timeLogs'), record })} onCreate={(initial) => openCreate('timeLogs', { startAt: nowInput(), ...initial })} />}
       {view === 'projects' && <ProjectsView records={records} selectedId={selectedProjectId} onSelect={setSelectedProjectId} onOpen={openRecord} onCreate={openCreate} onEdit={(record) => setEditing({ config: configFor(record.entity), record })} onStartTimer={startTimer} onAiAnalyze={(question, context) => { setAiOpen(true); void sendAi(question, context) }} />}
-      {view === 'outcomes' && <OutcomesView records={records} onOpen={openRecord} onCreate={openCreate} />}
+      {view === 'outcomes' && <OutcomesView records={records} onOpen={openRecord} onCreate={openCreate} onApplyCapabilityPack={applyCapabilityPack} onPublishCapabilityVersion={publishCapabilityVersion} />}
       {view === 'finance' && <FinanceView records={records} onOpen={openRecord} onCreate={openCreate} onRefresh={() => void refresh()} onAskAi={() => void sendAi('基于当前财务总览，最近最值得 CEO 关注的财务问题是什么？请只基于已聚合的趋势、项目资本配置与关注事项解释。')} />}
       {view === 'notebook' && <NotebookView records={records} externalItems={externalItems} captureConfig={captureConfig} onOpen={openRecord} onRefresh={refresh} onNotice={showNotice} onAi={(question, context) => { setAiOpen(true); void sendAi(question, context) }} />}
       {(['cognition', 'knowledge', 'reviews', 'insights', 'principles', 'mentalModels'] as View[]).includes(view) && <CognitiveCenterView records={records} tab={cognitiveTab} period={cognitivePeriod} onPeriod={setCognitivePeriod} onTab={(tab) => setView(tab === 'overview' ? 'cognition' : tab)} onOpen={openRecord} onCreate={() => openCreate(cognitiveEntity as Entity)} onAi={() => { setAiOpen(true); if (aiConfig?.configured) void sendAi('基于当前认知中心的真实记录，哪些事项值得我优先复盘、验证或沉淀？不要自动修改任何认知状态。') }} domainContent={cognitiveDomainContent} />}
@@ -537,8 +606,8 @@ function ProjectWorkChain({ project, records, onOpen, onCreate }: { project: Rec
   return <section className="workchain-panel"><header className="workchain-header"><div><p className="eyebrow">WORK CHAIN · EXECUTION MEMORY</p><h3>项目工作链</h3><p>模板定义与实际运行分开；时间、资金和结果只从已有事实记录聚合。</p></div><div><button className="button" onClick={() => onCreate('workflows', { status: 'ACTIVE' })}>＋ 新建工作链</button>{workflows[0] && <button className="button" onClick={() => onCreate('workflowVersions', { workflowId: workflows[0].id, versionNumber: String(versions.filter((record) => record.workflowId === workflows[0].id).length + 1), maturity: 'EXPERIMENTAL' })}>＋ 新建版本</button>}<button className="button primary" onClick={() => workflows[0] ? startRun(workflows[0]) : onCreate('workflows', { status: 'ACTIVE' })}>{workflows[0] ? '＋ 应用工作链' : '＋ 先新建工作链'}</button></div></header>{activeRun && scorecard ? <><div className="metric-strip four"><Metric label="当前版本" value={currentVersion ? `v${String(currentVersion.versionNumber || '—')}` : '未设置'} hint={currentVersion ? statusLabel(currentVersion.maturity) : '可创建版本'} /><Metric label="运行进度" value={`${scorecard.completedStepCount}/${scorecard.stepCount || 0}`} /><Metric label="实际时间" value={scorecard.timeMinutes ? formatMinutes(scorecard.timeMinutes) : '待关联 Time'} /><Metric label="实际成本" value={scorecard.costMinor ? formatMoneyMinor(scorecard.costMinor) : '待关联 Finance'} /></div><div className="three-column"><section className="work-panel"><PanelHeader title="实际步骤" action="添加运行步骤" onAction={() => onCreate('workflowRunSteps', { workflowRunId: activeRun.id, status: 'PLANNED' })} />{steps.length ? steps.sort((a, b) => Number(a.orderIndex || 0) - Number(b.orderIndex || 0)).map((record) => <CompactRecord key={record.id} record={record} onOpen={onOpen} />) : <p className="empty-copy">运行步骤保留实际执行记录；模板步骤不会被直接改写。</p>}</section><section className="work-panel"><PanelHeader title="决策关口" action="添加关口" onAction={() => onCreate('workflowGates', { workflowVersionId: activeRun.workflowVersionId })} />{gates.length ? gates.map((record) => <CompactRecord key={record.id} record={record} onOpen={onOpen} />) : <p className="empty-copy">可定义 Continue、Adjust、Stop、Escalate；真实判断可关联既有决策。</p>}</section><section className="work-panel"><PanelHeader title="评分与改进" action="创建改进提案" onAction={() => onCreate('workflowImprovementProposals', { title: `${titleFor(project)} · 工作链改进`, workflowId: activeRun.workflowId, sourceWorkflowVersionId: activeRun.workflowVersionId, sourceWorkflowRunId: activeRun.id, status: 'DRAFT' })} /><div className="scorecard-mini"><span>结果 / 已核验 <b>{scorecard.resultCount} / {scorecard.verifiedResultCount}</b></span><span>证据强度 <b>{scorecard.confidence}</b></span><span>Guardrail <b>{scorecard.guardrails.length ? `${scorecard.guardrails.filter((item) => item.state === 'PASS').length}/${scorecard.guardrails.length}` : '未定义'}</b></span><span>改进提案 <b>{improvements.length}</b></span></div>{comparison && <p className="empty-copy">与上次运行：时间 {comparison.timeDeltaMinutes >= 0 ? '+' : ''}{comparison.timeDeltaMinutes} 分钟，成本 {comparison.costDeltaMinor >= 0n ? '+' : ''}{formatMoneyMinor(comparison.costDeltaMinor)}，结果 {comparison.resultDelta >= 0 ? '+' : ''}{comparison.resultDelta}。{comparison.note}</p>}<p className="empty-copy">系统只展示多维证据与 Guardrail；Promote / Rollback 需要用户确认，不会自动认定最佳流程。</p>{improvements.slice(0, 3).map((record) => <CompactRecord key={record.id} record={record} onOpen={onOpen} />)}</section></div></> : <GuidedEmpty icon="⇢" title="项目尚未使用工作链" text="工作链不是强制功能。需要时选择一个模板创建运行，随后记录实际步骤、结果和复盘。" action={workflows.length ? '应用工作链' : '新建工作链'} onAction={() => workflows.length ? startRun(workflows[0]) : onCreate('workflows', { status: 'ACTIVE' })} />}</section>
 }
 
-function OutcomesView({ records, onOpen, onCreate }: { records: RecordData[]; onOpen: (record: RecordData) => void; onCreate: (entity: Entity, initial?: Partial<RecordData>) => void }) {
-  return <ResultsIntelligenceView records={records} onOpen={onOpen} onCreate={onCreate} />
+function OutcomesView({ records, onOpen, onCreate, onApplyCapabilityPack, onPublishCapabilityVersion }: { records: RecordData[]; onOpen: (record: RecordData) => void; onCreate: (entity: Entity, initial?: Partial<RecordData>) => void; onApplyCapabilityPack: (pack: RecordData, projectId: string) => Promise<void>; onPublishCapabilityVersion: (asset: RecordData, version: RecordData) => Promise<void> }) {
+  return <ResultsIntelligenceView records={records} onOpen={onOpen} onCreate={onCreate} onApplyCapabilityPack={onApplyCapabilityPack} onPublishCapabilityVersion={onPublishCapabilityVersion} />
 }
 
 function FinanceView({ records, onOpen, onCreate, onRefresh, onAskAi }: { records: RecordData[]; onOpen: (record: RecordData) => void; onCreate: (entity: Entity, initial?: Partial<RecordData>) => void; onRefresh: () => void; onAskAi: () => void }) {

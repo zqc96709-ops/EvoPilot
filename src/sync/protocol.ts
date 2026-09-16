@@ -1,7 +1,7 @@
 import type { RecordData } from '../model'
 
 export const SYNC_PROTOCOL_VERSION = 1
-export const CLIENT_SCHEMA_VERSION = 18
+export const CLIENT_SCHEMA_VERSION = 19
 
 export type SyncOperation = 'CREATE' | 'UPDATE' | 'DELETE' | 'RELATION_ADD' | 'RELATION_REMOVE'
 

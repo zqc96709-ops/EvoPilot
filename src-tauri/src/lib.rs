@@ -35,7 +35,8 @@ const NOTEBOOK_ENTITIES: &[&str] = &[
     "notebookFiles",
 ];
 const NOTEBOOK_CONTENT_ENTITIES: &[&str] = &["notes", "notebookFiles", "inbox"];
-const SCHEMA_VERSION: i64 = 18;
+const SCHEMA_VERSION: i64 = 19;
+const NOTEBOOK_CATEGORY_SCHEMA_VERSION: i64 = 18;
 const NOTEBOOK_MAX_FILE_SIZE: u64 = 1024 * 1024 * 1024;
 const NOTEBOOK_CHUNK_SIZE: usize = 2 * 1024 * 1024;
 const NOTEBOOK_EXTRACT_LIMIT: usize = 1_500_000;
@@ -53,6 +54,14 @@ const ENTITIES: &[&str] = &[
     "results",
     "deliverables",
     "resultPackages",
+    "capabilityPacks",
+    "capabilityAssets",
+    "capabilityAssetVersions",
+    "capabilityPackItems",
+    "packApplications",
+    "packApplicationItems",
+    "templateInstances",
+    "capabilityImprovementProposals",
     "workflows",
     "workflowVersions",
     "workflowSteps",
@@ -712,6 +721,7 @@ fn db(app: &AppHandle) -> Result<Connection, String> {
     migrate_image_persistence(&connection, app)?;
     repair_referenced_notebook_file_tombstones(&connection)?;
     migrate_notebook_category_ownership(&connection)?;
+    migrate_capability_system(&connection)?;
     Ok(connection)
 }
 
@@ -949,6 +959,41 @@ fn repair_referenced_notebook_file_tombstones(connection: &Connection) -> Result
     Ok(repaired)
 }
 
+fn migrate_capability_system(connection: &Connection) -> Result<(), String> {
+    connection
+        .execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_records_capability_asset_version
+               ON records(entity, json_extract(data_json,'$.capabilityAssetId'), updated_at DESC);
+             CREATE INDEX IF NOT EXISTS idx_records_capability_pack_item
+               ON records(entity, json_extract(data_json,'$.packId'), json_extract(data_json,'$.orderIndex'));
+             CREATE INDEX IF NOT EXISTS idx_records_pack_application_project
+               ON records(entity, json_extract(data_json,'$.projectId'), updated_at DESC);",
+        )
+        .map_err(|error| error.to_string())?;
+    let migrated: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=19)",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if !migrated {
+        connection
+            .execute(
+                "INSERT INTO schema_migrations(version,applied_at) VALUES(19,?1)",
+                params![now()],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    connection
+        .execute(
+            "UPDATE sync_state SET schema_version=19 WHERE schema_version<19",
+            [],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 fn migrate_notebook_category_ownership(connection: &Connection) -> Result<(), String> {
     connection
         .execute_batch(
@@ -959,7 +1004,7 @@ fn migrate_notebook_category_ownership(connection: &Connection) -> Result<(), St
     let migrated: bool = connection
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=?1)",
-            params![SCHEMA_VERSION],
+            params![NOTEBOOK_CATEGORY_SCHEMA_VERSION],
             |row| row.get(0),
         )
         .map_err(|error| error.to_string())?;
@@ -970,13 +1015,13 @@ fn migrate_notebook_category_ownership(connection: &Connection) -> Result<(), St
     connection
         .execute(
             "INSERT INTO schema_migrations(version,applied_at) VALUES(?1,?2)",
-            params![SCHEMA_VERSION, now()],
+            params![NOTEBOOK_CATEGORY_SCHEMA_VERSION, now()],
         )
         .map_err(|error| error.to_string())?;
     connection
         .execute(
             "UPDATE sync_state SET schema_version=?1 WHERE schema_version<?1",
-            params![SCHEMA_VERSION],
+            params![NOTEBOOK_CATEGORY_SCHEMA_VERSION],
         )
         .map_err(|error| error.to_string())?;
     Ok(())
@@ -1210,6 +1255,37 @@ fn record_by_id(connection: &Connection, id: &str) -> Result<Option<Value>, Stri
         .map_err(|e| e.to_string())
 }
 
+fn validate_capability_version_transition(existing: &Value, next: &Value) -> Result<(), String> {
+    if existing.get("status").and_then(Value::as_str) != Some("ACTIVE") {
+        return Ok(());
+    }
+    let immutable_fields = [
+        "title",
+        "capabilityAssetId",
+        "versionNumber",
+        "summary",
+        "content",
+        "structuredData",
+        "previousVersionId",
+        "sourceResultId",
+        "sourceReviewId",
+        "sourceInsightId",
+        "sourceKnowledgeId",
+        "portability",
+        "publishedAt",
+    ];
+    for key in immutable_fields {
+        if existing.get(key) != next.get(key) {
+            return Err("已发布的能力资产版本不可直接改写；请先创建下一版草稿。".into());
+        }
+    }
+    let next_status = next.get("status").and_then(Value::as_str).unwrap_or("ACTIVE");
+    if !["ACTIVE", "SUPERSEDED", "ARCHIVED"].contains(&next_status) {
+        return Err("已发布的能力资产版本只能保持发布、标记为已替代或归档。".into());
+    }
+    Ok(())
+}
+
 fn string_field(data: &Value, key: &str) -> Option<String> {
     data.get(key)
         .and_then(Value::as_str)
@@ -1239,11 +1315,18 @@ fn expected_entity(key: &str) -> Option<&'static str> {
         "resultId" => Some("results"),
         "sourceResearchResultId" => Some("researchResults"),
         "deliverableId" | "previousDeliverableId" => Some("deliverables"),
+        "capabilityAssetId" => Some("capabilityAssets"),
+        "capabilityAssetVersionId" | "sourceCapabilityAssetVersionId" | "previousVersionId" | "nextVersionId" | "currentVersionId" => Some("capabilityAssetVersions"),
+        "packId" => Some("capabilityPacks"),
+        "packItemId" => Some("capabilityPackItems"),
+        "packApplicationId" => Some("packApplications"),
+        "templateInstanceId" => Some("templateInstances"),
+        "executionTaskId" => Some("tasks"),
         "fileId" => Some("notebookFiles"),
         "evidenceId" => Some("results"),
         "resultPackageId" => Some("resultPackages"),
         "workflowId" => Some("workflows"),
-        "workflowVersionId" | "sourceWorkflowVersionId" | "createdFromVersionId" | "currentVersionId" => Some("workflowVersions"),
+        "workflowVersionId" | "sourceWorkflowVersionId" | "createdFromVersionId" => Some("workflowVersions"),
         "workflowStepId" => Some("workflowSteps"),
         "workflowRunId" | "sourceWorkflowRunId" => Some("workflowRuns"),
         "reviewId" => Some("reviews"),
@@ -1435,6 +1518,22 @@ fn normalize_record(
 
     if entity == "resultPackages" {
         align_context_from_reference(connection, &mut normalized, "workflowRunId", "workflowRuns", &["projectId", "goalId"], strict)?;
+    }
+
+    if entity == "packApplications" {
+        if let Some(project_id) = string_field(&normalized, "projectId") {
+            if let Some(project) = valid_reference(connection, &project_id, "projects", strict)? {
+                let object = normalized.as_object_mut().unwrap();
+                set_optional_id(object, "projectId", Some(project_id));
+                set_optional_id(object, "goalId", string_field(&project, "goalId"));
+            } else {
+                normalized.as_object_mut().unwrap().remove("projectId");
+            }
+        }
+    }
+
+    if entity == "templateInstances" {
+        align_context_from_reference(connection, &mut normalized, "packApplicationId", "packApplications", &["projectId", "goalId"], strict)?;
     }
 
     if entity == "insights" {
@@ -2012,6 +2111,11 @@ fn save_record(app: AppHandle, entity: String, mut data: Value) -> Result<Value,
         .unwrap_or_else(|| new_id(&entity));
     let connection = db(&app)?;
     let existing = record_by_id(&connection, &id)?;
+    if entity == "capabilityAssetVersions" {
+        if let Some(existing) = existing.as_ref() {
+            validate_capability_version_transition(existing, &data)?;
+        }
+    }
     if entity == "researchResults" {
         if let Some(existing) = existing.as_ref() {
             validate_research_result_snapshot(existing, &data)?;
@@ -4825,6 +4929,14 @@ fn agent_tool_metadata(tool: &str) -> Option<(&'static str, &'static str, bool, 
         "updateDeliverable" => Some(("deliverables", "MEDIUM_WRITE", true, "UPDATE")),
         "createResultPackage" => Some(("resultPackages", "MEDIUM_WRITE", true, "CREATE")),
         "updateResultPackage" => Some(("resultPackages", "MEDIUM_WRITE", true, "UPDATE")),
+        "createCapabilityPack" => Some(("capabilityPacks", "MEDIUM_WRITE", true, "CREATE")),
+        "updateCapabilityPack" => Some(("capabilityPacks", "MEDIUM_WRITE", true, "UPDATE")),
+        "createCapabilityAssetDraft" => Some(("capabilityAssets", "MEDIUM_WRITE", true, "CREATE")),
+        "updateCapabilityAsset" => Some(("capabilityAssets", "MEDIUM_WRITE", true, "UPDATE")),
+        "createCapabilityVersionDraft" => Some(("capabilityAssetVersions", "MEDIUM_WRITE", true, "CREATE")),
+        "createCapabilityPackItem" => Some(("capabilityPackItems", "MEDIUM_WRITE", true, "CREATE")),
+        "createCapabilityImprovementProposal" => Some(("capabilityImprovementProposals", "MEDIUM_WRITE", true, "CREATE")),
+        "updateCapabilityImprovementProposal" => Some(("capabilityImprovementProposals", "MEDIUM_WRITE", true, "UPDATE")),
         "createWorkflow" => Some(("workflows", "MEDIUM_WRITE", true, "CREATE")),
         "updateWorkflow" => Some(("workflows", "MEDIUM_WRITE", true, "UPDATE")),
         "createWorkflowVersion" => Some(("workflowVersions", "MEDIUM_WRITE", true, "CREATE")),
@@ -5914,7 +6026,9 @@ fn ask_chief_blocking(
 22. type=PROFILE_CONTEXT 是用户主动保存的长期个人与 AI 上下文。只在它与当前问题直接相关时使用，不能机械复述、不能暴露无关私人资料；当前用户问题和当前页面上下文优先于 Profile。
 23. AI 默认只能读取 Profile。用户明确要求更新我的档案时，只有在存在真实 Profile ID 且字段明确时，才使用 updateProfile 生成 Action 预览；绝不能声称已更新，必须等待用户确认后才写入。
 24. Global Context Package 是本次回答的事实边界：优先使用其中 current 与 relation 来源，再使用 search 来源；缺少 Time、Finance、Result、Review 或 Workflow 事实时必须明确说数据缺失，不能估算。除非 Global Context Package 的 includeInbox=true，禁止引用 Inbox。
-25. 用户要求根据成果或复盘优化工作链时，只能使用 createWorkflowImprovementProposal 生成改进提案，不能直接修改 Workflow、Promote 或 Rollback。"#;
+25. 用户要求根据成果或复盘优化工作链时，只能使用 createWorkflowImprovementProposal 生成改进提案，不能直接修改 Workflow、Promote 或 Rollback。
+26. 能力包只能引用能力资产与明确版本，不能复制资产正文；用户要求应用能力包时，必须说明会建立项目应用快照与模板实例。
+27. 能力资产的 ACTIVE 版本不可静默改写。需要变更时只能创建 DRAFT 新版本；发布、替换或归档必须由用户明确确认，不能自动执行。"#;
     let mut messages = Vec::new();
     let recent_history = history.unwrap_or_default();
     let skip = recent_history.len().saturating_sub(10);
@@ -6236,6 +6350,28 @@ mod tests {
         assert_eq!(agent_tool_metadata("updateProject"), Some(("projects", "MEDIUM_WRITE", true, "UPDATE")));
         assert_eq!(agent_tool_metadata("promoteWorkflowVersion"), Some(("workflowVersions", "HIGH_RISK", true, "UPDATE")));
         assert!(agent_tool_metadata("getProject").is_none());
+    }
+
+    #[test]
+    fn capability_entities_use_the_existing_action_guard_and_relations() {
+        for entity in [
+            "capabilityPacks",
+            "capabilityAssets",
+            "capabilityAssetVersions",
+            "capabilityPackItems",
+            "packApplications",
+            "packApplicationItems",
+            "templateInstances",
+            "capabilityImprovementProposals",
+        ] {
+            assert!(is_entity(entity));
+        }
+        assert_eq!(
+            agent_tool_metadata("createCapabilityPack"),
+            Some(("capabilityPacks", "MEDIUM_WRITE", true, "CREATE"))
+        );
+        assert_eq!(expected_entity("executionTaskId"), Some("tasks"));
+        assert_eq!(expected_entity("capabilityAssetVersionId"), Some("capabilityAssetVersions"));
     }
 
     #[test]
@@ -6701,6 +6837,26 @@ mod tests {
         assert!(result["researchRunId"].as_str().unwrap_or("").starts_with("researchRuns-"));
     }
 
+    #[test]
+    fn capability_migration_is_additive_and_updates_sync_schema() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL); CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at TEXT NOT NULL); CREATE TABLE records(id TEXT PRIMARY KEY,entity TEXT NOT NULL,data_json TEXT NOT NULL,title TEXT NOT NULL DEFAULT '',body TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL,archived_at TEXT,deleted_at TEXT); CREATE TABLE relations(id TEXT PRIMARY KEY,from_id TEXT NOT NULL,to_id TEXT NOT NULL,relation_type TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(from_id,to_id,relation_type));").unwrap();
+        migrate_sync_v1(&connection).unwrap();
+        migrate_capability_system(&connection).unwrap();
+        migrate_capability_system(&connection).unwrap();
+        let schema: i64 = connection.query_row("SELECT schema_version FROM sync_state WHERE workspace_id='local'", [], |row| row.get(0)).unwrap();
+        let index_count: i64 = connection.query_row("SELECT COUNT(*) FROM pragma_index_list('records') WHERE name='idx_records_capability_asset_version'", [], |row| row.get(0)).unwrap();
+        assert_eq!(schema, 19);
+        assert_eq!(index_count, 1);
+    }
+
+    #[test]
+    fn published_capability_versions_cannot_be_silently_overwritten() {
+        let published = json!({"title":"直播复盘","capabilityAssetId":"asset-a","versionNumber":"v1","status":"ACTIVE","content":"旧内容","portability":"PERSONAL"});
+        assert!(validate_capability_version_transition(&published, &json!({"title":"直播复盘","capabilityAssetId":"asset-a","versionNumber":"v1","status":"SUPERSEDED","content":"旧内容","portability":"PERSONAL"})).is_ok());
+        assert!(validate_capability_version_transition(&published, &json!({"title":"直播复盘","capabilityAssetId":"asset-a","versionNumber":"v1","status":"ACTIVE","content":"新内容","portability":"PERSONAL"})).is_err());
+    }
+
     fn relationship_test_db() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE records(id TEXT PRIMARY KEY,entity TEXT NOT NULL,data_json TEXT NOT NULL,title TEXT NOT NULL DEFAULT '',body TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL,archived_at TEXT,deleted_at TEXT); CREATE VIRTUAL TABLE records_fts USING fts5(id UNINDEXED,entity UNINDEXED,title,body); CREATE TABLE relations(id TEXT PRIMARY KEY,from_id TEXT NOT NULL,to_id TEXT NOT NULL,relation_type TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(from_id,to_id,relation_type));").unwrap();
@@ -7008,8 +7164,8 @@ mod tests {
         let schema: i64 = connection.query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0)).unwrap();
         let sync_schema: i64 = connection.query_row("SELECT schema_version FROM sync_state WHERE workspace_id='local'", [], |row| row.get(0)).unwrap();
         let index_exists: i64 = connection.query_row("SELECT COUNT(*) FROM pragma_index_list('records') WHERE name='idx_records_notebook_category_active'", [], |row| row.get(0)).unwrap();
-        assert_eq!(schema, SCHEMA_VERSION);
-        assert_eq!(sync_schema, SCHEMA_VERSION);
+        assert_eq!(schema, NOTEBOOK_CATEGORY_SCHEMA_VERSION);
+        assert_eq!(sync_schema, NOTEBOOK_CATEGORY_SCHEMA_VERSION);
         assert_eq!(index_exists, 1);
         assert!(record_by_id(&connection, "note-legacy").unwrap().unwrap().get("notebookCategoryId").is_none());
     }
