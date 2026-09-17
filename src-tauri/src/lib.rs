@@ -39,7 +39,7 @@ const NOTEBOOK_ENTITIES: &[&str] = &[
     "notebookFiles",
 ];
 const NOTEBOOK_CONTENT_ENTITIES: &[&str] = &["notes", "notebookFiles", "inbox"];
-const SCHEMA_VERSION: i64 = 21;
+const SCHEMA_VERSION: i64 = 22;
 const NOTEBOOK_CATEGORY_SCHEMA_VERSION: i64 = 18;
 const NOTEBOOK_MAX_FILE_SIZE: u64 = 1024 * 1024 * 1024;
 const NOTEBOOK_CHUNK_SIZE: usize = 2 * 1024 * 1024;
@@ -1033,13 +1033,13 @@ fn migrate_project_workbench(connection: &Connection) -> Result<(), String> {
            ON records(entity, json_extract(data_json,'$.projectId'), updated_at DESC);"
     ).map_err(|error| error.to_string())?;
     let migrated: bool = connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=21)", [], |row| row.get(0)
+        "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=22)", [], |row| row.get(0)
     ).map_err(|error| error.to_string())?;
     if !migrated {
-        connection.execute("INSERT INTO schema_migrations(version,applied_at) VALUES(21,?1)", params![now()])
+        connection.execute("INSERT INTO schema_migrations(version,applied_at) VALUES(22,?1)", params![now()])
             .map_err(|error| error.to_string())?;
     }
-    connection.execute("UPDATE sync_state SET schema_version=21 WHERE schema_version<21", [])
+    connection.execute("UPDATE sync_state SET schema_version=22 WHERE schema_version<22", [])
         .map_err(|error| error.to_string())?;
     Ok(())
 }
@@ -1381,6 +1381,7 @@ fn expected_entity(key: &str) -> Option<&'static str> {
         "workflowStepId" => Some("workflowSteps"),
         "workflowRunId" | "sourceWorkflowRunId" => Some("workflowRuns"),
         "reviewId" => Some("reviews"),
+        "operationalLogId" => Some("operationalLogs"),
         "insightId" => Some("insights"),
         "knowledgeId" => Some("knowledge"),
         "mentalModelId" => Some("mentalModels"),
@@ -6879,6 +6880,7 @@ mod tests {
         assert_eq!(expected_entity("fileId"), Some("notebookFiles"));
         assert_eq!(expected_entity("evidenceId"), Some("results"));
         assert_eq!(expected_entity("workflowRunId"), Some("workflowRuns"));
+        assert_eq!(expected_entity("operationalLogIds"), Some("operationalLogs"));
     }
 
     #[test]
@@ -7414,7 +7416,7 @@ mod tests {
         let schema: i64 = connection.query_row("SELECT schema_version FROM sync_state WHERE workspace_id='local'", [], |row| row.get(0)).unwrap();
         let index_count: i64 = connection.query_row("SELECT COUNT(*) FROM pragma_index_list('records') WHERE name='idx_records_capability_workspace_entry'", [], |row| row.get(0)).unwrap();
         let log_index_count: i64 = connection.query_row("SELECT COUNT(*) FROM pragma_index_list('records') WHERE name='idx_records_operational_log_project'", [], |row| row.get(0)).unwrap();
-        assert_eq!(schema, 21);
+        assert_eq!(schema, 22);
         assert_eq!(index_count, 1);
         assert_eq!(log_index_count, 1);
     }
