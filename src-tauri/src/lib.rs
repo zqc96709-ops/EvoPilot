@@ -8,23 +8,27 @@ mod redfox;
 mod scrapecreators;
 mod tikhub;
 
+use calamine::{open_workbook_auto, Reader};
+use quick_xml::{events::{BytesEnd, BytesStart, BytesText, Event}, Reader as XmlReader, Writer as XmlWriter};
 use regex::Regex;
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::{
-    collections::HashSet,
-    fs::{self, OpenOptions},
+    collections::{HashMap, HashSet},
+    fs::{self, File, OpenOptions},
     hash::{Hash, Hasher},
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::Command,
     sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Manager};
+use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
 static ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const LOCAL_NOTEBOOK_OWNER: &str = "local-user";
@@ -2754,6 +2758,96 @@ fn extract_office_xml(path: &Path, extension: &str) -> Result<String, String> {
     Ok(strip_xml(&String::from_utf8_lossy(&output.stdout)))
 }
 
+const SPREADSHEET_PREVIEW_ROW_LIMIT: usize = 300;
+const SPREADSHEET_PREVIEW_COLUMN_LIMIT: usize = 60;
+const SPREADSHEET_PREVIEW_SHEET_LIMIT: usize = 12;
+
+fn parse_delimited_row(line: &str, delimiter: char) -> Vec<String> {
+    let mut cells = Vec::new();
+    let mut cell = String::new();
+    let mut quoted = false;
+    let mut characters = line.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character == '"' {
+            if quoted && characters.peek() == Some(&'"') {
+                cell.push('"');
+                characters.next();
+            } else {
+                quoted = !quoted;
+            }
+        } else if character == delimiter && !quoted {
+            cells.push(cell.trim_end_matches('\r').to_string());
+            cell.clear();
+        } else {
+            cell.push(character);
+        }
+    }
+    cells.push(cell.trim_end_matches('\r').to_string());
+    cells
+}
+
+fn spreadsheet_preview(path: &Path, extension: &str) -> Result<Value, String> {
+    let metadata = fs::metadata(path).map_err(|error| error.to_string())?;
+    if metadata.len() > 80 * 1024 * 1024 {
+        return Err("表格超过 80 MB，已安全保存；请使用“用原应用打开”查看完整文件".into());
+    }
+    if ["csv", "tsv"].contains(&extension) {
+        let delimiter = if extension == "tsv" { '\t' } else { ',' };
+        let all_rows = String::from_utf8_lossy(&fs::read(path).map_err(|error| error.to_string())?)
+            .lines()
+            .map(|line| parse_delimited_row(line, delimiter))
+            .collect::<Vec<_>>();
+        let column_count = all_rows.iter().map(Vec::len).max().unwrap_or(0);
+        let truncated = all_rows.len() > SPREADSHEET_PREVIEW_ROW_LIMIT
+            || column_count > SPREADSHEET_PREVIEW_COLUMN_LIMIT;
+        let rows = all_rows
+            .into_iter()
+            .take(SPREADSHEET_PREVIEW_ROW_LIMIT)
+            .map(|row| {
+                row.into_iter()
+                    .take(SPREADSHEET_PREVIEW_COLUMN_LIMIT)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        return Ok(
+            json!({"kind":"spreadsheet", "sheets":[{"name":"数据", "columnCount":column_count.min(SPREADSHEET_PREVIEW_COLUMN_LIMIT), "rows":rows}], "truncated":truncated, "rowLimit":SPREADSHEET_PREVIEW_ROW_LIMIT, "columnLimit":SPREADSHEET_PREVIEW_COLUMN_LIMIT}),
+        );
+    }
+    let mut workbook =
+        open_workbook_auto(path).map_err(|error| format!("无法读取表格：{error}"))?;
+    let sheet_names = workbook.sheet_names().to_vec();
+    let mut truncated = sheet_names.len() > SPREADSHEET_PREVIEW_SHEET_LIMIT;
+    let mut sheets = Vec::new();
+    for name in sheet_names
+        .into_iter()
+        .take(SPREADSHEET_PREVIEW_SHEET_LIMIT)
+    {
+        let range = workbook
+            .worksheet_range(&name)
+            .map_err(|error| format!("无法读取工作表“{name}”：{error}"))?;
+        let (height, width) = range.get_size();
+        truncated |=
+            height > SPREADSHEET_PREVIEW_ROW_LIMIT || width > SPREADSHEET_PREVIEW_COLUMN_LIMIT;
+        let rows = range
+            .rows()
+            .take(SPREADSHEET_PREVIEW_ROW_LIMIT)
+            .map(|row| {
+                row.iter()
+                    .take(SPREADSHEET_PREVIEW_COLUMN_LIMIT)
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        sheets.push(json!({"name":name, "columnCount":width.min(SPREADSHEET_PREVIEW_COLUMN_LIMIT), "rows":rows}));
+    }
+    if sheets.is_empty() {
+        return Err("表格没有可读取的工作表".into());
+    }
+    Ok(
+        json!({"kind":"spreadsheet", "sheets":sheets, "truncated":truncated, "rowLimit":SPREADSHEET_PREVIEW_ROW_LIMIT, "columnLimit":SPREADSHEET_PREVIEW_COLUMN_LIMIT}),
+    )
+}
+
 fn extract_notebook_content(path: &Path, extension: &str) -> Result<String, String> {
     let metadata = fs::metadata(path).map_err(|error| error.to_string())?;
     if metadata.len() > 200 * 1024 * 1024 {
@@ -3064,6 +3158,370 @@ fn reveal_notebook_file(app: AppHandle, id: String) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SpreadsheetCellEdit {
+    sheet_name: String,
+    row: usize,
+    column: usize,
+    value: String,
+}
+
+fn xlsx_column_name(column: usize) -> String {
+    let mut value = column + 1;
+    let mut name = String::new();
+    while value > 0 {
+        let remainder = (value - 1) % 26;
+        name.insert(0, (b'A' + remainder as u8) as char);
+        value = (value - 1) / 26;
+    }
+    name
+}
+
+fn xlsx_cell_reference(row: usize, column: usize) -> String {
+    format!("{}{}", xlsx_column_name(column), row + 1)
+}
+
+fn xlsx_attribute(event: &BytesStart<'_>, name: &[u8]) -> Option<String> {
+    event
+        .attributes()
+        .with_checks(false)
+        .flatten()
+        .find_map(|attribute| {
+            (attribute.key.as_ref() == name)
+                .then(|| String::from_utf8_lossy(attribute.value.as_ref()).into_owned())
+        })
+}
+
+fn xlsx_inline_string_cell(
+    writer: &mut XmlWriter<Vec<u8>>,
+    source: &BytesStart<'_>,
+    value: &str,
+) -> Result<(), String> {
+    let mut cell = BytesStart::new("c");
+    for attribute in source.attributes().with_checks(false).flatten() {
+        if attribute.key.as_ref() != b"t" {
+            cell.push_attribute((attribute.key.as_ref(), attribute.value.as_ref()));
+        }
+    }
+    cell.push_attribute(("t", "inlineStr"));
+    writer
+        .write_event(Event::Start(cell))
+        .map_err(|error| error.to_string())?;
+    writer
+        .write_event(Event::Start(BytesStart::new("is")))
+        .map_err(|error| error.to_string())?;
+    writer
+        .write_event(Event::Start(BytesStart::new("t")))
+        .map_err(|error| error.to_string())?;
+    writer
+        .write_event(Event::Text(BytesText::new(value)))
+        .map_err(|error| error.to_string())?;
+    writer
+        .write_event(Event::End(BytesEnd::new("t")))
+        .map_err(|error| error.to_string())?;
+    writer
+        .write_event(Event::End(BytesEnd::new("is")))
+        .map_err(|error| error.to_string())?;
+    writer
+        .write_event(Event::End(BytesEnd::new("c")))
+        .map_err(|error| error.to_string())
+}
+
+fn apply_xlsx_sheet_edits(xml: &str, edits: &[SpreadsheetCellEdit]) -> Result<String, String> {
+    let mut pending = edits
+        .iter()
+        .map(|edit| {
+            (
+                xlsx_cell_reference(edit.row, edit.column),
+                edit.value.clone(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let mut reader = XmlReader::from_str(xml);
+    reader.trim_text(false);
+    let mut writer = XmlWriter::new(Vec::new());
+    let mut buffer = Vec::new();
+    let mut row_number = None;
+    loop {
+        match reader
+            .read_event_into(&mut buffer)
+            .map_err(|error| error.to_string())?
+        {
+            Event::Start(event) if event.name().as_ref() == b"row" => {
+                row_number =
+                    xlsx_attribute(&event, b"r").and_then(|value| value.parse::<usize>().ok());
+                writer
+                    .write_event(Event::Start(event.into_owned()))
+                    .map_err(|error| error.to_string())?;
+            }
+            Event::Empty(event) if event.name().as_ref() == b"row" => {
+                let row = xlsx_attribute(&event, b"r").and_then(|value| value.parse::<usize>().ok());
+                let mut inserts = row
+                    .into_iter()
+                    .flat_map(|row| {
+                        pending
+                            .iter()
+                            .filter_map(move |(reference, value)| {
+                                let digits = reference
+                                    .chars()
+                                    .skip_while(|character| character.is_ascii_alphabetic())
+                                    .collect::<String>();
+                                (digits.parse::<usize>().ok() == Some(row))
+                                    .then(|| (reference.clone(), value.clone()))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>();
+                if inserts.is_empty() {
+                    writer
+                        .write_event(Event::Empty(event.into_owned()))
+                        .map_err(|error| error.to_string())?;
+                } else {
+                    inserts.sort_by(|left, right| left.0.cmp(&right.0));
+                    writer
+                        .write_event(Event::Start(event.into_owned()))
+                        .map_err(|error| error.to_string())?;
+                    for (reference, value) in inserts {
+                        pending.remove(&reference);
+                        let mut cell = BytesStart::new("c");
+                        cell.push_attribute(("r", reference.as_str()));
+                        xlsx_inline_string_cell(&mut writer, &cell, &value)?;
+                    }
+                    writer
+                        .write_event(Event::End(BytesEnd::new("row")))
+                        .map_err(|error| error.to_string())?;
+                }
+            }
+            Event::Start(event) if event.name().as_ref() == b"c" => {
+                let reference = xlsx_attribute(&event, b"r").unwrap_or_default();
+                if let Some(value) = pending.remove(&reference) {
+                    xlsx_inline_string_cell(&mut writer, &event, &value)?;
+                    let mut depth = 1usize;
+                    loop {
+                        buffer.clear();
+                        match reader
+                            .read_event_into(&mut buffer)
+                            .map_err(|error| error.to_string())?
+                        {
+                            Event::Start(_) => depth += 1,
+                            Event::End(end) => {
+                                depth -= 1;
+                                if depth == 0 && end.name().as_ref() == b"c" {
+                                    break;
+                                }
+                            }
+                            Event::Eof => return Err("工作表 XML 意外结束".into()),
+                            _ => {}
+                        }
+                    }
+                } else {
+                    writer
+                        .write_event(Event::Start(event.into_owned()))
+                        .map_err(|error| error.to_string())?;
+                }
+            }
+            Event::Empty(event) if event.name().as_ref() == b"c" => {
+                let reference = xlsx_attribute(&event, b"r").unwrap_or_default();
+                if let Some(value) = pending.remove(&reference) {
+                    xlsx_inline_string_cell(&mut writer, &event, &value)?;
+                } else {
+                    writer
+                        .write_event(Event::Empty(event.into_owned()))
+                        .map_err(|error| error.to_string())?;
+                }
+            }
+            Event::End(event) if event.name().as_ref() == b"row" => {
+                if let Some(row) = row_number {
+                    let mut inserts = pending
+                        .iter()
+                        .filter_map(|(reference, value)| {
+                            let digits = reference
+                                .chars()
+                                .skip_while(|character| character.is_ascii_alphabetic())
+                                .collect::<String>();
+                            (digits.parse::<usize>().ok() == Some(row))
+                                .then(|| (reference.clone(), value.clone()))
+                        })
+                        .collect::<Vec<_>>();
+                    inserts.sort_by(|left, right| left.0.cmp(&right.0));
+                    for (reference, value) in inserts {
+                        pending.remove(&reference);
+                        let mut cell = BytesStart::new("c");
+                        cell.push_attribute(("r", reference.as_str()));
+                        xlsx_inline_string_cell(&mut writer, &cell, &value)?;
+                    }
+                }
+                row_number = None;
+                writer
+                    .write_event(Event::End(event.into_owned()))
+                    .map_err(|error| error.to_string())?;
+            }
+            Event::Eof => break,
+            event => writer
+                .write_event(event.into_owned())
+                .map_err(|error| error.to_string())?,
+        }
+        buffer.clear();
+    }
+    if !pending.is_empty() {
+        return Err("只能编辑当前工作表已有的可见行".into());
+    }
+    String::from_utf8(writer.into_inner()).map_err(|error| error.to_string())
+}
+
+fn xlsx_xml_attribute(raw: &str, key: &str) -> Option<String> {
+    let pattern = Regex::new(&format!(r#"\b{}="([^"]*)""#, regex::escape(key))).ok()?;
+    let value = pattern.captures(raw)?.get(1)?.as_str();
+    Some(
+        value
+            .replace("&amp;", "&")
+            .replace("&quot;", "\"")
+            .replace("&apos;", "'")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">"),
+    )
+}
+
+fn xlsx_worksheet_path(path: &Path, sheet_name: &str) -> Result<String, String> {
+    let file = File::open(path).map_err(|error| error.to_string())?;
+    let mut archive = ZipArchive::new(file).map_err(|error| error.to_string())?;
+    let mut workbook = String::new();
+    archive
+        .by_name("xl/workbook.xml")
+        .map_err(|error| error.to_string())?
+        .read_to_string(&mut workbook)
+        .map_err(|error| error.to_string())?;
+    let mut relationships = String::new();
+    archive
+        .by_name("xl/_rels/workbook.xml.rels")
+        .map_err(|error| error.to_string())?
+        .read_to_string(&mut relationships)
+        .map_err(|error| error.to_string())?;
+    let sheet_pattern = Regex::new(r#"<sheet\b([^>]*)/?>"#).map_err(|error| error.to_string())?;
+    let relation_id = sheet_pattern
+        .captures_iter(&workbook)
+        .find_map(|capture| {
+            let attributes = capture.get(1)?.as_str();
+            (xlsx_xml_attribute(attributes, "name").as_deref() == Some(sheet_name))
+                .then(|| xlsx_xml_attribute(attributes, "r:id"))
+                .flatten()
+        })
+        .ok_or("工作表不存在")?;
+    let relation_pattern =
+        Regex::new(r#"<Relationship\b([^>]*)/?>"#).map_err(|error| error.to_string())?;
+    let target = relation_pattern
+        .captures_iter(&relationships)
+        .find_map(|capture| {
+            let attributes = capture.get(1)?.as_str();
+            (xlsx_xml_attribute(attributes, "Id").as_deref() == Some(&relation_id))
+                .then(|| xlsx_xml_attribute(attributes, "Target"))
+                .flatten()
+        })
+        .ok_or("工作表关系不存在")?;
+    Ok(if target.starts_with('/') {
+        target.trim_start_matches('/').to_string()
+    } else {
+        format!("xl/{target}")
+    })
+}
+
+fn write_xlsx_edits(path: &Path, edits: &[SpreadsheetCellEdit]) -> Result<(), String> {
+    let mut replacements = HashMap::<String, Vec<u8>>::new();
+    for sheet_name in edits
+        .iter()
+        .map(|edit| edit.sheet_name.as_str())
+        .collect::<HashSet<_>>()
+    {
+        let sheet_edits = edits
+            .iter()
+            .filter(|edit| edit.sheet_name == sheet_name)
+            .cloned()
+            .collect::<Vec<_>>();
+        let sheet_path = xlsx_worksheet_path(path, sheet_name)?;
+        let file = File::open(path).map_err(|error| error.to_string())?;
+        let mut archive = ZipArchive::new(file).map_err(|error| error.to_string())?;
+        let mut xml = String::new();
+        archive
+            .by_name(&sheet_path)
+            .map_err(|error| error.to_string())?
+            .read_to_string(&mut xml)
+            .map_err(|error| error.to_string())?;
+        replacements.insert(
+            sheet_path,
+            apply_xlsx_sheet_edits(&xml, &sheet_edits)?.into_bytes(),
+        );
+    }
+    let source = File::open(path).map_err(|error| error.to_string())?;
+    let mut archive = ZipArchive::new(source).map_err(|error| error.to_string())?;
+    let temporary = path.with_extension("xlsx.editing");
+    let output = File::create(&temporary).map_err(|error| error.to_string())?;
+    let mut writer = ZipWriter::new(output);
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(|error| error.to_string())?;
+        let name = entry.name().to_string();
+        if entry.is_dir() {
+            writer
+                .add_directory(name, SimpleFileOptions::default())
+                .map_err(|error| error.to_string())?;
+            continue;
+        }
+        let compression = if entry.compression() == CompressionMethod::Stored {
+            CompressionMethod::Stored
+        } else {
+            CompressionMethod::Deflated
+        };
+        writer
+            .start_file(
+                &name,
+                SimpleFileOptions::default().compression_method(compression),
+            )
+            .map_err(|error| error.to_string())?;
+        if let Some(replacement) = replacements.get(&name) {
+            writer
+                .write_all(replacement)
+                .map_err(|error| error.to_string())?;
+        } else {
+            std::io::copy(&mut entry, &mut writer).map_err(|error| error.to_string())?;
+        }
+    }
+    writer.finish().map_err(|error| error.to_string())?;
+    fs::rename(&temporary, path).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn save_notebook_spreadsheet_edits(
+    app: AppHandle,
+    id: String,
+    edits: Vec<SpreadsheetCellEdit>,
+) -> Result<Value, String> {
+    if edits.is_empty() {
+        return Err("没有需要保存的单元格修改".into());
+    }
+    let connection = db(&app)?;
+    let mut record = record_by_id(&connection, &id)?.ok_or("文件不存在")?;
+    let extension = record["extension"].as_str().unwrap_or("").to_lowercase();
+    if extension != "xlsx" {
+        return Err("当前系统内编辑仅支持 .xlsx；其他格式请使用原应用编辑".into());
+    }
+    let path = notebook_file_path(&app, &record)?;
+    let originals = notebook_files_dir(&app)?.join(".originals");
+    fs::create_dir_all(&originals).map_err(|error| error.to_string())?;
+    let original_key = format!("{}.xlsx", safe_file_name(&id));
+    let original = originals.join(&original_key);
+    if !original.exists() {
+        fs::copy(&path, &original).map_err(|error| error.to_string())?;
+    }
+    write_xlsx_edits(&path, &edits)?;
+    record["size"] = json!(fs::metadata(&path)
+        .map_err(|error| error.to_string())?
+        .len());
+    record["editedAt"] = json!(now());
+    record["originalBackupKey"] = json!(original_key);
+    apply_notebook_extraction(&mut record, &path);
+    save_record(app, "notebookFiles".into(), record)
+}
+
 #[tauri::command]
 fn get_notebook_file_preview(app: AppHandle, id: String) -> Result<Value, String> {
     let record = record_by_id(&db(&app)?, &id)?.ok_or("文件不存在")?;
@@ -3073,6 +3531,9 @@ fn get_notebook_file_preview(app: AppHandle, id: String) -> Result<Value, String
         .as_str()
         .filter(|value| !value.is_empty())
         .unwrap_or("application/octet-stream");
+    if ["csv", "tsv", "xls", "xlsx", "xlsb", "ods"].contains(&extension.as_str()) {
+        return spreadsheet_preview(&path, &extension);
+    }
     if [
         "txt", "md", "markdown", "csv", "json", "yaml", "yml", "xml", "html", "htm", "css", "js",
         "ts", "jsx", "tsx", "py", "sql", "doc", "docx", "odt", "pages", "ppt", "pptx", "xls",
@@ -6199,6 +6660,7 @@ pub fn run() {
             open_notebook_file,
             reveal_notebook_file,
             get_notebook_file_preview,
+            save_notebook_spreadsheet_edits,
             get_notebook_pdf_page,
             extract_notebook_file_content,
             copy_notebook_file,
@@ -6256,6 +6718,59 @@ mod tests {
         });
         assert!(!stored.to_string().contains(transcript));
         assert!(!stored.to_string().contains(response));
+    }
+
+    #[test]
+    fn spreadsheet_xml_edits_preserve_cell_style_and_add_to_existing_row() {
+        let source = r#"<worksheet><sheetData><row r="1"><c r="A1" s="2" t="s"><v>0</v></c></row><row r="2"/></sheetData></worksheet>"#;
+        let output = apply_xlsx_sheet_edits(
+            source,
+            &[
+                SpreadsheetCellEdit { sheet_name: "复盘".into(), row: 0, column: 0, value: "已修改".into() },
+                SpreadsheetCellEdit { sheet_name: "复盘".into(), row: 1, column: 1, value: "新增".into() },
+            ],
+        )
+        .expect("worksheet should accept visible-row edits");
+        assert!(output.contains(r#"r="A1" s="2" t="inlineStr""#));
+        assert!(output.contains(r#"r="B2" t="inlineStr""#));
+        assert!(output.contains("已修改"));
+        assert!(output.contains("新增"));
+    }
+
+    #[test]
+    fn spreadsheet_xlsx_save_updates_only_target_sheet() {
+        let path = std::env::temp_dir().join(format!("evopolit-sheet-{}.xlsx", now()));
+        let file = File::create(&path).expect("create workbook fixture");
+        let mut writer = ZipWriter::new(file);
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        for (name, content) in [
+            ("xl/workbook.xml", r#"<workbook><sheets><sheet name="复盘" r:id="rId1"/></sheets></workbook>"#),
+            ("xl/_rels/workbook.xml.rels", r#"<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>"#),
+            ("xl/worksheets/sheet1.xml", r#"<worksheet><sheetData><row r="1"><c r="A1"><v>before</v></c></row></sheetData></worksheet>"#),
+            ("xl/styles.xml", "<styleSheet><unchanged/></styleSheet>"),
+        ] {
+            writer.start_file(name, options).expect("add workbook member");
+            writer.write_all(content.as_bytes()).expect("write workbook member");
+        }
+        writer.finish().expect("finish workbook fixture");
+
+        write_xlsx_edits(&path, &[SpreadsheetCellEdit { sheet_name: "复盘".into(), row: 0, column: 0, value: "after".into() }])
+            .expect("save xlsx edits");
+        let mut archive = ZipArchive::new(File::open(&path).expect("open workbook")).expect("read workbook");
+        let mut sheet = String::new();
+        archive.by_name("xl/worksheets/sheet1.xml").expect("target sheet").read_to_string(&mut sheet).expect("read target sheet");
+        let mut styles = String::new();
+        archive.by_name("xl/styles.xml").expect("styles").read_to_string(&mut styles).expect("read styles");
+        assert!(sheet.contains("after"));
+        assert!(sheet.contains("inlineStr"));
+        assert_eq!(styles, "<styleSheet><unchanged/></styleSheet>");
+        fs::remove_file(path).expect("remove workbook fixture");
+    }
+
+    #[test]
+    fn spreadsheet_xml_attributes_support_sheet_names_and_relationships() {
+        assert_eq!(xlsx_xml_attribute(r#"name="直播复盘" r:id="rId2""#, "name"), Some("直播复盘".into()));
+        assert_eq!(xlsx_xml_attribute(r#"Id="rId2" Target="worksheets/sheet2.xml""#, "Target"), Some("worksheets/sheet2.xml".into()));
     }
 
     #[test]
