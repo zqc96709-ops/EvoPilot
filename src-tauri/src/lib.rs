@@ -39,7 +39,7 @@ const NOTEBOOK_ENTITIES: &[&str] = &[
     "notebookFiles",
 ];
 const NOTEBOOK_CONTENT_ENTITIES: &[&str] = &["notes", "notebookFiles", "inbox"];
-const SCHEMA_VERSION: i64 = 20;
+const SCHEMA_VERSION: i64 = 21;
 const NOTEBOOK_CATEGORY_SCHEMA_VERSION: i64 = 18;
 const NOTEBOOK_MAX_FILE_SIZE: u64 = 1024 * 1024 * 1024;
 const NOTEBOOK_CHUNK_SIZE: usize = 2 * 1024 * 1024;
@@ -76,6 +76,7 @@ const ENTITIES: &[&str] = &[
     "workflowRunSteps",
     "workflowMetricDefinitions",
     "workflowImprovementProposals",
+    "operationalLogs",
     "reviews",
     "knowledge",
     "insights",
@@ -164,6 +165,7 @@ const TIMELINE_SOURCE_ENTITIES: &[&str] = &[
     "workflowRuns",
     "workflowRunSteps",
     "workflowImprovementProposals",
+    "operationalLogs",
     "reviews",
     "insights",
     "decisions",
@@ -224,6 +226,10 @@ fn timeline_semantics(
         "workflowRunSteps" => (
             first_timeline_value(data, &["startedAt", "completedAt"]).unwrap_or_else(|| created_at.into()),
             "actual",
+        ),
+        "operationalLogs" => (
+            first_timeline_value(data, &["happenedAt"]).unwrap_or_else(|| created_at.into()),
+            "recorded",
         ),
         "signals" => (
             first_timeline_value(data, &["detectedAt"]).unwrap_or_else(|| created_at.into()),
@@ -729,6 +735,7 @@ fn db(app: &AppHandle) -> Result<Connection, String> {
     migrate_notebook_category_ownership(&connection)?;
     migrate_capability_system(&connection)?;
     migrate_capability_workspace(&connection)?;
+    migrate_project_workbench(&connection)?;
     Ok(connection)
 }
 
@@ -1016,6 +1023,23 @@ fn migrate_capability_workspace(connection: &Connection) -> Result<(), String> {
             .map_err(|error| error.to_string())?;
     }
     connection.execute("UPDATE sync_state SET schema_version=20 WHERE schema_version<20", [])
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn migrate_project_workbench(connection: &Connection) -> Result<(), String> {
+    connection.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_records_operational_log_project
+           ON records(entity, json_extract(data_json,'$.projectId'), updated_at DESC);"
+    ).map_err(|error| error.to_string())?;
+    let migrated: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=21)", [], |row| row.get(0)
+    ).map_err(|error| error.to_string())?;
+    if !migrated {
+        connection.execute("INSERT INTO schema_migrations(version,applied_at) VALUES(21,?1)", params![now()])
+            .map_err(|error| error.to_string())?;
+    }
+    connection.execute("UPDATE sync_state SET schema_version=21 WHERE schema_version<21", [])
         .map_err(|error| error.to_string())?;
     Ok(())
 }
@@ -6848,6 +6872,7 @@ mod tests {
             "workflowRunSteps",
             "workflowMetricDefinitions",
             "workflowImprovementProposals",
+            "operationalLogs",
         ] {
             assert!(is_entity(entity));
         }
@@ -7378,17 +7403,20 @@ mod tests {
     }
 
     #[test]
-    fn capability_migration_is_additive_and_updates_sync_schema() {
+    fn project_workbench_migration_is_additive_and_updates_sync_schema() {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT NOT NULL); CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at TEXT NOT NULL); CREATE TABLE records(id TEXT PRIMARY KEY,entity TEXT NOT NULL,data_json TEXT NOT NULL,title TEXT NOT NULL DEFAULT '',body TEXT NOT NULL DEFAULT '',created_at TEXT NOT NULL,updated_at TEXT NOT NULL,archived_at TEXT,deleted_at TEXT); CREATE TABLE relations(id TEXT PRIMARY KEY,from_id TEXT NOT NULL,to_id TEXT NOT NULL,relation_type TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(from_id,to_id,relation_type));").unwrap();
         migrate_sync_v1(&connection).unwrap();
         migrate_capability_system(&connection).unwrap();
         migrate_capability_workspace(&connection).unwrap();
-        migrate_capability_workspace(&connection).unwrap();
+        migrate_project_workbench(&connection).unwrap();
+        migrate_project_workbench(&connection).unwrap();
         let schema: i64 = connection.query_row("SELECT schema_version FROM sync_state WHERE workspace_id='local'", [], |row| row.get(0)).unwrap();
         let index_count: i64 = connection.query_row("SELECT COUNT(*) FROM pragma_index_list('records') WHERE name='idx_records_capability_workspace_entry'", [], |row| row.get(0)).unwrap();
-        assert_eq!(schema, 20);
+        let log_index_count: i64 = connection.query_row("SELECT COUNT(*) FROM pragma_index_list('records') WHERE name='idx_records_operational_log_project'", [], |row| row.get(0)).unwrap();
+        assert_eq!(schema, 21);
         assert_eq!(index_count, 1);
+        assert_eq!(log_index_count, 1);
     }
 
     #[test]

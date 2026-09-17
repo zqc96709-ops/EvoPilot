@@ -86,4 +86,5 @@ describe('timeline evidence foundation', () => {
     expect(visibleTimelineCausalEdges(timelineCausalEdges(records), items).map((edge) => edge.kind)).toEqual(['task_result'])
   })
 
+  it('keeps operational logs in the project timeline at their recorded time', () => { const project = record('projects', 'p1'); const log = record('operationalLogs', 'log-1', { projectId: project.id, happenedAt: '2026-09-17T10:30:00', content: '执行观察' }); const item = timelineProjection([project, log]).find((entry) => entry.id === log.id); expect(item).toMatchObject({ projectId: project.id, occurredAt: '2026-09-17T10:30:00', timeMeaning: 'recorded' }) })
 })

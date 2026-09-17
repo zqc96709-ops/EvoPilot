@@ -2,7 +2,7 @@ import { timelineOccurredAt, timelineRecords } from './timeline'
 export type Entity =
   | 'goals' | 'keyResults' | 'projects' | 'projectMilestones' | 'tasks' | 'hypotheses' | 'experiments' | 'timeLogs' | 'results' | 'deliverables' | 'resultPackages'
   | 'capabilityPacks' | 'capabilityAssets' | 'capabilityAssetVersions' | 'capabilityPackItems' | 'capabilityWorkspaceFolders' | 'capabilityWorkspaceEntries' | 'packApplications' | 'packApplicationItems' | 'templateInstances' | 'capabilityImprovementProposals'
-  | 'workflows' | 'workflowVersions' | 'workflowSteps' | 'workflowGates' | 'workflowRuns' | 'workflowRunSteps' | 'workflowMetricDefinitions' | 'workflowImprovementProposals'
+  | 'workflows' | 'workflowVersions' | 'workflowSteps' | 'workflowGates' | 'workflowRuns' | 'workflowRunSteps' | 'workflowMetricDefinitions' | 'workflowImprovementProposals' | 'operationalLogs'
   | 'reviews' | 'knowledge' | 'insights' | 'principles' | 'mentalModels' | 'mentalModelUsages'
   | 'decisions' | 'notes' | 'notebookCategories' | 'notebookFolders' | 'notebookFiles' | 'inbox' | 'events' | 'people' | 'dataRecords' | 'attachments' | 'timelineEvents' | 'agentRuns' | 'agentActions'
   | 'externalSources' | 'signals' | 'opportunities' | 'intelligenceBriefs' | 'researchThreads' | 'researchRequests' | 'researchRuns' | 'researchResults' | 'researchFindings'
@@ -80,6 +80,7 @@ export const entities: EntityConfig[] = [
     { key: 'health', label: '健康度', type: 'select', options: [option('healthy', '健康'), option('at_risk', '有风险'), option('blocked', '受阻')] },
     { key: 'progress', label: '进度（%）', type: 'number' }, { key: 'priority', label: '优先级', type: 'select', options: priorities },
     { key: 'startDate', label: '开始日期', type: 'date' }, { key: 'targetDate', label: '目标日期', type: 'date' },
+    { key: 'stage', label: '当前阶段' }, { key: 'currentStrategy', label: '当前策略', multiline: true }, { key: 'currentFocus', label: '当前聚焦', multiline: true }, { key: 'currentProblem', label: '当前问题', multiline: true },
     { key: 'blockers', label: '阻塞', multiline: true }, { key: 'nextAction', label: '下一步行动', multiline: true },
     { key: 'sourceDecisionId', label: '来源决策', relation: 'decisions' }, { key: 'sourceOpportunityId', label: '来源机会', relation: 'opportunities' }, { key: 'sourceSignalIds', label: '来源信号', relation: 'signals', multiple: true },
     { key: 'workflowRunId', label: '当前工作链', relation: 'workflowRuns' },
@@ -228,6 +229,10 @@ export const entities: EntityConfig[] = [
   { entity: 'financialBudgets', label: '财务预算', singular: '预算', icon: '▣', titleKey: 'title', description: '预算是管理约束，不是资金事实；实际支出始终以已入账流水为准。', fields: [
     { key: 'title', label: '预算名称' }, { key: 'projectId', label: '项目（可选）', relation: 'projects' }, { key: 'categoryId', label: '分类（可选）', relation: 'financialCategories' }, { key: 'amountMinor', label: '预算基础币金额', type: 'money', currencyKey: 'baseCurrency' }, { key: 'baseCurrency', label: '基础币种', type: 'select', options: [option('CNY'), option('USD'), option('JPY'), option('EUR'), option('HKD')] },
     { key: 'periodStart', label: '预算开始', type: 'date' }, { key: 'periodEnd', label: '预算结束', type: 'date' }, { key: 'status', label: '状态', type: 'select', options: [option('ACTIVE', '启用'), option('ARCHIVED', '归档')] }, { key: 'description', label: '备注', multiline: true },
+  ] },
+  { entity: 'operationalLogs', label: '执行记录', singular: '执行记录', icon: '•', titleKey: 'content', description: '项目执行中发生的真实记录；先捕捉，再补充分类与关联。', fields: [
+    { key: 'content', label: '记录内容', multiline: true }, { key: 'type', label: '类型', type: 'select', options: [option('NOTE', '笔记'), option('OBSERVATION', '观察'), option('ACTION', '行动'), option('ISSUE', '问题'), option('HYPOTHESIS', '假设'), option('DECISION', '决策'), option('METRIC', '指标变化')] },
+    { key: 'happenedAt', label: '发生时间', type: 'datetime-local' }, { key: 'projectId', label: '项目', relation: 'projects' }, { key: 'workflowRunId', label: '工作链运行', relation: 'workflowRuns' }, { key: 'taskId', label: '任务', relation: 'tasks' }, { key: 'personId', label: '人物', relation: 'people' }, { key: 'resultId', label: '结果', relation: 'results' }, { key: 'decisionId', label: '决策', relation: 'decisions' }, { key: 'metricName', label: '指标名称' }, { key: 'metricValue', label: '指标值' },
   ] },
   { entity: 'reviews', label: '复盘', singular: '复盘', icon: '◑', titleKey: 'title', description: '把现实转化为可以改变未来行动的经验。', fields: [
     { key: 'title', label: '复盘主题' }, { key: 'whatHappened', label: '发生了什么', multiline: true }, { key: 'whyItHappened', label: '为什么', multiline: true },

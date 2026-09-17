@@ -28,7 +28,7 @@ export type TimelineCausalEdge = {
   target: RecordData
 }
 
-export const timelineEntityTypes: Entity[] = ['goals', 'projects', 'tasks', 'timeLogs', 'events', 'results', 'deliverables', 'resultPackages', 'workflowRuns', 'workflowRunSteps', 'workflowImprovementProposals', 'reviews', 'insights', 'principles', 'mentalModels', 'decisions', 'signals', 'opportunities', 'intelligenceBriefs', 'financialTransactions', 'timelineEvents']
+export const timelineEntityTypes: Entity[] = ['goals', 'projects', 'tasks', 'timeLogs', 'events', 'results', 'deliverables', 'resultPackages', 'workflowRuns', 'workflowRunSteps', 'workflowImprovementProposals', 'operationalLogs', 'reviews', 'insights', 'principles', 'mentalModels', 'decisions', 'signals', 'opportunities', 'intelligenceBriefs', 'financialTransactions', 'timelineEvents']
 
 const text = (value: unknown) => typeof value === 'string' && value.trim() ? value.trim() : ''
 const first = (...values: unknown[]) => values.map(text).find(Boolean) || ''
@@ -63,6 +63,7 @@ export function timelineOccurredAt(record: Partial<RecordData>): string {
   if (record.entity === 'results') return first(record.date, record.completedAt, record.createdAt)
   if (record.entity === 'deliverables') return first(record.finalizedAt, record.createdAt)
   if (record.entity === 'workflowRuns' || record.entity === 'workflowRunSteps') return first(record.startedAt, record.completedAt, record.createdAt)
+  if (record.entity === 'operationalLogs') return first(record.happenedAt, record.createdAt)
   if (record.entity === 'signals') return first(record.detectedAt, record.createdAt)
   if (record.entity === 'intelligenceBriefs') return first(record.generatedAt, record.createdAt)
   if (record.entity === 'tasks') {
