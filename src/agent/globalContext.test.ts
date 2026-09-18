@@ -37,6 +37,12 @@ describe('Global Context Engine', () => {
     expect(gaps).toHaveLength(3)
   })
 
+  it('includes extended saved AI collaboration context only for relevant questions', () => {
+    const records = [record('profiles', 'profile-1', { role: 'CEO', workDomains: '跨境电商', aiResponsePreference: '中文、简洁', aiOtherContext: '涉及外部操作先确认' })]
+    const result = buildGlobalContext({ query: '帮我生成本周 CEO 简报', currentRoute: 'command', records, context: contextFor(records, 'missing'), relationIndex: buildContextRelationIndex(records) })
+    expect(result.personalContext).toMatchObject({ role: 'CEO', workDomains: '跨境电商', aiResponsePreference: '中文、简洁', aiOtherContext: '涉及外部操作先确认' })
+  })
+
   it('routes CEO and workflow questions through the one assistant intent layer', () => {
     expect(detectGlobalIntent('帮我生成本周 CEO 简报')).toBe('CEO_ANALYSIS')
     expect(detectGlobalIntent('v4 和 v3 哪个工作流程更好')).toBe('WORKFLOW_ANALYSIS')

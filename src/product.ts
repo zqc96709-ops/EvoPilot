@@ -12,6 +12,13 @@ export const PRODUCT_SEARCH_PLACEHOLDER = '搜索任何内容 / 询问 AI...'
 
 const text = (value: unknown) => String(value || '').trim()
 
+export const greetingForHour = (hour: number) => {
+  if (hour >= 5 && hour < 11) return '早上好'
+  if (hour >= 11 && hour < 13) return '中午好'
+  if (hour >= 13 && hour < 18) return '下午好'
+  return '晚上好'
+}
+
 export type UserIdentity = {
   displayName: string
   accountLabel: string
@@ -29,6 +36,6 @@ export const resolveUserIdentity = (profile?: Partial<RecordData>): UserIdentity
     accountLabel: displayName || '账户',
     initial: (displayName || 'E').slice(0, 1).toUpperCase(),
     avatarUrl: text(profile?.avatar),
-    greeting: displayName ? `早上好，${displayName}` : '早上好',
+    greeting: displayName ? `${greetingForHour(new Date().getHours())}，${displayName}` : greetingForHour(new Date().getHours()),
   }
 }

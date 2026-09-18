@@ -106,7 +106,7 @@ export function buildGlobalContext({ query, currentRoute, records, context, rela
   const workflowScorecards = workflowRuns.slice(0, 2).map((run) => ({ title: titleFor(run), status: String(run.status || 'UNKNOWN'), scorecard: workChainScorecard(unique, run) }))
   const profiles = intent === 'CEO_ANALYSIS' || intent === 'DECISION_ANALYSIS' || intent === 'PERSONAL_CONTEXT' ? live.filter((record) => record.entity === 'profiles').slice(0, 1) : []
   const profile = profiles[0]
-  const personalContext = profile ? Object.fromEntries(['role', 'longTermDirection', 'currentFocus', 'workStyle', 'decisionStyle', 'aiAssistancePreference'].map((key) => [key, short(profile[key], 160)]).filter(([, value]) => Boolean(value))) : undefined
+  const personalContext = profile ? Object.fromEntries(['role', 'workDomains', 'longTermDirection', 'currentFocus', 'workStyle', 'decisionStyle', 'aiAssistancePreference', 'aiResponsePreference', 'aiDecisionPreference', 'aiOtherContext'].map((key) => [key, short(profile[key], 160)]).filter(([, value]) => Boolean(value))) : undefined
   const confidence: GlobalContextPackage['confidence'] = project && (economics?.dataCoverage || 0) >= 75 && results.length ? 'HIGH' : primary || related.length || retrieved.length ? 'MEDIUM' : 'LOW'
   return {
     userQuery: query, intent, includeInbox, primaryContext: primary ? reference(primary, 'current') : undefined,
