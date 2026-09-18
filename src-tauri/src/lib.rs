@@ -3160,6 +3160,190 @@ fn upload_notebook_file(
     save_record(app, "notebookFiles".into(), data)
 }
 
+fn office_xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+fn docx_document_xml(content: &str) -> String {
+    let paragraphs = content
+        .lines()
+        .map(|line| {
+            format!(
+                "<w:p><w:r><w:t xml:space=\"preserve\">{}</w:t></w:r></w:p>",
+                office_xml_escape(line)
+            )
+        })
+        .collect::<Vec<_>>();
+    let body = if paragraphs.is_empty() {
+        "<w:p/>".into()
+    } else {
+        paragraphs.join("")
+    };
+    format!("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body>{body}<w:sectPr><w:pgSz w:w=\"11906\" w:h=\"16838\"/><w:pgMar w:top=\"1440\" w:right=\"1440\" w:bottom=\"1440\" w:left=\"1440\"/></w:sectPr></w:body></w:document>")
+}
+
+fn write_office_archive(path: &Path, files: Vec<(&str, String)>) -> Result<(), String> {
+    let output = File::create(path).map_err(|error| error.to_string())?;
+    let mut writer = ZipWriter::new(output);
+    let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    for (name, content) in files {
+        writer
+            .start_file(name, options)
+            .map_err(|error| error.to_string())?;
+        writer
+            .write_all(content.as_bytes())
+            .map_err(|error| error.to_string())?;
+    }
+    writer.finish().map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn write_new_docx(path: &Path, content: &str) -> Result<(), String> {
+    write_office_archive(path, vec![
+        ("[Content_Types].xml", r#"<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#.into()),
+        ("_rels/.rels", r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#.into()),
+        ("word/document.xml", docx_document_xml(content)),
+    ])
+}
+
+fn write_new_xlsx(path: &Path) -> Result<(), String> {
+    write_office_archive(path, vec![
+        ("[Content_Types].xml", r#"<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>"#.into()),
+        ("_rels/.rels", r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#.into()),
+        ("xl/workbook.xml", r#"<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="工作表1" sheetId="1" r:id="rId1"/></sheets></workbook>"#.into()),
+        ("xl/_rels/workbook.xml.rels", r#"<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#.into()),
+        ("xl/worksheets/sheet1.xml", r#"<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>内容</t></is></c></row></sheetData></worksheet>"#.into()),
+    ])
+}
+
+fn rewrite_docx_content(path: &Path, content: &str) -> Result<(), String> {
+    let source = File::open(path).map_err(|error| error.to_string())?;
+    let mut archive = ZipArchive::new(source).map_err(|error| error.to_string())?;
+    let temporary = path.with_extension("docx.editing");
+    let output = File::create(&temporary).map_err(|error| error.to_string())?;
+    let mut writer = ZipWriter::new(output);
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(|error| error.to_string())?;
+        let name = entry.name().to_string();
+        if entry.is_dir() {
+            writer
+                .add_directory(name, SimpleFileOptions::default())
+                .map_err(|error| error.to_string())?;
+            continue;
+        }
+        let compression = if entry.compression() == CompressionMethod::Stored {
+            CompressionMethod::Stored
+        } else {
+            CompressionMethod::Deflated
+        };
+        writer
+            .start_file(
+                &name,
+                SimpleFileOptions::default().compression_method(compression),
+            )
+            .map_err(|error| error.to_string())?;
+        if name == "word/document.xml" {
+            writer
+                .write_all(docx_document_xml(content).as_bytes())
+                .map_err(|error| error.to_string())?;
+        } else {
+            std::io::copy(&mut entry, &mut writer).map_err(|error| error.to_string())?;
+        }
+    }
+    writer.finish().map_err(|error| error.to_string())?;
+    fs::rename(&temporary, path).map_err(|error| error.to_string())
+}
+
+fn notebook_office_file_name(name: String, extension: &str) -> String {
+    let safe_name = safe_file_name(&name);
+    if Path::new(&safe_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.eq_ignore_ascii_case(extension))
+        .unwrap_or(false)
+    {
+        return safe_name;
+    }
+    let stem = Path::new(&safe_name)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or(&safe_name);
+    format!("{stem}.{extension}")
+}
+
+#[tauri::command]
+fn create_notebook_office_file(
+    app: AppHandle,
+    name: String,
+    kind: String,
+) -> Result<Value, String> {
+    let (extension, mime_type, document) = match kind.as_str() {
+        "DOCX" => (
+            "docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            true,
+        ),
+        "XLSX" => (
+            "xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            false,
+        ),
+        _ => return Err("仅支持新建 Word 或 Excel 文件".into()),
+    };
+    let name = notebook_office_file_name(name, extension);
+    let id = new_id("notebookFiles");
+    let storage_path = notebook_files_dir(&app)?.join(format!("{id}.{extension}"));
+    if document {
+        write_new_docx(&storage_path, "开始编写…")?;
+    } else {
+        write_new_xlsx(&storage_path)?;
+    }
+    let mut data = notebook_file_data(id, name, mime_type.into(), &storage_path, None, None, None)?;
+    if let Some(object) = data.as_object_mut() {
+        object.insert("createdInEvoPilot".into(), Value::Bool(true));
+        if document {
+            object.insert("editorMode".into(), Value::String("PLAIN_TEXT".into()));
+        }
+    }
+    save_record(app, "notebookFiles".into(), data)
+}
+
+#[tauri::command]
+fn save_notebook_document_content(
+    app: AppHandle,
+    id: String,
+    content: String,
+) -> Result<Value, String> {
+    let connection = db(&app)?;
+    let mut record = record_by_id(&connection, &id)?.ok_or("文件不存在")?;
+    if record["extension"].as_str().unwrap_or("").to_lowercase() != "docx"
+        || record["editorMode"].as_str() != Some("PLAIN_TEXT")
+    {
+        return Err("当前系统内编辑仅支持由 EvoPilot 新建的 Word 文档".into());
+    }
+    let path = notebook_file_path(&app, &record)?;
+    let originals = notebook_files_dir(&app)?.join(".originals");
+    fs::create_dir_all(&originals).map_err(|error| error.to_string())?;
+    let original_key = format!("{}.docx", safe_file_name(&id));
+    let original = originals.join(&original_key);
+    if !original.exists() {
+        fs::copy(&path, &original).map_err(|error| error.to_string())?;
+    }
+    rewrite_docx_content(&path, &content)?;
+    record["size"] = json!(fs::metadata(&path)
+        .map_err(|error| error.to_string())?
+        .len());
+    record["editedAt"] = json!(now());
+    record["originalBackupKey"] = json!(original_key);
+    apply_notebook_extraction(&mut record, &path);
+    save_record(app, "notebookFiles".into(), record)
+}
+
 #[tauri::command]
 fn open_notebook_file(app: AppHandle, id: String) -> Result<(), String> {
     let record = record_by_id(&db(&app)?, &id)?.ok_or("文件不存在")?;
@@ -6686,6 +6870,8 @@ pub fn run() {
             reveal_notebook_file,
             get_notebook_file_preview,
             save_notebook_spreadsheet_edits,
+            create_notebook_office_file,
+            save_notebook_document_content,
             get_notebook_pdf_page,
             extract_notebook_file_content,
             copy_notebook_file,
@@ -6743,6 +6929,30 @@ mod tests {
         });
         assert!(!stored.to_string().contains(transcript));
         assert!(!stored.to_string().contains(response));
+    }
+
+    #[test]
+    fn generated_office_files_are_valid_and_editable() {
+        let directory = std::env::temp_dir().join(format!("evopilot-office-{}", now()));
+        fs::create_dir_all(&directory).unwrap();
+        let workbook = directory.join("new.xlsx");
+        write_new_xlsx(&workbook).unwrap();
+        let preview = spreadsheet_preview(&workbook, "xlsx").unwrap();
+        assert_eq!(preview["kind"], "spreadsheet");
+        assert_eq!(preview["sheets"][0]["name"], "工作表1");
+        write_xlsx_edits(&workbook, &[SpreadsheetCellEdit { sheet_name: "工作表1".into(), row: 0, column: 0, value: "已编辑".into() }]).unwrap();
+        assert!(spreadsheet_preview(&workbook, "xlsx").unwrap().to_string().contains("已编辑"));
+
+        let document = directory.join("new.docx");
+        write_new_docx(&document, "初稿").unwrap();
+        rewrite_docx_content(&document, "已编辑
+第二段").unwrap();
+        let mut archive = ZipArchive::new(File::open(&document).unwrap()).unwrap();
+        let mut xml = String::new();
+        archive.by_name("word/document.xml").unwrap().read_to_string(&mut xml).unwrap();
+        assert!(xml.contains("已编辑"));
+        assert!(xml.contains("第二段"));
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

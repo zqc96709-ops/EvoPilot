@@ -26,6 +26,7 @@ export type CaptureProviderConfig = { providers: { id: CaptureProviderId; code?:
 export type NotebookUploadInput = { file: File; notebookCategoryId?: string; notebookFolderId?: string; relativePath?: string }
 export type SpreadsheetSheetPreview = { name: string; columnCount: number; rows: string[][] }
 export type NotebookSpreadsheetEdit = { sheetName: string; row: number; column: number; value: string }
+export type NotebookOfficeFileKind = 'DOCX' | 'XLSX'
 export type NotebookFilePreview = { kind: 'text' | 'pdf' | 'image' | 'audio' | 'video' | 'spreadsheet' | 'unsupported'; text?: string; dataUrl?: string; page?: number; pageCount?: number; reason?: string; extractStatus?: string; sheets?: SpreadsheetSheetPreview[]; truncated?: boolean; rowLimit?: number; columnLimit?: number }
 export type NotebookStorageConfig = { maxFileSize: number; chunkSize: number }
 export type BuildProvenance = { appPath: string; appVersion: string; gitCommit: string; buildTime: string; schemaVersion: number; syncProtocolVersion: number; deviceId?: string; workspaceId: string }
@@ -147,6 +148,8 @@ export const api = {
   async revealNotebookFile(id: string): Promise<void> { if (browser()) throw new Error('浏览器模式没有本地 Storage 文件可显示。'); return invoke('reveal_notebook_file', { id }) },
   async previewNotebookFile(id: string): Promise<NotebookFilePreview> { if (browser()) return { kind: 'unsupported', reason: '浏览器模式不会保存原始文件。' }; return invoke('get_notebook_file_preview', { id }) },
   async saveNotebookSpreadsheetEdits(id: string, edits: NotebookSpreadsheetEdit[]): Promise<RecordData> { if (browser()) throw new Error('浏览器模式尚未支持本地工作簿写入。'); return invoke('save_notebook_spreadsheet_edits', { id, edits }) },
+  async createNotebookOfficeFile(name: string, kind: NotebookOfficeFileKind): Promise<RecordData> { if (browser()) throw new Error('Web 端尚未配置本地 Office 文件创建。请使用桌面应用。'); return invoke('create_notebook_office_file', { name, kind }) },
+  async saveNotebookDocumentContent(id: string, content: string): Promise<RecordData> { if (browser()) throw new Error('浏览器模式尚未支持本地 Word 文档写入。'); return invoke('save_notebook_document_content', { id, content }) },
   async previewNotebookPdfPage(id: string, page: number): Promise<NotebookFilePreview> { if (browser()) return { kind: 'unsupported', reason: '浏览器模式不会保存原始文件。' }; return invoke('get_notebook_pdf_page', { id, page }) },
   async extractNotebookFile(id: string): Promise<RecordData> { if (browser()) throw new Error('浏览器模式不能提取本地文件内容。'); return invoke('extract_notebook_file_content', { id }) },
   async copyNotebookFile(id: string, notebookCategoryId?: string, notebookFolderId?: string): Promise<RecordData> { if (browser()) throw new Error('浏览器模式不能复制本地文件。'); return invoke('copy_notebook_file', { id, notebookCategoryId, notebookFolderId }) },
