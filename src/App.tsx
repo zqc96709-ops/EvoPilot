@@ -408,7 +408,6 @@ function App() {
   }
   const createBackup = async () => { showNotice(`备份已创建：${await api.backup()}`); setBackups(await api.backups()) }
   const restoreBackup = async (path: string) => {
-    if (!window.confirm('恢复备份会先自动创建当前数据库的安全备份，然后替换现有数据。继续吗？')) return
     await api.restoreBackup(path); await refresh(); await refreshSettings(); showNotice('备份已恢复。')
   }
 
@@ -1470,10 +1469,13 @@ function RichNotebookEditor({ note, records, related, categories, fullscreen, on
   const editorRef = useRef<HTMLDivElement>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
   const relationPickerRef = useRef<HTMLDivElement>(null)
+  const linkRangeRef = useRef<Range | null>(null)
   const [title, setTitle] = useState(String(note.title || ''))
   const [tags, setTags] = useState<string[]>(tagsFor(note))
   const [tagDialogOpen, setTagDialogOpen] = useState(false)
   const [tagDraft, setTagDraft] = useState('')
+  const [linkDialogOpen, setLinkDialogOpen] = useState(false)
+  const [linkDraft, setLinkDraft] = useState('')
   const [relationPickerOpen, setRelationPickerOpen] = useState(false)
   const [relationTarget, setRelationTarget] = useState('')
   const [knowledgeDialogOpen, setKnowledgeDialogOpen] = useState(false)
@@ -1579,7 +1581,19 @@ function RichNotebookEditor({ note, records, related, categories, fullscreen, on
     }
     setTagDraft(''); setTagDialogOpen(false)
   }
-  const addLink = () => { const url = window.prompt('输入链接地址'); if (url) command('createLink', url) }
+  const addLink = () => { const range = window.getSelection()?.rangeCount ? window.getSelection()!.getRangeAt(0) : null; linkRangeRef.current = range && editorRef.current?.contains(range.commonAncestorContainer) ? range.cloneRange() : null; setLinkDraft(''); setLinkDialogOpen(true) }
+  const insertLink = () => {
+    let url: URL
+    try { url = new URL(linkDraft.trim()); if (!['http:', 'https:'].includes(url.protocol)) throw new Error('仅支持 HTTP 或 HTTPS 链接') }
+    catch { onNotice('请输入完整的 http:// 或 https:// 链接。', 'danger'); return }
+    editorRef.current?.focus()
+    const range = linkRangeRef.current
+    if (range?.commonAncestorContainer.isConnected && editorRef.current?.contains(range.commonAncestorContainer) && !range.collapsed) {
+      const selection = window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range)
+      command('createLink', url.href)
+    } else { const anchor = document.createElement('a'); anchor.href = url.href; anchor.textContent = url.href; command('insertHTML', anchor.outerHTML) }
+    setLinkDialogOpen(false); linkRangeRef.current = null
+  }
   const inboxImages = records.filter((record) => record.entity === 'notebookFiles' && (String(record.mimeType || '').startsWith('image/') || /\.(jpe?g|png|webp|gif|svg|heic)$/i.test(String(record.originalName || record.name || record.relativePath || record.extension || ''))))
   const insertManagedImage = (fileId: string, dataUrl: string, alt: string) => {
     const image = document.createElement('img')
@@ -1669,7 +1683,7 @@ function RichNotebookEditor({ note, records, related, categories, fullscreen, on
         <button title="引用" onClick={() => command('formatBlock', 'blockquote')}>❝</button>
         <div className="notebook-toolbar-secondary">
           <button title="代码块" onClick={() => command('formatBlock', 'pre')}>‹›</button>
-          <button title="插入链接" onClick={addLink}>⌁</button>
+          <button title="插入链接" onMouseDown={(event) => event.preventDefault()} onClick={addLink}>⌁</button>
           <button className="notebook-image-button" title="添加图片（电脑 / 收纳箱）" onClick={() => setImagePickerOpen((open) => !open)}><span>▧</span>图片</button>
           <label className="notebook-color-control" title="文字颜色">A<input aria-label="文字颜色" type="color" defaultValue="#e5edf2" onChange={(event) => command('foreColor', event.currentTarget.value)} /></label>
           <label className="notebook-color-control highlight" title="高亮颜色">▰<input aria-label="高亮颜色" type="color" defaultValue="#a8d943" onChange={(event) => command('hiliteColor', event.currentTarget.value)} /></label>
@@ -1678,7 +1692,7 @@ function RichNotebookEditor({ note, records, related, categories, fullscreen, on
           <summary title="更多格式">•••</summary>
           <div>
             <button title="代码块" onClick={() => command('formatBlock', 'pre')}>‹› 代码块</button>
-            <button title="插入链接" onClick={addLink}>⌁ 链接</button>
+            <button title="插入链接" onMouseDown={(event) => event.preventDefault()} onClick={addLink}>⌁ 链接</button>
             <button title="添加图片（电脑 / 收纳箱）" onClick={() => setImagePickerOpen((open) => !open)}>▧ 图片</button>
             <label className="notebook-color-control" title="文字颜色">A 文字颜色<input aria-label="更多文字颜色" type="color" defaultValue="#e5edf2" onChange={(event) => command('foreColor', event.currentTarget.value)} /></label>
             <label className="notebook-color-control highlight" title="高亮颜色">▰ 高亮颜色<input aria-label="更多高亮颜色" type="color" defaultValue="#a8d943" onChange={(event) => command('hiliteColor', event.currentTarget.value)} /></label>
@@ -1712,6 +1726,7 @@ function RichNotebookEditor({ note, records, related, categories, fullscreen, on
     {related.length > 0 && <div className="notebook-editor-relations">已关联：{related.map((record) => <button key={record.id} onClick={() => onOpen(record)}>{configFor(record.entity).icon} {titleFor(record)}</button>)}</div>}
     {relationPickerOpen && <section ref={relationPickerRef} className="notebook-relation-popover"><header><div><strong>关联 {PRODUCT_NAME} 记录</strong><small>可选择项目、目标、任务等；点击其他任意位置即可取消。</small></div><button onClick={() => { setRelationPickerOpen(false); setRelationTarget('') }}>×</button></header><label>选择对象<select autoFocus value={relationTarget} onChange={(event) => setRelationTarget(event.target.value)}><option value="">暂不选择</option>{relationTargets.map((target) => <option key={target.id} value={target.id}>{configFor(target.entity).label} · {titleFor(target)}</option>)}</select></label><footer><button className="button ghost" onClick={() => { setRelationPickerOpen(false); setRelationTarget('') }}>取消</button><button className="button primary" disabled={!relationTarget} onClick={() => void associate()}>确认关联</button></footer></section>}
     {tagDialogOpen && <div className="overlay-backdrop notebook-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setTagDialogOpen(false)}><form className="notebook-action-dialog" onSubmit={(event) => { event.preventDefault(); addTag() }}><header><div><p>笔记标签</p><h3>创建标签</h3></div><button type="button" onClick={() => setTagDialogOpen(false)}>×</button></header><label><span>标签名称</span><input autoFocus value={tagDraft} onChange={(event) => setTagDraft(event.target.value)} placeholder="例如：产品灵感" list="notebook-existing-tags" /><datalist id="notebook-existing-tags">{existingTags.map((tag) => <option key={tag} value={tag} />)}</datalist></label><small>标签会保存到当前笔记，并可在收纳箱左侧按标签筛选。需要 AI 协助时，可先点击“AI 建议”，再由你确认添加。</small><footer><button className="button ghost" type="button" onClick={() => setTagDialogOpen(false)}>取消</button><button className="button primary" type="submit" disabled={!tagDraft.trim()}>添加标签</button></footer></form></div>}
+    {linkDialogOpen && <div className="overlay-backdrop notebook-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setLinkDialogOpen(false)}><form className="notebook-action-dialog" role="dialog" aria-modal="true" aria-labelledby="note-link-title" onSubmit={(event) => { event.preventDefault(); insertLink() }}><header><div><p>笔记内容</p><h3 id="note-link-title">插入链接</h3></div><button type="button" onClick={() => setLinkDialogOpen(false)}>×</button></header><label><span>链接地址</span><input autoFocus value={linkDraft} onChange={(event) => setLinkDraft(event.target.value)} placeholder="https://example.com" /></label><footer><button className="button ghost" type="button" onClick={() => setLinkDialogOpen(false)}>取消</button><button className="button primary" type="submit" disabled={!linkDraft.trim()}>插入链接</button></footer></form></div>}
     {knowledgeDialogOpen && <div className="overlay-backdrop notebook-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && !archivingToKnowledge && setKnowledgeDialogOpen(false)}><section className="notebook-action-dialog notebook-knowledge-dialog"><header><div><p>知识沉淀</p><h3>确认存入知识</h3></div><button disabled={archivingToKnowledge} onClick={() => setKnowledgeDialogOpen(false)}>×</button></header><label><span>知识分类</span><input autoFocus value={knowledgeCategory} onChange={(event) => setKnowledgeCategory(event.target.value)} placeholder="例如：产品、方法、行业研究" list="notebook-knowledge-categories" /><datalist id="notebook-knowledge-categories">{[...new Set(records.filter((record) => record.entity === 'knowledge').map((record) => String(record.category || '').trim()).filter(Boolean))].map((category) => <option key={category} value={category} />)}</datalist></label><label><span>可选关联</span><select value={knowledgeRelationTarget} onChange={(event) => setKnowledgeRelationTarget(event.target.value)}><option value="">不关联其他记录</option>{relationTargets.map((target) => <option key={target.id} value={target.id}>{configFor(target.entity).label} · {titleFor(target)}</option>)}</select></label><small>确认后会创建一条知识记录并归档当前笔记；项目、目标、任务等只会按你在这里的选择关联。</small><footer><button className="button ghost" disabled={archivingToKnowledge} onClick={() => setKnowledgeDialogOpen(false)}>取消</button><button className="button primary" disabled={archivingToKnowledge} onClick={() => void archiveToKnowledge()}>{archivingToKnowledge ? '正在存入…' : '确认存入知识'}</button></footer></section></div>}
     {deleteConfirmOpen && <div className="overlay-backdrop notebook-dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setDeleteConfirmOpen(false)}><section className="notebook-action-dialog danger"><header><div><p>删除笔记</p><h3>确定删除“{title.trim() || titleFor(note)}”？</h3></div><button onClick={() => setDeleteConfirmOpen(false)}>×</button></header><small>删除后不会进入已归档，也不会影响其他笔记。</small><footer><button className="button ghost" onClick={() => setDeleteConfirmOpen(false)}>取消</button><button className="button danger" disabled={deleting} onClick={() => void deleteNote()}>{deleting ? '正在删除…' : '确认删除'}</button></footer></section></div>}
   </>
