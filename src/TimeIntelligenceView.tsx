@@ -65,7 +65,7 @@ function PlanActual({ items, ratio, onSelect }: { items: TimeDashboardDTO['plann
 
 function Heatmap({ dashboard, onCell }: { dashboard: TimeDashboardDTO; onCell: (weekday: number, bucket: number) => void }) {
   const max = Math.max(...dashboard.heatmap.map((cell) => cell.minutes), 1)
-  const color = (value: number) => { const level = value / max; return level > .8 ? '#d87657' : level > .6 ? '#d7aa49' : level > .38 ? '#9fbd43' : level > .12 ? '#4d6b35' : '#222a20' }
+  const color = (value: number) => { const level = value / max; return level > .8 ? '#d87657' : level > .6 ? '#d7aa49' : level > .38 ? '#9fbd43' : level > .12 ? 'var(--time-heat-low, #4d6b35)' : 'var(--time-heat-empty, #222a20)' }
   return <div className="ti-heatmap"><div className="ti-heat-head"><span />{WEEKDAYS.map((day) => <b key={day}>{day}</b>)}</div>{TIME_BUCKETS.map((label, bucket) => <div className="ti-heat-row" key={label}><span>{label}</span>{WEEKDAYS.map((day, weekday) => { const cell = dashboard.heatmap.find((item) => item.weekday === weekday && item.bucket === bucket)!; return <button key={day} style={{ background: color(cell.minutes) }} onClick={() => onCell(weekday, bucket)} title={`${day} ${label} · ${hours(cell.minutes)}${cell.deepMinutes ? ` · 深度工作 ${hours(cell.deepMinutes)}` : ''}`}>{cell.minutes ? (cell.minutes / 60).toFixed(1) : ''}</button> })}</div>)}<footer><span>低投入</span><i /><i /><i /><i /><span>高投入</span></footer><p>{dashboard.bestDeepWorkBuckets.length ? <>★ 最佳深度工作时段：{dashboard.bestDeepWorkBuckets.map((bucket) => TIME_BUCKETS[bucket]).join('、')}</> : '记录更多深度工作类型时间后，可识别最佳时段。'}</p></div>
 }
 
