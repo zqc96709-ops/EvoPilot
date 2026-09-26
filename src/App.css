@@ -872,6 +872,7 @@ html[data-theme='light'] { background: #fafaf7; color-scheme: light; }
 .notebook-content-list.grid .notebook-item-copy > p { white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
 .notebook-space .notebook-preview { display: flex; flex-direction: column; background: var(--inbox-panel); }
 .notebook-space .notebook-preview.detail-preview { height: 100%; max-height: 100%; overflow-y: auto; overscroll-behavior: contain; }
+.notebook-space .notebook-preview.detail-preview .notebook-inline-preview { flex-shrink: 0; }
 .notebook-space .notebook-preview.detail-preview > header { position: sticky; z-index: 4; top: 0; background: var(--inbox-panel); }
 .notebook-space .notebook-preview > header,
 .notebook-editor-header { display: flex; align-items: center; justify-content: space-between; min-height: 56px; flex: 0 0 56px; padding: 0 12px; border-bottom: 1px solid var(--inbox-line); }
