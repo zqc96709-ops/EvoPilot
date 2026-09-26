@@ -2745,6 +2745,63 @@ FileHandle.standardOutput.write(png)
     Ok((page_count, output.stdout[separator + 1..].to_vec()))
 }
 
+fn render_quicklook_thumbnail(path: &Path) -> Result<Vec<u8>, String> {
+    let script = r#"import AppKit
+import Foundation
+import QuickLookThumbnailing
+let url = URL(fileURLWithPath: CommandLine.arguments[1])
+let request = QLThumbnailGenerator.Request(fileAt: url, size: CGSize(width: 1200, height: 1600), scale: 1, representationTypes: .thumbnail)
+let semaphore = DispatchSemaphore(value: 0)
+var png: Data?
+QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { thumbnail, error in
+  if let thumbnail {
+    let bitmap = NSBitmapImageRep(cgImage: thumbnail.cgImage)
+    png = bitmap.representation(using: .png, properties: [:])
+  }
+  semaphore.signal()
+}
+if semaphore.wait(timeout: .now() + 25) == .timedOut { exit(2) }
+guard let png else { exit(1) }
+FileHandle.standardOutput.write(png)
+"#;
+    let output = Command::new("/usr/bin/swift")
+        .arg("-e")
+        .arg(script)
+        .arg(path)
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() || !output.stdout.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Err("macOS 没有可用的 Quick Look 预览生成器".into());
+    }
+    Ok(output.stdout)
+}
+
+fn raw_notebook_bytes_preview(path: &Path) -> Result<String, String> {
+    let file = File::open(path).map_err(|error| error.to_string())?;
+    let file_size = file.metadata().map_err(|error| error.to_string())?.len();
+    let mut bytes = Vec::new();
+    file.take(4096)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    let mut preview = String::new();
+    for (offset, chunk) in bytes.chunks(16).take(256).enumerate() {
+        let hex = chunk
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let text = chunk
+            .iter()
+            .map(|byte| if byte.is_ascii_graphic() || *byte == b' ' { *byte as char } else { '.' })
+            .collect::<String>();
+        preview.push_str(&format!("{:08x}  {:<47}  |{}|\n", offset * 16, hex, text));
+    }
+    if file_size > 4096 {
+        preview.push_str("\n[仅显示前 4096 字节]");
+    }
+    Ok(preview)
+}
+
 fn extract_office_xml(path: &Path, extension: &str) -> Result<String, String> {
     let listing = Command::new("/usr/bin/unzip")
         .args(["-Z1"])
@@ -3741,26 +3798,9 @@ fn get_notebook_file_preview(app: AppHandle, id: String) -> Result<Value, String
         .filter(|value| !value.is_empty())
         .unwrap_or("application/octet-stream");
     if ["csv", "tsv", "xls", "xlsx", "xlsb", "ods"].contains(&extension.as_str()) {
-        return spreadsheet_preview(&path, &extension);
-    }
-    if [
-        "txt", "md", "markdown", "csv", "json", "yaml", "yml", "xml", "html", "htm", "css", "js",
-        "ts", "jsx", "tsx", "py", "sql", "doc", "docx", "odt", "pages", "ppt", "pptx", "xls",
-        "xlsx", "numbers", "key", "pdf",
-    ]
-    .contains(&extension.as_str())
-    {
-        let content = record["extractedContent"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
-        if extension == "pdf" {
-            let (page_count, png) = render_pdf_page(&path, 0)?;
-            return Ok(json!({"kind":"pdf", "page": 0, "pageCount": page_count, "dataUrl": format!("data:image/png;base64,{}", base64_encode(&png)), "text": truncate_notebook_text(content, 24_000).0}));
+        if let Ok(preview) = spreadsheet_preview(&path, &extension) {
+            return Ok(preview);
         }
-        return Ok(
-            json!({"kind":"text", "text": truncate_notebook_text(content, 24_000).0, "extractStatus": record["extractStatus"]}),
-        );
     }
     if mime_type.starts_with("image/") {
         let bytes = fs::read(path).map_err(|error| error.to_string())?;
@@ -3774,7 +3814,26 @@ fn get_notebook_file_preview(app: AppHandle, id: String) -> Result<Value, String
         let bytes = fs::read(path).map_err(|error| error.to_string())?;
         return Ok(json!({"kind":"video", "dataUrl": format!("data:{mime_type};base64,{}", base64_encode(&bytes))}));
     }
-    Ok(json!({"kind":"unsupported", "reason":"该类型暂不支持内嵌预览，可在本机打开"}))
+    let content = record["extractedContent"].as_str().unwrap_or("").to_string();
+    if extension == "pdf" {
+        if let Ok((page_count, png)) = render_pdf_page(&path, 0) {
+            return Ok(json!({"kind":"pdf", "page": 0, "pageCount": page_count, "dataUrl": format!("data:image/png;base64,{}", base64_encode(&png)), "text": truncate_notebook_text(content, 24_000).0}));
+        }
+    }
+    let text_extensions = [
+        "txt", "md", "markdown", "csv", "tsv", "json", "yaml", "yml", "xml", "html", "htm",
+        "css", "js", "ts", "jsx", "tsx", "py", "sql", "rtf",
+    ];
+    if text_extensions.contains(&extension.as_str()) && !content.trim().is_empty() {
+        return Ok(json!({"kind":"text", "text": truncate_notebook_text(content, 24_000).0, "extractStatus": record["extractStatus"]}));
+    }
+    if let Ok(png) = render_quicklook_thumbnail(&path) {
+        return Ok(json!({"kind":"document", "dataUrl": format!("data:image/png;base64,{}", base64_encode(&png)), "text": truncate_notebook_text(content, 24_000).0}));
+    }
+    if !content.trim().is_empty() {
+        return Ok(json!({"kind":"document", "text": truncate_notebook_text(content, 24_000).0, "reason":"此格式没有可用的页面渲染器，当前显示已提取的完整文本内容。"}));
+    }
+    Ok(json!({"kind":"document", "text": raw_notebook_bytes_preview(&path)?, "reason":"此格式没有可用的页面渲染器，当前显示文件原始字节（十六进制）；大文件仅显示前 4096 字节。"}))
 }
 
 #[tauri::command]
@@ -6947,6 +7006,8 @@ mod tests {
         write_new_docx(&document, "初稿").unwrap();
         rewrite_docx_content(&document, "已编辑
 第二段").unwrap();
+        let thumbnail = render_quicklook_thumbnail(&document).unwrap();
+        assert!(thumbnail.starts_with(b"\x89PNG\r\n\x1a\n"));
         let mut archive = ZipArchive::new(File::open(&document).unwrap()).unwrap();
         let mut xml = String::new();
         archive.by_name("word/document.xml").unwrap().read_to_string(&mut xml).unwrap();
@@ -7019,6 +7080,12 @@ mod tests {
         let (text, truncated) = truncate_notebook_text("abcdef".into(), 3);
         assert!(truncated);
         assert!(text.starts_with("abc"));
+        let raw_file = std::env::temp_dir().join(format!("evopilot-raw-preview-{}.bin", now()));
+        fs::write(&raw_file, b"EvoPilot\0preview").unwrap();
+        let raw = raw_notebook_bytes_preview(&raw_file).unwrap();
+        assert!(raw.contains("45 76 6f 50 69 6c 6f 74"));
+        assert!(raw.contains("EvoPilot.preview"));
+        fs::remove_file(raw_file).unwrap();
     }
 
     #[test]

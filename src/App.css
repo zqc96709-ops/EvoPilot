@@ -921,6 +921,10 @@ html[data-theme='light'] { background: #fafaf7; color-scheme: light; }
 .notebook-space .notebook-preview-card { margin: 20px; border-color: var(--inbox-line); background: var(--inbox-panel-soft); }
 .notebook-space .notebook-inline-preview { margin: 0 20px; border-color: var(--inbox-line); background: var(--inbox-panel-soft); }
 .notebook-space .notebook-inline-preview:has(.notebook-pdf-preview) { max-height: none; }
+.notebook-space .notebook-inline-preview:has(.notebook-document-preview) { max-height: min(60vh, 540px); }
+.notebook-document-preview { display: block; width: 100%; max-height: min(42vh, 440px); object-fit: contain; object-position: top; background: #fff; }
+.notebook-document-note { margin: 0; padding: 8px 10px; color: var(--inbox-muted); font-size: 10px; }
+.notebook-document-text { max-height: 240px; overflow: auto; border-top: 1px solid var(--inbox-line); }
 .notebook-space .notebook-pdf-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--inbox-line); color: var(--inbox-muted); font-size: 10px; }
 .notebook-space .notebook-pdf-toolbar > div { display: flex; gap: 5px; }
 .notebook-space .notebook-pdf-toolbar button { min-height: 25px; border: 1px solid var(--inbox-line); border-radius: 5px; padding: 0 7px; color: var(--inbox-text); background: var(--inbox-panel); font: inherit; font-size: 9px; cursor: pointer; }
