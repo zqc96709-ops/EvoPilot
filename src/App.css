@@ -72,7 +72,7 @@
 .app-shell.sidebar-collapsed{--sidebar:0px;grid-template-columns:0 minmax(0,1fr)}
 .app-shell.sidebar-collapsed .global-brand{position:relative;width:0;padding:0;border-right:0;overflow:visible}
 .app-shell.sidebar-collapsed .global-brand>.brand-mark,.app-shell.sidebar-collapsed .brand-copy{display:none}
-.app-shell.sidebar-collapsed .sidebar-toggle{position:fixed;left:10px;top:calc((var(--header) - 32px) / 2);z-index:45;border-color:var(--line);background:rgba(20,23,19,.92);box-shadow:0 8px 24px rgba(0,0,0,.25)}
+.app-shell.sidebar-collapsed .sidebar-toggle{position:fixed;left:12px;top:calc((var(--header) - 32px) / 2);z-index:45}
 .app-shell.sidebar-collapsed .sidebar{width:0;padding:0;border-right:0;overflow:hidden}
 .app-shell.sidebar-collapsed .global-search{margin-left:60px}
 .app-shell.sidebar-collapsed.sidebar-peek{--sidebar:202.35px}
@@ -1734,7 +1734,6 @@ html[data-theme='light'] { background: #fafaf7; color-scheme: light; }
 .light-theme :is(.timer-context-fields select,.provider-settings select,.quick-relation-create input){border-color:var(--line);background:var(--panel);color:var(--text);color-scheme:light}
 .light-theme :is(.timer-inheritance strong,.ai-attachment-name,.detail-fields p,.record-title>p){color:var(--text)}
 .light-theme .record-modal{box-shadow:0 24px 70px rgba(30,40,24,.18)}
-.light-theme.sidebar-collapsed .sidebar-toggle{background:var(--panel);color:var(--text)}
 .light-theme.finance-route .global-header{background:rgba(255,255,253,.92)}
 .light-theme.finance-route .sidebar{background:var(--panel)}
 .light-theme.finance-route .sidebar-nav button.active{background:var(--lime-soft);color:var(--text)}
