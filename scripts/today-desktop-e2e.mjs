@@ -44,6 +44,8 @@ try {
   await save('results', { title: '完成投放优化', projectId: project.id, date: key, status: 'ACHIEVED', outcomeType: 'MILESTONE' })
   await save('reviews', { title: '今日复盘', projectId: project.id, periodStart: key, periodEnd: key })
   await save('notes', { title: '今日灵感', content: '下一轮测试要缩短反馈周期。', type: 'JOURNAL', status: 'ACTIVE' })
+  await click('.sidebar nav button', '指挥中心')
+  await wait(() => execute('return Boolean(document.querySelector(".ceo-command-center"))'), 'command center')
   await execute('document.querySelector("[aria-label=\\"刷新指挥中心\\"]")?.click();return true')
   await wait(() => execute('return document.querySelector(".ceo-command-center")?.innerText.includes("美国 TikTok")'), 'refreshed record state')
   await click('.sidebar nav button', '今天')

@@ -70,4 +70,15 @@ describe('break-even engine', () => {
     expect(model.scenarios.BASE.inputs.refundRate).toBe('25')
     expect(blankDefaults.paidGmv).toBe('0')
   })
+
+  it('creates an independent model from a saved template', () => {
+    const source = createModel('原模型', '抖音渠道负责人', 'douyin')
+    source.scenarios.BEAR.inputs.refundRate = '35'
+    const template = { id: 'template-a', name: '已保存模板', roleLabel: source.roleLabel, description: '', scenarios: source.scenarios, customMetrics: source.customMetrics }
+    const copy = createModel('模板新模型', source.roleLabel, 'saved:template-a', template)
+    expect(copy.scenarios.BEAR.inputs.refundRate).toBe('35')
+    copy.scenarios.BEAR.inputs.refundRate = '50'
+    expect(template.scenarios.BEAR.inputs.refundRate).toBe('35')
+    expect(copy.id).not.toBe(source.id)
+  })
 })

@@ -7001,7 +7001,7 @@ mod tests {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch("CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at TEXT NOT NULL);").unwrap();
         assert!(load_break_even_state(&connection).unwrap().is_none());
-        let state = json!({"models":[{"id":"model-a"}],"templates":[],"selectedModelId":"model-a"});
+        let state = json!({"models":[{"id":"model-a","scenarios":{"BASE":{"inputs":{"paidGmv":"500000"},"customValues":{"storage":"2"}}}}],"templates":[{"id":"template-a"}],"selectedModelId":"model-a"});
         write_break_even_state(&connection, &state).unwrap();
         assert_eq!(load_break_even_state(&connection).unwrap(), Some(state));
         assert!(write_break_even_state(&connection, &json!({"models":[]})).is_err());
