@@ -13,6 +13,7 @@ import { runDecisionEngine, impactLabel, urgencyLabel, reversibilityLabel, type 
 import { accountBalanceMinor, decimalToMinor, financeDashboard, financialFacts, formatMoneyMinor, minorToDecimal, projectEconomics } from './finance'
 import CommandCenterView from './CommandCenterView'
 import FinanceIntelligenceView from './FinanceIntelligenceView'
+import BreakEvenWorkspace from './BreakEvenWorkspace'
 import TodayCockpitView from './TodayCockpitView'
 import TimeIntelligenceView from './TimeIntelligenceView'
 import CognitiveCenterView from './CognitiveCenterView'
@@ -714,7 +715,19 @@ function OutcomesView({ records, onOpen, onCreate, onApplyCapabilityPack, onPubl
 }
 
 function FinanceView({ records, onOpen, onCreate, onRefresh, onAskAi }: { records: RecordData[]; onOpen: (record: RecordData) => void; onCreate: (entity: Entity, initial?: Partial<RecordData>) => void; onRefresh: () => void; onAskAi: () => void }) {
-  const [tab, setTab] = useState<'overview' | 'transactions' | 'accounts' | 'categories' | 'budgets'>('overview')
+  const [tab, setTab] = useState<'overview' | 'transactions' | 'accounts' | 'categories' | 'budgets' | 'breakEven'>(() => window.location.hash.startsWith('#finance/break-even') ? 'breakEven' : 'overview')
+  useEffect(() => { const onRoute = () => setTab(window.location.hash.startsWith('#finance/break-even') ? 'breakEven' : 'overview'); window.addEventListener('popstate', onRoute); window.addEventListener('hashchange', onRoute); return () => { window.removeEventListener('popstate', onRoute); window.removeEventListener('hashchange', onRoute) } }, [])
+  useEffect(() => {
+    const onHistoryShortcut = (event: KeyboardEvent) => {
+      if (!event.metaKey || (event.key !== '[' && event.key !== ']') || (event.target instanceof HTMLElement && event.target.matches('input, textarea, select, [contenteditable="true"]'))) return
+      event.preventDefault()
+      if (event.key === '[') window.history.back(); else window.history.forward()
+    }
+    window.addEventListener('keydown', onHistoryShortcut)
+    return () => window.removeEventListener('keydown', onHistoryShortcut)
+  }, [])
+  const openBreakEven = () => { window.history.pushState({}, '', '#finance/break-even'); setTab('breakEven') }
+  const closeBreakEven = () => { window.history.pushState({}, '', '#finance'); setTab('overview') }
   const [projectId, setProjectId] = useState('')
   const [accountId, setAccountId] = useState('')
   const [categoryId, setCategoryId] = useState('')
@@ -758,12 +771,13 @@ function FinanceView({ records, onOpen, onCreate, onRefresh, onAskAi }: { record
     setTab(nextTab)
   }
   const showLegacyOverview = tab === 'overview'
-  if (tab === 'overview') return <FinanceIntelligenceView records={records} onOpen={onOpen} onCreate={onCreate} onDrilldown={drilldown} onRefresh={onRefresh} onAskAi={onAskAi} />
+  if (tab === 'overview') return <FinanceIntelligenceView records={records} onOpen={onOpen} onCreate={onCreate} onDrilldown={drilldown} onRefresh={onRefresh} onAskAi={onAskAi} onBreakEven={openBreakEven} />
+  if (tab === 'breakEven') return <BreakEvenWorkspace onBack={closeBreakEven} />
   return <div className="finance-page">
     <section className="finance-hero"><div><span>{PRODUCT_NAME} · RESOURCE LAYER</span><h2>Financial Intelligence</h2><p>记录资金事实，并把 Time + Money + Outcome 转化为 CEO 决策证据。现金净流动与经营贡献不等于会计利润。</p></div><button className="button primary" onClick={createTransaction}>＋ 记录流水</button></section>
     <section className="finance-filter-bar"><label>项目<select value={projectId} onChange={(event) => setProjectId(event.target.value)}><option value="">全部项目</option>{projects.map((item) => <option key={item.id} value={item.id}>{titleFor(item)}</option>)}</select></label><label>账户<select value={accountId} onChange={(event) => setAccountId(event.target.value)}><option value="">全部账户</option>{accounts.map((item) => <option key={item.id} value={item.id}>{titleFor(item)}</option>)}</select></label><label>分类<select value={categoryId} onChange={(event) => setCategoryId(event.target.value)}><option value="">全部分类</option>{categories.map((item) => <option key={item.id} value={item.id}>{titleFor(item)}</option>)}</select></label><div className="segmented">{([['all','全部'],['year','本年'],['quarter','本季度'],['month','本月'],['lastMonth','上月']] as const).map(([key, label]) => <button key={key} className={period === key && !monthKey ? 'active' : ''} onClick={() => { setPeriod(key); setMonthKey('') }}>{label}</button>)}</div>{(projectId || accountId || categoryId || period !== 'all' || monthKey) && <button className="button" onClick={clearFilters}>清除筛选</button>}<small>筛选只改变分析视图，不会修改流水。</small></section>
     <div className="metric-strip four"><Metric label="现金净流动" value={economics.postedTransactions ? formatMoneyMinor(economics.cashNetMinor) : '未记录'} /><Metric label="已记录收入" value={economics.postedTransactions ? formatMoneyMinor(economics.incomeMinor) : '未记录'} /><Metric label="已记录支出" value={economics.postedTransactions ? formatMoneyMinor(economics.expenseMinor) : '未记录'} /><Metric label="数据覆盖" value={String(economics.dataCoverage) + '%'} hint="缺失数据不会按 0 处理" /></div>
-    <nav className="external-tabs finance-tabs">{([['overview','总览'],['transactions','流水'],['accounts','账户'],['categories','分类'],['budgets','预算']] as const).map(([key,label]) => <button key={key} className={tab === key ? 'active' : ''} onClick={() => setTab(key)}>{label}</button>)}</nav>
+    <nav className="external-tabs finance-tabs">{([['overview','总览'],['transactions','流水'],['accounts','账户'],['categories','分类'],['budgets','预算']] as const).map(([key,label]) => <button key={key} className={tab === key ? 'active' : ''} onClick={() => setTab(key)}>{label}</button>)}<button onClick={openBreakEven}>盈亏平衡模型</button></nav>
     {showLegacyOverview && <div className="finance-dashboard">
       <section className="work-panel finance-trend-panel"><PanelHeader title="资金趋势" /><div className="finance-trend-chart">{dashboard.trends.length ? dashboard.trends.map((point) => <button className="finance-trend-column" key={point.key} onClick={() => { setMonthKey(point.key); showTransactions() }}><><div className="finance-trend-bars">{series.income && <i className="income" style={{ height: String(height(point.incomeMinor)) + '%' }} />}{series.expense && <i className="expense" style={{ height: String(height(point.expenseMinor)) + '%' }} />}</div><small>{point.key}</small></></button>) : <p className="empty-copy">所选范围还没有已入账流水。</p>}</div><div className="finance-legend"><button className={series.income ? 'active income' : ''} onClick={() => setSeries((value) => ({ ...value, income: !value.income }))}>■ 收入</button><button className={series.expense ? 'active expense' : ''} onClick={() => setSeries((value) => ({ ...value, expense: !value.expense }))}>■ 支出</button></div></section>
       <section className="work-panel"><PanelHeader title="预算 vs 实际" action="管理预算" onAction={() => setTab('budgets')} />{dashboard.budgets.length ? <div className="finance-breakdown">{dashboard.budgets.slice(0, 4).map((item) => <button key={item.budget.id} onClick={() => { setProjectId(String(item.budget.projectId || '')); setCategoryId(String(item.budget.categoryId || '')); showTransactions() }}><small>{titleFor(item.budget)} · 实际 {item.observedTransactions ? formatMoneyMinor(item.actualExpenseMinor) : '未记录'}</small><b>{item.varianceMinor >= 0n ? '余 ' + formatMoneyMinor(item.varianceMinor) : '超 ' + formatMoneyMinor(-item.varianceMinor)}</b></button>)}</div> : <p className="empty-copy">预算是管理约束，不是流水；创建预算后将按真实支出进行对比。</p>}</section>

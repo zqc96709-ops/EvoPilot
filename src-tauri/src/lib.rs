@@ -1822,6 +1822,41 @@ fn initialize_database(app: AppHandle) -> Result<Value, String> {
     )
 }
 
+const BREAK_EVEN_STATE_KEY: &str = "finance.break_even_models.v1";
+
+fn load_break_even_state(connection: &Connection) -> Result<Option<Value>, String> {
+    let stored: Option<String> = connection.query_row(
+        "SELECT value FROM settings WHERE key=?1", params![BREAK_EVEN_STATE_KEY], |row| row.get(0)
+    ).optional().map_err(|error| error.to_string())?;
+    stored.map(|value| serde_json::from_str(&value).map_err(|error| error.to_string())).transpose()
+}
+
+fn write_break_even_state(connection: &Connection, state: &Value) -> Result<(), String> {
+    if !state.get("models").is_some_and(Value::is_array)
+        || !state.get("templates").is_some_and(Value::is_array)
+        || !state.get("selectedModelId").is_some_and(|value| value.is_null() || value.is_string()) {
+        return Err("盈亏平衡模型状态格式无效".into());
+    }
+    let serialized = serde_json::to_string(state).map_err(|error| error.to_string())?;
+    if serialized.len() > 2_000_000 { return Err("盈亏平衡模型状态超过大小限制".into()); }
+    connection.execute(
+        "INSERT INTO settings(key,value,updated_at) VALUES(?1,?2,?3)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",
+        params![BREAK_EVEN_STATE_KEY, serialized, now()]
+    ).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn get_break_even_state(app: AppHandle) -> Result<Option<Value>, String> {
+    load_break_even_state(&db(&app)?)
+}
+
+#[tauri::command]
+fn save_break_even_state(app: AppHandle, state: Value) -> Result<(), String> {
+    write_break_even_state(&db(&app)?, &state)
+}
+
 #[tauri::command]
 fn check_relationship_integrity(app: AppHandle) -> Result<Value, String> {
     relationship_integrity(&db(&app)?)
@@ -6881,6 +6916,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             initialize_database,
+            get_break_even_state,
+            save_break_even_state,
             check_relationship_integrity,
             capture_link,
             get_finance_summary,
@@ -6958,6 +6995,18 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn break_even_state_uses_existing_local_sqlite_settings() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at TEXT NOT NULL);").unwrap();
+        assert!(load_break_even_state(&connection).unwrap().is_none());
+        let state = json!({"models":[{"id":"model-a"}],"templates":[],"selectedModelId":"model-a"});
+        write_break_even_state(&connection, &state).unwrap();
+        assert_eq!(load_break_even_state(&connection).unwrap(), Some(state));
+        assert!(write_break_even_state(&connection, &json!({"models":[]})).is_err());
+        assert_eq!(load_break_even_state(&connection).unwrap().unwrap()["selectedModelId"], "model-a");
+    }
 
     #[test]
     fn voice_audit_context_excludes_transcript_and_conversation() {

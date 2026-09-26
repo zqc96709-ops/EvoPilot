@@ -3,6 +3,7 @@ import { schemaRegistry } from './agent/schemaRegistry'
 import { toolRegistry } from './agent/toolRegistry'
 import type { AgentActionResult, AgentContext, AgentResponse, ChatMessage } from './agent/types'
 import type { Entity, RecordData } from './model'
+import type { BreakEvenState } from './breakEven'
 import type { ExternalItem } from './externalIntelligence'
 import { projectEconomics } from './finance'
 import { cloudSync, type CloudSyncStatus } from './cloudSync'
@@ -90,6 +91,15 @@ if (typeof window !== 'undefined') {
 }
 
 export const api = {
+  async getBreakEvenState(): Promise<BreakEvenState | null> {
+    if (!browser()) return invoke('get_break_even_state')
+    const stored = localStorage.getItem('evopilot-break-even-models-v1')
+    return stored ? JSON.parse(stored) as BreakEvenState : null
+  },
+  async saveBreakEvenState(state: BreakEvenState): Promise<void> {
+    if (!browser()) return invoke('save_break_even_state', { state })
+    localStorage.setItem('evopilot-break-even-models-v1', JSON.stringify(state))
+  },
   async initialize() { await loadSyncV1Config(); if (browser()) { const db = await webDb(); let legacy: RecordData[] = []; try { legacy = JSON.parse(localStorage.getItem(key) || '[]') } catch { legacy = [] }; await db.importLegacy(legacy); await syncRecords().catch(() => {}); return { ok: true } }; const result = await invoke('initialize_database'); await syncRecords().catch(() => {}); return result },
   async list(entity: Entity | 'all'): Promise<RecordData[]> { return browser() ? (await (await webDb()).records()).filter((record) => active(record) && (entity === 'all' || record.entity === entity)).sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || ''))) : invoke('list_records', { entity }) },
   async get(id: string): Promise<RecordData | null> { return browser() ? (await (await webDb()).record(id)) : invoke('get_record', { id }) },
