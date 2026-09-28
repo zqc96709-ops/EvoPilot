@@ -105,6 +105,8 @@ const useThreePaneResize = (storageKey: string, defaults: PaneSizes) => {
 
 function App() {
   const [records, setRecords] = useState<RecordData[]>([])
+  const notebookSavedNotes = useRef<Record<string, RecordData>>({})
+  const refreshRequest = useRef(0)
   const [view, setView] = useState<View>(() => readPersistedValue(localStorage.getItem('evopilot-last-view'), views, localStorage.getItem('jason-os-decision-center-open') === 'true' ? 'decisionCenter' : 'command'))
   const [sidebarOpen, setSidebarOpen] = useState(() => localStorage.getItem('jason-os-sidebar-open') !== 'false')
   const [themePreference, setThemePreference] = useState<ThemePreference>(() => { const stored = localStorage.getItem('jason-os-theme'); return stored === 'light' || stored === 'auto' ? stored : 'dark' })
@@ -141,7 +143,9 @@ function App() {
   const noticeTimer = useRef<number | undefined>(undefined)
 
   const refresh = async () => {
+    const request = ++refreshRequest.current
     const [all, captured] = await Promise.all([api.list('all'), api.listExternalItems(200)])
+    if (request !== refreshRequest.current) return
     setRecords(all); setExternalItems(captured)
     setRunning(all.find((record) => record.entity === 'timeLogs' && record.isRunning === true))
     setChat((current) => { if (current.length) return current; return all.filter((record) => record.entity === 'agentRuns' && record.status === 'completed').slice(0, 6).reverse().flatMap((run) => [{ role: 'user' as const, content: String(run.input || '') }, { role: 'assistant' as const, content: String(run.output || '') }]) })
@@ -458,7 +462,7 @@ function App() {
       {view === 'projects' && <ProjectsView records={records} selectedId={selectedProjectId} onSelect={setSelectedProjectId} onOpen={openRecord} onCreate={openCreate} onArchive={archiveRecord} onSave={async (entity, data) => { await api.save(entity, data); await refresh(); showNotice('已保存到本机。') }} onApplyCapabilityPack={applyCapabilityPack} onAiAnalyze={(question, context) => { setAiOpen(true); void sendAi(question, context) }} />}
       {view === 'outcomes' && <OutcomesView records={records} onOpen={openRecord} onCreate={openCreate} onApplyCapabilityPack={applyCapabilityPack} onPublishCapabilityVersion={publishCapabilityVersion} onRefresh={refresh} />}
       {view === 'finance' && <FinanceView records={records} onOpen={openRecord} onCreate={openCreate} onRefresh={() => void refresh()} onAskAi={() => void sendAi('基于当前财务总览，最近最值得 CEO 关注的财务问题是什么？请只基于已聚合的趋势、项目资本配置与关注事项解释。')} />}
-      {view === 'notebook' && <NotebookView records={records} externalItems={externalItems} captureConfig={captureConfig} onOpen={openRecord} onRefresh={refresh} onNotice={showNotice} onAi={(question, context) => { setAiOpen(true); void sendAi(question, context) }} />}
+      {view === 'notebook' && <NotebookView records={records} savedNotesRef={notebookSavedNotes} externalItems={externalItems} captureConfig={captureConfig} onOpen={openRecord} onRefresh={refresh} onNotice={showNotice} onAi={(question, context) => { setAiOpen(true); void sendAi(question, context) }} />}
       {(['cognition', 'knowledge', 'reviews', 'insights', 'principles', 'mentalModels'] as View[]).includes(view) && <CognitiveCenterView records={records} tab={cognitiveTab} period={cognitivePeriod} onPeriod={setCognitivePeriod} onTab={(tab) => setView(tab === 'overview' ? 'cognition' : tab)} onOpen={openRecord} onCreate={() => openCreate(cognitiveEntity as Entity)} onAi={() => { setAiOpen(true); if (aiConfig?.configured) void sendAi('基于当前认知中心的真实记录，哪些事项值得我优先复盘、验证或沉淀？不要自动修改任何认知状态。') }} domainContent={cognitiveDomainContent} />}
       {view === 'decisionCenter' && <DecisionIntelligenceView records={records} onOpen={openRecord} onCreate={openCreate} tab={decisionCenterTab} onTabChange={setDecisionCenterTab} />}
       {view === 'decisions' && <DecisionIntelligenceView records={records} onOpen={openRecord} onCreate={openCreate} tab="log" onTabChange={setDecisionCenterTab} />}
@@ -851,7 +855,7 @@ const fileIcon = (record: RecordData) => {
   return '⊞'
 }
 
-function NotebookView({ records, externalItems, captureConfig, onOpen, onRefresh, onNotice, onAi }: { records: RecordData[]; externalItems: ExternalItem[]; captureConfig: CaptureProviderConfig | null; onOpen: (record: RecordData) => void; onRefresh: () => Promise<void>; onNotice: (text: string, tone?: Notice['tone']) => void; onAi: (question: string, context: Partial<AgentContext>) => void }) {
+function NotebookView({ records, savedNotesRef, externalItems, captureConfig, onOpen, onRefresh, onNotice, onAi }: { records: RecordData[]; savedNotesRef: { current: Record<string, RecordData> }; externalItems: ExternalItem[]; captureConfig: CaptureProviderConfig | null; onOpen: (record: RecordData) => void; onRefresh: () => Promise<void>; onNotice: (text: string, tone?: Notice['tone']) => void; onAi: (question: string, context: Partial<AgentContext>) => void }) {
   const [workspaceMode, setWorkspaceMode] = useState<'capture' | 'research'>('capture')
   const notebookPanes = useThreePaneResize('jason-os-notebook-pane-sizes', { left: 250, right: 500 })
   const [scope, setScope] = useState<'inbox' | 'all' | 'favorites' | 'archive' | string>('inbox')
@@ -889,10 +893,20 @@ function NotebookView({ records, externalItems, captureConfig, onOpen, onRefresh
   const captureInputRef = useRef<HTMLTextAreaElement>(null)
   const editorFlushRef = useRef<(() => Promise<void>) | null>(null)
   const flushEditor = () => editorFlushRef.current?.() ?? Promise.resolve()
+  const [savedNotes, setSavedNotes] = useState<Record<string, RecordData>>(() => savedNotesRef.current)
+  const openNotebookItem = async (id: string) => {
+    try { await flushEditor(); setSelectedId(id) }
+    catch (error) { onNotice(`笔记保存失败，已保留当前编辑：${String(error)}`, 'danger') }
+  }
   useEffect(() => { api.archived().then((items) => setArchived(items.filter((record) => ['notes', 'notebookFiles', 'notebookFolders', 'inbox'].includes(record.entity)))) }, [records])
   const categories = records.filter((record) => record.entity === 'notebookCategories')
   const folders = records.filter((record) => record.entity === 'notebookFolders')
-  const activeItems = records.filter((record) => ['notes', 'notebookFiles', 'notebookFolders', 'inbox'].includes(record.entity))
+  const activeItems = records.filter((record) => ['notes', 'notebookFiles', 'notebookFolders', 'inbox'].includes(record.entity)).map((record) => {
+    const saved = savedNotes[record.id]
+    return saved && record.entity === 'notes' && Number(saved.updatedAt) >= Number(record.updatedAt)
+      ? { ...record, title: saved.title, content: saved.content, contentHtml: saved.contentHtml, updatedAt: saved.updatedAt, tags: saved.tags, fileIds: saved.fileIds }
+      : record
+  })
   const createdWithinDays = (record: RecordData, days: number) => {
     const value = record.createdAt || record.updatedAt || 0
     const timestamp = new Date(Number(value) || String(value)).getTime()
@@ -1222,7 +1236,7 @@ function NotebookView({ records, externalItems, captureConfig, onOpen, onRefresh
           {filtered.map((record) => {
             const kind = record.entity === 'notes' ? '笔记' : record.entity === 'notebookFiles' ? String(record.extension || '文件').toUpperCase() : record.entity === 'notebookFolders' ? '文件夹' : '网页链接'
             const summary = record.entity === 'notes' ? String(record.content || '暂无正文。') : record.entity === 'notebookFiles' ? String(record.extractedContent || record.originalName || record.relativePath || '') : String(record.description || record.summary || record.url || record.sourceUrl || '打开查看内容')
-            return <article key={record.id} className={selected?.id === record.id ? 'active' : ''} onClick={() => void flushEditor().then(() => setSelectedId(record.id))} onDoubleClick={() => record.entity === 'notebookFolders' ? void flushEditor().then(() => setFolderId(record.id)) : onOpen(record)}>
+            return <article key={record.id} className={selected?.id === record.id ? 'active' : ''} onClick={() => void openNotebookItem(record.id)} onDoubleClick={() => record.entity === 'notebookFolders' ? void flushEditor().then(() => setFolderId(record.id)) : onOpen(record)}>
               <input type="checkbox" checked={selectedIds.includes(record.id)} onClick={(event) => event.stopPropagation()} onChange={() => toggleSelected(record.id)} aria-label={'选择 ' + titleFor(record)} />
               <span className={`notebook-item-icon ${record.entity}`}>{record.entity === 'notebookFolders' ? '□' : record.entity === 'notebookFiles' ? fileIcon(record) : record.entity === 'inbox' ? '⌁' : '▤'}</span>
               <div className="notebook-item-copy">
@@ -1237,7 +1251,7 @@ function NotebookView({ records, externalItems, captureConfig, onOpen, onRefresh
       <div className="notebook-pane-resizer" role="separator" title="拖动调整右侧栏宽度" aria-label="调整右侧栏宽度" aria-orientation="vertical" onPointerDown={notebookPanes.startResize('right')}><span aria-hidden="true">⋮</span></div>
 
       <aside className={`notebook-preview ${selected?.entity === 'notes' ? 'note-preview' : 'detail-preview'}${editorFullscreen && selected?.entity === 'notes' ? ' fullscreen' : ''}`}>
-        {selected?.entity === 'notes' ? <><div className="notebook-capability-action"><button className="button" onClick={() => { setCapabilityPackId(''); setCapabilityFolderId(''); setCapabilityPickerOpen(true) }}>加入能力包</button></div><RichNotebookEditor note={selected} records={records} related={related} categories={categories} fullscreen={editorFullscreen} onOpen={onOpen} onCreateNote={() => void createManualNote()} onRefresh={onRefresh} onNotice={onNotice} onAi={onAi} onAssignCategory={assignCategory} onCreateCategory={() => { setCategoryDraft(''); setCategoryDialogOpen(true) }} onToggleFullscreen={() => setEditorFullscreen((current) => !current)} onClose={() => { setEditorFullscreen(false); setSelectedId('__closed__') }} onRelationsChanged={() => void api.relations(selected.id).then(setRelated)} onRegisterFlush={(value) => { editorFlushRef.current = value }} /></> : <>
+        {selected?.entity === 'notes' ? <><div className="notebook-capability-action"><button className="button" onClick={() => { setCapabilityPackId(''); setCapabilityFolderId(''); setCapabilityPickerOpen(true) }}>加入能力包</button></div><RichNotebookEditor note={selected} records={records} related={related} categories={categories} fullscreen={editorFullscreen} onOpen={onOpen} onCreateNote={() => void createManualNote()} onRefresh={onRefresh} onNotice={onNotice} onAi={onAi} onAssignCategory={assignCategory} onCreateCategory={() => { setCategoryDraft(''); setCategoryDialogOpen(true) }} onToggleFullscreen={() => setEditorFullscreen((current) => !current)} onClose={() => { setEditorFullscreen(false); setSelectedId('__closed__') }} onRelationsChanged={() => void api.relations(selected.id).then(setRelated)} onRegisterFlush={(value) => { editorFlushRef.current = value }} onSaved={(record) => { savedNotesRef.current = { ...savedNotesRef.current, [record.id]: record }; setSavedNotes(savedNotesRef.current) }} /></> : <>
           <header><strong>{scope === 'files' || selected?.entity === 'notebookFiles' ? '文件' : scope === 'links' || selected?.entity === 'inbox' ? '链接' : '详情'}</strong><div>{scope === 'links' && <button className="notebook-preview-add" onClick={() => { setLinkDraft(''); setLinkComposerOpen(true) }}>＋ 添加链接</button>}{scope === 'files' && <button className="notebook-preview-add" onClick={() => fileInputRef.current?.click()}>＋ 添加文件</button>}{selected && scope !== 'archive' && <button className="notebook-preview-delete" onClick={() => requestDeleteSelection([selected.id])}>删除</button>}{selected && <button title="关闭" onClick={() => setSelectedId('__closed__')}>×</button>}</div></header>
           {selected ? <>
             <div className="notebook-preview-card"><span>{selected.entity === 'notebookFiles' ? fileIcon(selected) : selected.entity === 'notebookFolders' ? '□' : '⌁'}</span><h3>{titleFor(selected)}</h3><p>{descriptionFor(selected) || String(selected.originalName || selected.relativePath || selected.url || selected.sourceUrl || '独立收纳内容')}</p><small>{selected.entity === 'notebookFiles' ? '文件' : selected.entity === 'notebookFolders' ? '文件夹' : '链接'} · {formatDate(selected.updatedAt || selected.createdAt)}</small></div>
@@ -1479,7 +1493,7 @@ function NotebookCategoryControl({ record, categories, compact = false, onChange
   return <section className={`notebook-category-control${compact ? ' compact' : ''}`}><label>收纳箱分类<select value={String(record.notebookCategoryId || '')} onChange={(event) => void onChange(record, event.target.value)}><option value="">未分类</option>{categories.map((category) => <option key={category.id} value={category.id}>{titleFor(category)}</option>)}</select></label><button className="button" onClick={onCreate}>＋ 新建分类</button></section>
 }
 
-function RichNotebookEditor({ note, records, related, categories, fullscreen, onOpen, onCreateNote, onRefresh, onNotice, onAi, onAssignCategory, onCreateCategory, onToggleFullscreen, onClose, onRelationsChanged, onRegisterFlush }: { note: RecordData; records: RecordData[]; related: RecordData[]; categories: RecordData[]; fullscreen: boolean; onOpen: (record: RecordData) => void; onCreateNote: () => void; onRefresh: () => Promise<void>; onNotice: (text: string, tone?: Notice['tone']) => void; onAi: (question: string, context: Partial<AgentContext>) => void; onAssignCategory: (record: RecordData, categoryId: string) => Promise<void>; onCreateCategory: () => void; onToggleFullscreen: () => void; onClose: () => void; onRelationsChanged: () => void; onRegisterFlush: (flush: (() => Promise<void>) | null) => void }) {
+function RichNotebookEditor({ note, records, related, categories, fullscreen, onOpen, onCreateNote, onRefresh, onNotice, onAi, onAssignCategory, onCreateCategory, onToggleFullscreen, onClose, onRelationsChanged, onRegisterFlush, onSaved }: { note: RecordData; records: RecordData[]; related: RecordData[]; categories: RecordData[]; fullscreen: boolean; onOpen: (record: RecordData) => void; onCreateNote: () => void; onRefresh: () => Promise<void>; onNotice: (text: string, tone?: Notice['tone']) => void; onAi: (question: string, context: Partial<AgentContext>) => void; onAssignCategory: (record: RecordData, categoryId: string) => Promise<void>; onCreateCategory: () => void; onToggleFullscreen: () => void; onClose: () => void; onRelationsChanged: () => void; onRegisterFlush: (flush: (() => Promise<void>) | null) => void; onSaved: (record: RecordData) => void }) {
   const editorRef = useRef<HTMLDivElement>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
   const relationPickerRef = useRef<HTMLDivElement>(null)
@@ -1503,11 +1517,28 @@ function RichNotebookEditor({ note, records, related, categories, fullscreen, on
   const titleRef = useRef(title)
   const tagsRef = useRef(tags)
   const controllerRef = useRef<NoteAutosaveController | null>(null)
+  const captureTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const maxCaptureTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingCapture = useRef(false)
   const html = () => editorRef.current ? durableNotebookHtml(editorRef.current) : ''
   const text = () => editorRef.current?.innerText.trim() || ''
   const snapshot = () => ({ noteId: note.id, title: titleRef.current.trim() || '未命名笔记', content: text(), contentHtml: html(), fileIds: editorRef.current ? notebookFileIds(editorRef.current) : [], tags: tagsRef.current })
-  const markDirty = () => controllerRef.current?.update(snapshot())
-  const flush = () => controllerRef.current?.flush() ?? Promise.resolve()
+  const captureDirty = () => {
+    if (captureTimer.current) clearTimeout(captureTimer.current)
+    if (maxCaptureTimer.current) clearTimeout(maxCaptureTimer.current)
+    captureTimer.current = null; maxCaptureTimer.current = null
+    if (!pendingCapture.current) return
+    pendingCapture.current = false
+    controllerRef.current?.update(snapshot())
+  }
+  const markDirty = () => {
+    pendingCapture.current = true
+    setSaveState('DIRTY')
+    if (captureTimer.current) clearTimeout(captureTimer.current)
+    captureTimer.current = setTimeout(captureDirty, 300)
+    if (!maxCaptureTimer.current) maxCaptureTimer.current = setTimeout(captureDirty, 1200)
+  }
+  const flush = () => { captureDirty(); return controllerRef.current?.flush() ?? Promise.resolve() }
   useEffect(() => {
     const nextTitle = String(note.title || '')
     const nextTags = tagsFor(note)
@@ -1543,15 +1574,16 @@ function RichNotebookEditor({ note, records, related, categories, fullscreen, on
       persist: async (draft: NoteDraftSnapshot) => {
         const current = await api.get(draft.noteId)
         if (!current || current.entity !== 'notes') throw new Error('笔记已不存在，无法自动保存')
-        await api.save('notes', { ...current, title: draft.title, content: draft.content, contentHtml: draft.contentHtml, fileIds: draft.fileIds, tags: draft.tags, lastAutosavedAt: Date.now(), editSequence: draft.editSequence })
+        const saved = await api.save('notes', { ...current, title: draft.title, content: draft.content, contentHtml: draft.contentHtml, fileIds: draft.fileIds, tags: draft.tags, lastAutosavedAt: Date.now(), editSequence: draft.editSequence })
+        onSaved(saved)
       },
       recover: (draft) => writeNoteRecovery(note.id, draft),
       onState: setSaveState,
     })
     controllerRef.current = controller
-    const registeredFlush = () => controller.flush()
+    const registeredFlush = () => { captureDirty(); return controller.flush() }
     onRegisterFlush(registeredFlush)
-    const flushBeforeExit = () => { void controller.flush().catch(() => {}) }
+    const flushBeforeExit = () => { captureDirty(); void controller.flush().catch(() => {}) }
     window.addEventListener('pagehide', flushBeforeExit)
     if (recovered) {
       controller.update({ noteId: note.id, title: recovered.title, content: recovered.content, contentHtml: recovered.contentHtml, fileIds: recovered.fileIds, tags: recovered.tags })
@@ -1560,6 +1592,7 @@ function RichNotebookEditor({ note, records, related, categories, fullscreen, on
     return () => {
       window.removeEventListener('pagehide', flushBeforeExit)
       onRegisterFlush(null)
+      captureDirty()
       void controller.flush().catch(() => {})
       controller.dispose()
       if (controllerRef.current === controller) controllerRef.current = null

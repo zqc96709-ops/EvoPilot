@@ -32,6 +32,7 @@ export class NoteAutosaveController {
   private idleTimer: ReturnType<typeof setTimeout> | null = null
   private maxTimer: ReturnType<typeof setTimeout> | null = null
   private queue: Promise<void> = Promise.resolve()
+  private inFlight: Promise<void> | null = null
 
   constructor(options: Options) {
     this.idleMs = options.idleMs ?? 600
@@ -44,16 +45,16 @@ export class NoteAutosaveController {
   update(snapshot: Omit<NoteDraftSnapshot, 'editSequence' | 'capturedAt'>) {
     this.sequence += 1
     this.latest = { ...snapshot, editSequence: this.sequence, capturedAt: Date.now() }
-    this.recover(this.latest)
+    try { this.recover(this.latest) } catch { /* Local recovery must not prevent the durable database save. */ }
     this.onState?.('DIRTY')
     if (this.idleTimer) clearTimeout(this.idleTimer)
-    this.idleTimer = setTimeout(() => { void this.flush() }, this.idleMs)
-    if (!this.maxTimer) this.maxTimer = setTimeout(() => { void this.flush() }, this.maxWaitMs)
+    this.idleTimer = setTimeout(() => { void this.flush().catch(() => {}) }, this.idleMs)
+    if (!this.maxTimer) this.maxTimer = setTimeout(() => { void this.flush().catch(() => {}) }, this.maxWaitMs)
   }
 
   flush(): Promise<void> {
     if (!this.latest || this.savedSequence >= this.sequence) return this.queue
-    if (this.queuedSequence >= this.sequence) return this.queue
+    if (this.queuedSequence >= this.sequence) return this.inFlight ?? this.queue
     if (this.idleTimer) clearTimeout(this.idleTimer)
     if (this.maxTimer) clearTimeout(this.maxTimer)
     this.idleTimer = null
@@ -66,7 +67,7 @@ export class NoteAutosaveController {
         await this.persist(snapshot)
         this.savedSequence = Math.max(this.savedSequence, snapshot.editSequence)
         if (this.savedSequence === this.sequence) {
-          this.recover(null)
+          try { this.recover(null) } catch { /* The SQLite save already succeeded. */ }
           this.onState?.('SAVED')
         } else {
           this.onState?.('DIRTY')
@@ -77,6 +78,8 @@ export class NoteAutosaveController {
         throw error
       }
     })
+    this.inFlight = task
+    void task.finally(() => { if (this.inFlight === task) this.inFlight = null }).catch(() => {})
     this.queue = task.catch(() => {})
     return task
   }

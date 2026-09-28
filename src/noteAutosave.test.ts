@@ -71,4 +71,26 @@ describe('NoteAutosaveController', () => {
     await Promise.all([first, duplicate])
     expect(calls).toBe(1)
   })
+
+  it('does not report a failed in-flight save as a successful navigation flush', async () => {
+    let rejectSave: (error: Error) => void = () => {}
+    const controller = new NoteAutosaveController({ persist: () => new Promise<void>((_, reject) => { rejectSave = reject }), recover: () => {} })
+    controller.update(draft('must not disappear'))
+    const autosave = controller.flush()
+    const navigation = controller.flush()
+    await Promise.resolve()
+    rejectSave(new Error('disk full'))
+    await expect(autosave).rejects.toThrow('disk full')
+    await expect(navigation).rejects.toThrow('disk full')
+    controller.dispose()
+  })
+
+  it('still saves to SQLite when local recovery storage is full', async () => {
+    const saved: string[] = []
+    const controller = new NoteAutosaveController({ persist: async (value) => { saved.push(value.content) }, recover: () => { throw new Error('quota exceeded') } })
+    controller.update(draft('keep this note'))
+    await controller.flush()
+    expect(saved).toEqual(['keep this note'])
+    controller.dispose()
+  })
 })

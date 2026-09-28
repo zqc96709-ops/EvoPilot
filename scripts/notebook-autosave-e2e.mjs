@@ -20,8 +20,10 @@ const launch = async () => {
   app = spawn(binary, [], { env: { ...process.env, JASON_OS_DATA_DIR: dataDir, TAURI_WEBDRIVER_PORT: port }, stdio: 'ignore' })
   await wait(() => request('/status').then((result) => result.value?.ready), 'WebDriver')
   sessionId = (await request('/session', { capabilities: { alwaysMatch: { browserName: 'tauri' } } })).value.sessionId
+  await request(`/session/${sessionId}/window/rect`, { width: 3072, height: 2048 }).catch(() => undefined)
   await pause(700)
   await wait(() => execute('return Boolean(document.querySelector(".sidebar .quick-capture"))'), 'app shell')
+  await pause(1500)
 }
 const openNote = async (title) => {
   await clickText('.notebook-content-list article', title)
@@ -33,14 +35,30 @@ const record = (id) => invoke('get_record', { id })
 
 try {
   await launch()
+  await execute('localStorage.setItem("jason-os-notebook-pane-sizes",JSON.stringify({left:250,right:500}));location.reload();return true')
+  await wait(() => execute('return Boolean(document.querySelector(".sidebar .quick-capture"))'), 'reset test pane sizes')
+  await pause(600)
   const category = await invoke('save_record', { entity: 'notebookCategories', data: { name: '自动保存验收分类' } })
   const secondCategory = await invoke('save_record', { entity: 'notebookCategories', data: { name: '分类切换验收分类' } })
   const note = await invoke('save_record', { entity: 'notes', data: { title: '自动保存 P0 验收', content: '', status: 'INBOX', type: 'NOTE' } })
   await invoke('save_record', { entity: 'notes', data: { title: '切换目标笔记', content: '切换目标', status: 'INBOX', type: 'NOTE', notebookCategoryId: category.id } })
+  await clickText('.sidebar nav button', '指挥中心')
+  await wait(() => execute('return Boolean(document.querySelector("[aria-label=\\"刷新指挥中心\\"]"))'), 'command center refresh button')
   await execute('document.querySelector("[aria-label=\\"刷新指挥中心\\"]")?.click();return true')
   await clickText('.sidebar .quick-capture', '收纳箱')
   await wait(() => execute('return document.querySelector(".notebook-content-list")?.innerText.includes("自动保存 P0 验收")'), 'note list')
   await openNote('自动保存 P0 验收')
+
+  const paneWidths = () => execute('return [...document.querySelectorAll(".notebook-resizable-layout > .notebook-sidebar, .notebook-resizable-layout > .notebook-main, .notebook-resizable-layout > .notebook-preview")].map((pane)=>Math.round(pane.getBoundingClientRect().width))')
+  const beforeResize = await paneWidths()
+  await execute(`const grip=document.querySelectorAll('.notebook-pane-resizer')[1];const x=grip.getBoundingClientRect().x+7;grip.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:x,pointerId:1}));window.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,clientX:x-80,pointerId:1}));window.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,clientX:x-80,pointerId:1}));return true`)
+  await wait(async () => (await paneWidths())[2] >= beforeResize[2] + 60, 'right pane drag changes width')
+  const afterRightResize = await paneWidths()
+  await execute(`const grip=document.querySelectorAll('.notebook-pane-resizer')[0];const x=grip.getBoundingClientRect().x+7;grip.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:x,pointerId:2}));window.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,clientX:x+70,pointerId:2}));window.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,clientX:x+70,pointerId:2}));return true`)
+  await wait(async () => (await paneWidths())[0] >= afterRightResize[0] + 50, 'left pane drag changes width')
+  const resizedWidths = await paneWidths()
+  const typingMs = await execute(`const editor=document.querySelector('.notebook-rich-editor');editor.textContent='长'.repeat(100000);const start=performance.now();for(let i=0;i<80;i++){editor.insertAdjacentText('beforeend','字');editor.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:'字'}))}return performance.now()-start`)
+  if (typingMs > 800) throw new Error(`Typing input handlers blocked for ${Math.round(typingMs)} ms`)
 
   const idleContent = '600ms idle autosave：' + '甲'.repeat(320)
   await editBody(idleContent)
@@ -75,11 +93,20 @@ try {
   await wait(async () => (await record(note.id)).content === switchContent, 'note switch flushed latest body')
 
   await openNote('自动保存 P0 验收')
+  await wait(() => execute('return document.querySelector(".notebook-rich-editor")?.innerText===arguments[0]', [switchContent]), 'switching back shows saved text, not stale list data')
+  await wait(() => execute('return [...document.querySelectorAll(".notebook-content-list article")].find((item)=>item.innerText.includes("自动保存 P0 验收"))?.innerText.includes(arguments[0])', [switchContent.slice(0, 15)]), 'note list summary shows latest save')
+  await clickText('.sidebar nav button', '指挥中心')
+  await clickText('.sidebar .quick-capture', '收纳箱')
+  await clickText('.notebook-category-list button', '自动保存验收分类')
+  await openNote('自动保存 P0 验收')
+  await wait(() => execute('return document.querySelector(".notebook-rich-editor")?.innerText===arguments[0]', [switchContent]), 'leaving and returning to Inbox shows saved text')
   const recoveredContent = '强杀恢复：' + '丁'.repeat(380)
   await editBody(recoveredContent)
+  await wait(() => execute('return Boolean(localStorage.getItem(arguments[0]))', [`jason-os-note-recovery:${note.id}`]), 'debounced crash recovery snapshot')
   app.kill('SIGKILL'); sessionId = ''; await pause(500)
   await launch()
   await clickText('.sidebar .quick-capture', '收纳箱')
+  await wait(async () => { const widths = await paneWidths(); return widths.length === 3 && Math.abs(widths[0] - resizedWidths[0]) < 5 && Math.abs(widths[2] - resizedWidths[2]) < 5 }, 'pane widths persist after restart')
   await clickText('.notebook-category-list button', '自动保存验收分类')
   await openNote('自动保存 P0 验收')
   await wait(() => execute('return document.querySelector(".notebook-rich-editor")?.innerText===arguments[0]', [recoveredContent]), 'crash recovery restored editor')
@@ -88,9 +115,10 @@ try {
   const outbox = await invoke('list_sync_outbox', { limit: 1000 })
   const noteUpdates = outbox.filter((item) => item.entityType === 'notes' && item.entityId === note.id && item.operation === 'UPDATE')
   if (noteUpdates.length !== 1) throw new Error(`Expected one coalesced note UPDATE, got ${noteUpdates.length}`)
-  console.log(JSON.stringify({ status: 'passed', noteId: note.id, checks: ['600ms idle autosave', 'category flush preserves 300+ chars', 'categorized note leaves unorganized', 'category switch removes old membership', 'category clear returns to unorganized', 'note switch flush', 'SIGKILL recovery', 'recovery promoted to SQLite', 'one pending note UPDATE'] }))
+  console.log(JSON.stringify({ status: 'passed', noteId: note.id, typingMs: Math.round(typingMs), checks: ['low-latency typing input', 'left and right pane drag with restart persistence', 'idle autosave', 'category flush preserves 300+ chars', 'categorized note leaves unorganized', 'category switch removes old membership', 'category clear returns to unorganized', 'note switch flush', 'switch back and route return show saved content', 'SIGKILL recovery', 'recovery promoted to SQLite', 'one pending note UPDATE'] }))
 } catch (error) {
-  console.error(JSON.stringify({ status: 'failed', dataDir, error: String(error) }))
+  const ui = sessionId ? await execute('return {view:document.querySelector(".main-content")?.innerText.slice(0,180),count:document.querySelectorAll(".notebook-content-list article").length}').catch(() => null) : null
+  console.error(JSON.stringify({ status: 'failed', dataDir, error: String(error), ui }))
   process.exitCode = 1
 } finally {
   if (sessionId) await fetch(`${endpoint}/session/${sessionId}`, { method: 'DELETE' }).catch(() => undefined)
