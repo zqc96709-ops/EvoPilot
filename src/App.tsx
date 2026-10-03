@@ -894,9 +894,14 @@ function NotebookView({ records, savedNotesRef, externalItems, captureConfig, on
   const editorFlushRef = useRef<(() => Promise<void>) | null>(null)
   const flushEditor = () => editorFlushRef.current?.() ?? Promise.resolve()
   const [savedNotes, setSavedNotes] = useState<Record<string, RecordData>>(() => savedNotesRef.current)
+  const [openingNotebookId, setOpeningNotebookId] = useState('')
+  const openNotebookRequest = useRef(0)
   const openNotebookItem = async (id: string) => {
-    try { await flushEditor(); setSavedNotes(savedNotesRef.current); setSelectedId(id) }
-    catch (error) { onNotice(`笔记保存失败，已保留当前编辑：${String(error)}`, 'danger') }
+    const request = ++openNotebookRequest.current
+    setOpeningNotebookId(id)
+    try { await flushEditor(); if (request !== openNotebookRequest.current) return; setSavedNotes(savedNotesRef.current); setSelectedId(id) }
+    catch (error) { if (request === openNotebookRequest.current) onNotice(`笔记保存失败，已保留当前编辑：${String(error)}`, 'danger') }
+    finally { if (request === openNotebookRequest.current) setOpeningNotebookId('') }
   }
   useEffect(() => { api.archived().then((items) => setArchived(items.filter((record) => ['notes', 'notebookFiles', 'notebookFolders', 'inbox'].includes(record.entity)))) }, [records])
   const categories = records.filter((record) => record.entity === 'notebookCategories')
@@ -1236,7 +1241,7 @@ function NotebookView({ records, savedNotesRef, externalItems, captureConfig, on
           {filtered.map((record) => {
             const kind = record.entity === 'notes' ? '笔记' : record.entity === 'notebookFiles' ? String(record.extension || '文件').toUpperCase() : record.entity === 'notebookFolders' ? '文件夹' : '网页链接'
             const summary = record.entity === 'notes' ? String(record.content || '暂无正文。') : record.entity === 'notebookFiles' ? String(record.extractedContent || record.originalName || record.relativePath || '') : String(record.description || record.summary || record.url || record.sourceUrl || '打开查看内容')
-            return <article key={record.id} className={selected?.id === record.id ? 'active' : ''} onClick={() => void openNotebookItem(record.id)} onDoubleClick={() => record.entity === 'notebookFolders' ? void flushEditor().then(() => setFolderId(record.id)) : onOpen(record)}>
+            return <article key={record.id} className={(openingNotebookId || selected?.id) === record.id ? 'active' : ''} onClick={() => void openNotebookItem(record.id)} onDoubleClick={() => record.entity === 'notebookFolders' ? void flushEditor().then(() => setFolderId(record.id)) : onOpen(record)}>
               <input type="checkbox" checked={selectedIds.includes(record.id)} onClick={(event) => event.stopPropagation()} onChange={() => toggleSelected(record.id)} aria-label={'选择 ' + titleFor(record)} />
               <span className={`notebook-item-icon ${record.entity}`}>{record.entity === 'notebookFolders' ? '□' : record.entity === 'notebookFiles' ? fileIcon(record) : record.entity === 'inbox' ? '⌁' : '▤'}</span>
               <div className="notebook-item-copy">

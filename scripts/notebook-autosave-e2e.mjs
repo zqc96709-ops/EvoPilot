@@ -57,9 +57,9 @@ try {
   await request(`/session/${sessionId}/element/${elementId}/value`, { text: '真实键盘输入即时显示', value: [...'真实键盘输入即时显示'] })
   await wait(() => execute(`return document.querySelector('.notebook-rich-editor')?.innerText.includes('真实键盘输入即时显示')`), 'WebDriver keyboard text visible')
   await new Promise((done, reject) => execFile('swiftc', [resolve('scripts/native-keyboard.swift'), '-o', nativeKeyboard], (error) => error ? reject(error) : done(undefined)))
+  await execute('window.__notePaintLatency=[];document.querySelector(".notebook-rich-editor")?.focus();return true')
   await appleScript(`tell application "System Events" to set frontmost of first application process whose unix id is ${app.pid} to true`, 'delay 0.2')
   await pause(500)
-  await execute('window.__notePaintLatency=[];return true')
   await new Promise((resolve, reject) => execFile(nativeKeyboard, ['原生按键立即显示'], (error) => error ? reject(error) : resolve(undefined)))
   await wait(() => execute(`return document.querySelector('.notebook-rich-editor')?.innerText.includes('原生按键立即显示')`), 'native keyboard text visible')
   await pause(100)
@@ -112,7 +112,9 @@ try {
   await openNote('自动保存 P0 验收')
   const switchContent = '切换笔记前输入：' + '丙'.repeat(340)
   await editBody(switchContent)
-  await openNote('切换目标笔记')
+  const immediateSelection = await executeAsync(`const done=arguments[arguments.length-1];const target=[...document.querySelectorAll('.notebook-content-list article')].find((item)=>item.innerText.includes(arguments[0]));target.click();requestAnimationFrame(()=>done(target.classList.contains('active')))`, ['切换目标笔记'])
+  if (!immediateSelection) throw new Error('Note click did not show selection feedback on the first frame')
+  await wait(() => execute('return document.querySelector(".notebook-editor-title")?.value===arguments[0]', ['切换目标笔记']), 'switch target note')
   await wait(async () => (await record(note.id)).content === switchContent, 'note switch flushed latest body')
 
   await openNote('自动保存 P0 验收')
@@ -138,7 +140,7 @@ try {
   const outbox = await invoke('list_sync_outbox', { limit: 1000 })
   const noteUpdates = outbox.filter((item) => item.entityType === 'notes' && item.entityId === note.id && item.operation === 'UPDATE')
   if (noteUpdates.length !== 1) throw new Error(`Expected one coalesced note UPDATE, got ${noteUpdates.length}`)
-  console.log(JSON.stringify({ status: 'passed', noteId: note.id, nativeMaxPaintMs: Math.round(Math.max(...nativePaintLatencies)), checks: ['native macOS keyboard input visible within paint budget', 'WebDriver keyboard text visible', 'unfinished IME composition not saved', 'completed IME composition saved', 'low-latency synthetic input', 'left and right pane drag with restart persistence', 'idle autosave', 'category flush preserves 300+ chars', 'categorized note leaves unorganized', 'category switch removes old membership', 'category clear returns to unorganized', 'note switch flush', 'switch back and route return show saved content', 'SIGKILL recovery', 'recovery promoted to SQLite', 'one pending note UPDATE'] }))
+  console.log(JSON.stringify({ status: 'passed', noteId: note.id, nativeMaxPaintMs: Math.round(Math.max(...nativePaintLatencies)), checks: ['native macOS keyboard input visible within paint budget', 'WebDriver keyboard text visible', 'unfinished IME composition not saved', 'completed IME composition saved', 'low-latency synthetic input', 'left and right pane drag with restart persistence', 'idle autosave', 'category flush preserves 300+ chars', 'categorized note leaves unorganized', 'category switch removes old membership', 'category clear returns to unorganized', 'note click immediate feedback', 'note switch flush', 'switch back and route return show saved content', 'SIGKILL recovery', 'recovery promoted to SQLite', 'one pending note UPDATE'] }))
 } catch (error) {
   const ui = sessionId ? await execute('return {view:document.querySelector(".main-content")?.innerText.slice(0,180),count:document.querySelectorAll(".notebook-content-list article").length}').catch(() => null) : null
   console.error(JSON.stringify({ status: 'failed', dataDir, error: String(error), ui }))
