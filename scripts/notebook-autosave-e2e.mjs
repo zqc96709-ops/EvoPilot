@@ -1,15 +1,17 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 
 const binary = process.env.JASON_OS_E2E_BIN || resolve('src-tauri/target/debug/bundle/macos/EVOPOLIT.app/Contents/MacOS/evopolit')
 const dataDir = await mkdtemp(join(tmpdir(), 'jason-os-note-autosave-e2e-'))
+const nativeKeyboard = join(dataDir, 'native-keyboard')
 const port = String(5500 + Math.floor(Math.random() * 200))
 const endpoint = `http://127.0.0.1:${port}`
 let app
 let sessionId = ''
 const pause = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
+const appleScript = (...lines) => new Promise((resolve, reject) => execFile('osascript', lines.flatMap((line) => ['-e', line]), (error, stdout) => error ? reject(error) : resolve(stdout)))
 const request = async (path, body) => { const response = await fetch(endpoint + path, { method: body ? 'POST' : 'GET', headers: body ? { 'content-type': 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined }); if (!response.ok) throw new Error(`${path}: ${response.status} ${await response.text()}`); return response.json() }
 const wait = async (check, label) => { const deadline = Date.now() + 15000; while (Date.now() < deadline) { try { const value = await check(); if (value) return value } catch {} await pause(100) } throw new Error(`Timed out: ${label}`) }
 const execute = (script, args = []) => request(`/session/${sessionId}/execute/sync`, { script, args }).then((result) => result.value)
@@ -48,6 +50,27 @@ try {
   await clickText('.sidebar .quick-capture', '收纳箱')
   await wait(() => execute('return document.querySelector(".notebook-content-list")?.innerText.includes("自动保存 P0 验收")'), 'note list')
   await openNote('自动保存 P0 验收')
+  await execute(`window.__notePaintLatency=[];const editor=document.querySelector('.notebook-rich-editor');editor.addEventListener('input',()=>{const started=performance.now();requestAnimationFrame(()=>requestAnimationFrame(()=>window.__notePaintLatency.push(performance.now()-started)))})`)
+  const editorElement = await request(`/session/${sessionId}/element`, { using: 'css selector', value: '.notebook-rich-editor' })
+  const elementId = editorElement.value['element-6066-11e4-a52e-4f735466cecf']
+  await request(`/session/${sessionId}/element/${elementId}/click`, {})
+  await request(`/session/${sessionId}/element/${elementId}/value`, { text: '真实键盘输入即时显示', value: [...'真实键盘输入即时显示'] })
+  await wait(() => execute(`return document.querySelector('.notebook-rich-editor')?.innerText.includes('真实键盘输入即时显示')`), 'WebDriver keyboard text visible')
+  await new Promise((done, reject) => execFile('swiftc', [resolve('scripts/native-keyboard.swift'), '-o', nativeKeyboard], (error) => error ? reject(error) : done(undefined)))
+  await appleScript(`tell application "System Events" to set frontmost of first application process whose unix id is ${app.pid} to true`, 'delay 0.2')
+  await pause(500)
+  await execute('window.__notePaintLatency=[];return true')
+  await new Promise((resolve, reject) => execFile(nativeKeyboard, ['原生按键立即显示'], (error) => error ? reject(error) : resolve(undefined)))
+  await wait(() => execute(`return document.querySelector('.notebook-rich-editor')?.innerText.includes('原生按键立即显示')`), 'native keyboard text visible')
+  await pause(100)
+  const nativePaintLatencies = await execute('return window.__notePaintLatency')
+  if (!nativePaintLatencies.length || Math.max(...nativePaintLatencies) > 150) throw new Error(`Native keyboard paint latency: ${nativePaintLatencies.join(',')}`)
+  const composingContent = '输入法组合中不应提前保存'
+  await execute(`const editor=document.querySelector('.notebook-rich-editor');editor.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));editor.textContent=arguments[0];editor.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertCompositionText',data:arguments[0],isComposing:true}));return true`, [composingContent])
+  await pause(1500)
+  if ((await record(note.id)).content === composingContent) throw new Error('Saved an unfinished IME composition')
+  await execute(`document.querySelector('.notebook-rich-editor').dispatchEvent(new CompositionEvent('compositionend',{bubbles:true}));return true`)
+  await wait(async () => (await record(note.id)).content === composingContent, 'finished IME composition persisted')
 
   const paneWidths = () => execute('return [...document.querySelectorAll(".notebook-resizable-layout > .notebook-sidebar, .notebook-resizable-layout > .notebook-main, .notebook-resizable-layout > .notebook-preview")].map((pane)=>Math.round(pane.getBoundingClientRect().width))')
   const beforeResize = await paneWidths()
@@ -115,7 +138,7 @@ try {
   const outbox = await invoke('list_sync_outbox', { limit: 1000 })
   const noteUpdates = outbox.filter((item) => item.entityType === 'notes' && item.entityId === note.id && item.operation === 'UPDATE')
   if (noteUpdates.length !== 1) throw new Error(`Expected one coalesced note UPDATE, got ${noteUpdates.length}`)
-  console.log(JSON.stringify({ status: 'passed', noteId: note.id, typingMs: Math.round(typingMs), checks: ['low-latency typing input', 'left and right pane drag with restart persistence', 'idle autosave', 'category flush preserves 300+ chars', 'categorized note leaves unorganized', 'category switch removes old membership', 'category clear returns to unorganized', 'note switch flush', 'switch back and route return show saved content', 'SIGKILL recovery', 'recovery promoted to SQLite', 'one pending note UPDATE'] }))
+  console.log(JSON.stringify({ status: 'passed', noteId: note.id, nativeMaxPaintMs: Math.round(Math.max(...nativePaintLatencies)), checks: ['native macOS keyboard input visible within paint budget', 'WebDriver keyboard text visible', 'unfinished IME composition not saved', 'completed IME composition saved', 'low-latency synthetic input', 'left and right pane drag with restart persistence', 'idle autosave', 'category flush preserves 300+ chars', 'categorized note leaves unorganized', 'category switch removes old membership', 'category clear returns to unorganized', 'note switch flush', 'switch back and route return show saved content', 'SIGKILL recovery', 'recovery promoted to SQLite', 'one pending note UPDATE'] }))
 } catch (error) {
   const ui = sessionId ? await execute('return {view:document.querySelector(".main-content")?.innerText.slice(0,180),count:document.querySelectorAll(".notebook-content-list article").length}').catch(() => null) : null
   console.error(JSON.stringify({ status: 'failed', dataDir, error: String(error), ui }))

@@ -895,7 +895,7 @@ function NotebookView({ records, savedNotesRef, externalItems, captureConfig, on
   const flushEditor = () => editorFlushRef.current?.() ?? Promise.resolve()
   const [savedNotes, setSavedNotes] = useState<Record<string, RecordData>>(() => savedNotesRef.current)
   const openNotebookItem = async (id: string) => {
-    try { await flushEditor(); setSelectedId(id) }
+    try { await flushEditor(); setSavedNotes(savedNotesRef.current); setSelectedId(id) }
     catch (error) { onNotice(`笔记保存失败，已保留当前编辑：${String(error)}`, 'danger') }
   }
   useEffect(() => { api.archived().then((items) => setArchived(items.filter((record) => ['notes', 'notebookFiles', 'notebookFolders', 'inbox'].includes(record.entity)))) }, [records])
@@ -977,7 +977,7 @@ function NotebookView({ records, savedNotesRef, externalItems, captureConfig, on
     }
     catch (error) { onNotice(`收纳失败：${String(error)}`, 'danger') }
   }
-  const selectScope = async (nextScope: string) => { await flushEditor(); setScope(nextScope); setFolderId(''); setSelectedId(''); setSelectedIds([]) }
+  const selectScope = async (nextScope: string) => { await flushEditor(); setSavedNotes(savedNotesRef.current); setScope(nextScope); setFolderId(''); setSelectedId(''); setSelectedIds([]) }
   const chooseCaptureFile = (accept = '*/*') => {
     setCaptureFileAccept(accept)
     window.setTimeout(() => fileInputRef.current?.click(), 0)
@@ -1251,7 +1251,7 @@ function NotebookView({ records, savedNotesRef, externalItems, captureConfig, on
       <div className="notebook-pane-resizer" role="separator" title="拖动调整右侧栏宽度" aria-label="调整右侧栏宽度" aria-orientation="vertical" onPointerDown={notebookPanes.startResize('right')}><span aria-hidden="true">⋮</span></div>
 
       <aside className={`notebook-preview ${selected?.entity === 'notes' ? 'note-preview' : 'detail-preview'}${editorFullscreen && selected?.entity === 'notes' ? ' fullscreen' : ''}`}>
-        {selected?.entity === 'notes' ? <><div className="notebook-capability-action"><button className="button" onClick={() => { setCapabilityPackId(''); setCapabilityFolderId(''); setCapabilityPickerOpen(true) }}>加入能力包</button></div><RichNotebookEditor note={selected} records={records} related={related} categories={categories} fullscreen={editorFullscreen} onOpen={onOpen} onCreateNote={() => void createManualNote()} onRefresh={onRefresh} onNotice={onNotice} onAi={onAi} onAssignCategory={assignCategory} onCreateCategory={() => { setCategoryDraft(''); setCategoryDialogOpen(true) }} onToggleFullscreen={() => setEditorFullscreen((current) => !current)} onClose={() => { setEditorFullscreen(false); setSelectedId('__closed__') }} onRelationsChanged={() => void api.relations(selected.id).then(setRelated)} onRegisterFlush={(value) => { editorFlushRef.current = value }} onSaved={(record) => { savedNotesRef.current = { ...savedNotesRef.current, [record.id]: record }; setSavedNotes(savedNotesRef.current) }} /></> : <>
+        {selected?.entity === 'notes' ? <><div className="notebook-capability-action"><button className="button" onClick={() => { setCapabilityPackId(''); setCapabilityFolderId(''); setCapabilityPickerOpen(true) }}>加入能力包</button></div><RichNotebookEditor note={selected} records={records} related={related} categories={categories} fullscreen={editorFullscreen} onOpen={onOpen} onCreateNote={() => void createManualNote()} onRefresh={onRefresh} onNotice={onNotice} onAi={onAi} onAssignCategory={assignCategory} onCreateCategory={() => { setCategoryDraft(''); setCategoryDialogOpen(true) }} onToggleFullscreen={() => setEditorFullscreen((current) => !current)} onClose={() => { setEditorFullscreen(false); setSelectedId('__closed__') }} onRelationsChanged={() => void api.relations(selected.id).then(setRelated)} onRegisterFlush={(value) => { editorFlushRef.current = value }} onSaved={(record) => { savedNotesRef.current = { ...savedNotesRef.current, [record.id]: record } }} /></> : <>
           <header><strong>{scope === 'files' || selected?.entity === 'notebookFiles' ? '文件' : scope === 'links' || selected?.entity === 'inbox' ? '链接' : '详情'}</strong><div>{scope === 'links' && <button className="notebook-preview-add" onClick={() => { setLinkDraft(''); setLinkComposerOpen(true) }}>＋ 添加链接</button>}{scope === 'files' && <button className="notebook-preview-add" onClick={() => fileInputRef.current?.click()}>＋ 添加文件</button>}{selected && scope !== 'archive' && <button className="notebook-preview-delete" onClick={() => requestDeleteSelection([selected.id])}>删除</button>}{selected && <button title="关闭" onClick={() => setSelectedId('__closed__')}>×</button>}</div></header>
           {selected ? <>
             <div className="notebook-preview-card"><span>{selected.entity === 'notebookFiles' ? fileIcon(selected) : selected.entity === 'notebookFolders' ? '□' : '⌁'}</span><h3>{titleFor(selected)}</h3><p>{descriptionFor(selected) || String(selected.originalName || selected.relativePath || selected.url || selected.sourceUrl || '独立收纳内容')}</p><small>{selected.entity === 'notebookFiles' ? '文件' : selected.entity === 'notebookFolders' ? '文件夹' : '链接'} · {formatDate(selected.updatedAt || selected.createdAt)}</small></div>
@@ -1513,32 +1513,40 @@ function RichNotebookEditor({ note, records, related, categories, fullscreen, on
   const [imagePickerOpen, setImagePickerOpen] = useState(false)
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
   const [deleting, setDeleting] = useState(false)
-  const [saveState, setSaveState] = useState<NoteSaveState>('CLEAN')
+  const saveStateRef = useRef<HTMLSpanElement>(null)
+  const showSaveState = (state: NoteSaveState) => {
+    if (!saveStateRef.current) return
+    saveStateRef.current.className = `notebook-save-state ${state.toLowerCase()}`
+    saveStateRef.current.textContent = state === 'DIRTY' ? '未保存' : state === 'SAVING' ? '保存中…' : state === 'ERROR' ? '保存失败' : state === 'SAVED' ? '已自动保存' : ''
+  }
   const titleRef = useRef(title)
   const tagsRef = useRef(tags)
   const controllerRef = useRef<NoteAutosaveController | null>(null)
   const captureTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const maxCaptureTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingCapture = useRef(false)
+  const composing = useRef(false)
   const html = () => editorRef.current ? durableNotebookHtml(editorRef.current) : ''
   const text = () => editorRef.current?.innerText.trim() || ''
   const snapshot = () => ({ noteId: note.id, title: titleRef.current.trim() || '未命名笔记', content: text(), contentHtml: html(), fileIds: editorRef.current ? notebookFileIds(editorRef.current) : [], tags: tagsRef.current })
-  const captureDirty = () => {
+  const captureDirty = (force = false) => {
     if (captureTimer.current) clearTimeout(captureTimer.current)
     if (maxCaptureTimer.current) clearTimeout(maxCaptureTimer.current)
     captureTimer.current = null; maxCaptureTimer.current = null
     if (!pendingCapture.current) return
+    if (composing.current && !force) return
     pendingCapture.current = false
     controllerRef.current?.update(snapshot())
   }
   const markDirty = () => {
     pendingCapture.current = true
-    setSaveState('DIRTY')
+    showSaveState('DIRTY')
+    if (composing.current) return
     if (captureTimer.current) clearTimeout(captureTimer.current)
     captureTimer.current = setTimeout(captureDirty, 300)
     if (!maxCaptureTimer.current) maxCaptureTimer.current = setTimeout(captureDirty, 1200)
   }
-  const flush = () => { captureDirty(); return controllerRef.current?.flush() ?? Promise.resolve() }
+  const flush = () => { captureDirty(true); return controllerRef.current?.flush() ?? Promise.resolve() }
   useEffect(() => {
     const nextTitle = String(note.title || '')
     const nextTags = tagsFor(note)
@@ -1578,21 +1586,21 @@ function RichNotebookEditor({ note, records, related, categories, fullscreen, on
         onSaved(saved)
       },
       recover: (draft) => writeNoteRecovery(note.id, draft),
-      onState: setSaveState,
+      onState: showSaveState,
     })
     controllerRef.current = controller
-    const registeredFlush = () => { captureDirty(); return controller.flush() }
+    const registeredFlush = () => { captureDirty(true); return controller.flush() }
     onRegisterFlush(registeredFlush)
-    const flushBeforeExit = () => { captureDirty(); void controller.flush().catch(() => {}) }
+    const flushBeforeExit = () => { captureDirty(true); void controller.flush().catch(() => {}) }
     window.addEventListener('pagehide', flushBeforeExit)
     if (recovered) {
       controller.update({ noteId: note.id, title: recovered.title, content: recovered.content, contentHtml: recovered.contentHtml, fileIds: recovered.fileIds, tags: recovered.tags })
       void controller.flush()
-    } else setSaveState('CLEAN')
+    } else showSaveState('CLEAN')
     return () => {
       window.removeEventListener('pagehide', flushBeforeExit)
       onRegisterFlush(null)
-      captureDirty()
+      captureDirty(true)
       void controller.flush().catch(() => {})
       controller.dispose()
       if (controllerRef.current === controller) controllerRef.current = null
@@ -1713,7 +1721,7 @@ function RichNotebookEditor({ note, records, related, categories, fullscreen, on
         <button className="notebook-fullscreen-note" title={fullscreen ? '缩小笔记栏' : '放大笔记栏'} aria-label={fullscreen ? '缩小笔记栏' : '放大笔记栏'} onClick={onToggleFullscreen}>{fullscreen ? '↙ 缩小' : '⛶ 放大'}</button>
         <button className="notebook-save-note" title="保存笔记" onClick={() => void save()}>保存</button>
         <button className="notebook-delete-note" title="删除笔记" onClick={() => setDeleteConfirmOpen(true)}>删除</button>
-        <span className={`notebook-save-state ${saveState.toLowerCase()}`}>{saveState === 'DIRTY' ? '未保存' : saveState === 'SAVING' ? '保存中…' : saveState === 'ERROR' ? '保存失败' : saveState === 'SAVED' ? '已自动保存' : ''}</span>
+        <span ref={saveStateRef} className="notebook-save-state clean" />
         <button title="关闭编辑器" onClick={() => void flush().then(onClose)}>×</button>
       </div>
     </header>
@@ -1750,7 +1758,7 @@ function RichNotebookEditor({ note, records, related, categories, fullscreen, on
         <button title="重做" onClick={() => command('redo')}>↷</button>
       </div>
       {imagePickerOpen && <div className="notebook-image-picker"><header><strong>添加图片</strong><button onClick={() => setImagePickerOpen(false)}>×</button></header><button className="notebook-image-local" onClick={() => imageInputRef.current?.click()}><span>＋</span><div><strong>从电脑添加</strong><small>选择本地 JPG、PNG、WebP 等图片</small></div></button><input ref={imageInputRef} className="hidden-file-input" type="file" accept="image/*" onChange={(event) => void addLocalImages(event.currentTarget.files)} /><div className="notebook-image-library"><strong>从收纳箱选择</strong>{inboxImages.length ? inboxImages.map((record) => <button key={record.id} onClick={() => void addInboxImage(record)}><span>▧</span><div><strong>{titleFor(record)}</strong><small>{String(record.extension || '图片').toUpperCase()}</small></div></button>) : <p>收纳箱里还没有图片。</p>}</div></div>}
-      <div ref={editorRef} className="notebook-rich-editor" contentEditable suppressContentEditableWarning data-placeholder="开始记录…" onInput={markDirty} onPaste={pasteImages} onDragOver={(event) => { if (Array.from(event.dataTransfer.items).some((item) => item.kind === 'file' && item.type.startsWith('image/'))) event.preventDefault() }} onDrop={dropImages} />
+      <div ref={editorRef} className="notebook-rich-editor" contentEditable suppressContentEditableWarning data-placeholder="开始记录…" onInput={markDirty} onCompositionStart={() => { composing.current = true }} onCompositionEnd={() => { composing.current = false; markDirty() }} onPaste={pasteImages} onDragOver={(event) => { if (Array.from(event.dataTransfer.items).some((item) => item.kind === 'file' && item.type.startsWith('image/'))) event.preventDefault() }} onDrop={dropImages} />
       <div className="notebook-editor-rule">— — —</div>
     </div>
     <div className="notebook-editor-tags">

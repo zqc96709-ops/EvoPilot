@@ -11,11 +11,11 @@ const frontend = spawn('pnpm', ['exec', 'vite', '--host', '127.0.0.1', '--port',
 frontend.stdout.on('data', (chunk) => output.push(chunk.toString())); frontend.stderr.on('data', (chunk) => output.push(chunk.toString()))
 let app; let sessionId = ''; const endpoint = `http://127.0.0.1:${port}`
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-const request = async (path, body) => { const response = await fetch(endpoint + path, { method: body ? 'POST' : 'GET', headers: body ? { 'content-type': 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined }); if (!response.ok) throw new Error(`${path}: ${response.status}`); return response.json() }
+const request = async (path, body) => { const response = await fetch(endpoint + path, { method: body ? 'POST' : 'GET', headers: body ? { 'content-type': 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined }); if (!response.ok) throw new Error(`${path}: ${response.status} ${await response.text()}`); return response.json() }
 const wait = async (check, label) => { const end = Date.now() + 15000; while (Date.now() < end) { try { const value = await check(); if (value) return value } catch {} await pause(100) } throw new Error(`Timed out: ${label}`) }
 const execute = (script, args = []) => request(`/session/${sessionId}/execute/sync`, { script, args }).then((result) => result.value)
 const executeAsync = (script, args = []) => request(`/session/${sessionId}/execute/async`, { script, args }).then((result) => result.value)
-const click = (selector, text = '') => execute(`const n=[...document.querySelectorAll(${JSON.stringify(selector)})].find((x)=>x.textContent.includes(${JSON.stringify(text)}));if(!n)throw new Error('Missing ${text}');n.click();return true`)
+const click = (selector, text = '') => execute(`const n=[...document.querySelectorAll(${JSON.stringify(selector)})].find((x)=>x.textContent.includes(${JSON.stringify(text)}));if(!n)throw new Error('Missing ${text} in ${selector}');n.click();return true`)
 const save = async (entity, data) => { const result = await executeAsync(`const done=arguments[arguments.length-1];window.__TAURI_INTERNALS__.invoke('save_record',{entity:arguments[0],data:arguments[1]}).then(done).catch((e)=>done({__error:String(e)}))`, [entity, data]); if (result?.__error) throw new Error(result.__error); return result }
 
 try {
@@ -60,14 +60,15 @@ try {
   const applicationState = await execute(`const n=[...document.querySelectorAll('.ci-applications button')].find((x)=>x.textContent.includes('用于决策'));return {text:n?.textContent,disabled:n?.disabled}`)
   if (applicationState.disabled) throw new Error(`Decision application disabled: ${JSON.stringify(applicationState)}`)
   await click('.ci-applications button', '用于决策'); await wait(() => execute('return Boolean(document.querySelector(".record-drawer"))'), `application relation ${JSON.stringify(applicationState)}`); await click('.record-drawer header button')
-  await click('.ci-models button', '反向思维'); await wait(() => execute('return Boolean(document.querySelector(".record-drawer"))'), 'model usage'); await click('.record-drawer header button')
+  await click('.sidebar nav button', '认知中心'); await wait(() => execute('return Boolean(document.querySelector(".ci-models button"))'), 'return to model overview')
+  await click('.ci-models button'); await wait(() => execute('return Boolean(document.querySelector(".record-drawer"))'), 'model usage'); await click('.record-drawer header button')
   await click('.ci-attention button'); await wait(() => execute('return Boolean(document.querySelector(".record-drawer"))'), 'attention detail'); await click('.record-drawer header button')
   await click('.ci-list.principles button'); await wait(() => execute('return Boolean(document.querySelector(".record-drawer"))'), 'principle detail'); await click('.record-drawer header button')
   await click('.ci-funnel-stats button', 'Review'); await wait(() => execute('return [...document.querySelectorAll(".ci-toolbar nav button")].some((x)=>x.classList.contains("active")&&x.textContent==="复盘")'), 'funnel route'); await click('.ci-toolbar nav button', '总览')
   for (const tab of ['洞见', '复盘', '知识', '原则', '思维模型', '总览']) { await click('.ci-toolbar nav button', tab); await wait(() => execute(`return [...document.querySelectorAll('.ci-toolbar nav button')].some((x)=>x.classList.contains('active')&&x.textContent===${JSON.stringify(tab)})`), `${tab} tab`) }
   await click('.ci-header button', '新建'); await wait(() => execute('return Boolean(document.querySelector(".record-modal"))'), 'create'); await click('.record-modal header button')
   await click('.ci-header button', 'AI 洞察推荐'); await wait(() => execute('return Boolean(document.querySelector(".ai-drawer"))'), 'AI entry'); await click('.ai-drawer header button')
-  for (const route of ['今天', '时间', '项目', '财务', '决策日志']) { await click('.sidebar nav button', route); await wait(() => execute(`return [...document.querySelectorAll('.sidebar nav button')].some((x)=>x.classList.contains('active')&&x.textContent.includes(${JSON.stringify(route)}))`), `${route} global route`) }
+  for (const route of ['今天', '时间', '项目', '财务', '决策中心']) { await click('.sidebar nav button', route); await wait(() => execute(`return [...document.querySelectorAll('.sidebar nav button')].some((x)=>x.classList.contains('active')&&x.textContent.includes(${JSON.stringify(route)}))`), `${route} global route`) }
   await click('.quick-capture'); await wait(() => execute('return Boolean(document.querySelector(".notebook-space"))'), 'notebook global route')
   await click('.sidebar nav button', '认知中心'); await wait(() => execute('return Boolean(document.querySelector(".cognition-center"))'), 'return cognition center')
   const responsive = []

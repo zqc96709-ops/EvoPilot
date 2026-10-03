@@ -45,6 +45,8 @@ try {
   await save('notes', { title: 'OpenAI 发布升级版', content: '整理产品与行业动态。', status: 'INBOX', type: 'NOTE', notebookCategoryId: ideas.id, tags: ['AI'] })
   const longNote = await save('notes', { title: '长笔记滚动验收', content: Array.from({ length: 180 }, (_, index) => `第 ${index + 1} 行：用于验证右侧详情栏独立滚动，不能推动其他栏。`).join('\n'), status: 'INBOX', type: 'NOTE' })
   for (let index = 0; index < 28; index += 1) await save('notes', { title: `分类滚动验收 ${index + 1}`, content: '用于收纳箱独立滚动验收。', status: 'INBOX', type: 'NOTE' })
+  await click('.sidebar nav button', '指挥中心')
+  await wait(() => execute('return Boolean(document.querySelector("[aria-label=\\"刷新指挥中心\\"]"))'), 'command center refresh')
   await execute('document.querySelector("[aria-label=\\"刷新指挥中心\\"]")?.click();return true')
   await responsive('open inbox', () => click('.sidebar .quick-capture', '收纳箱'), () => execute('return Boolean(document.querySelector(".notebook-space"))'), 500)
   const text = await execute('return document.querySelector(".notebook-space").innerText')
