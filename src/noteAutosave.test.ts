@@ -1,36 +1,42 @@
 import { describe, expect, it, vi } from 'vitest'
-import { NoteAutosaveController, type NoteDraftSnapshot } from './noteAutosave'
+import { NoteSaveController, type NoteDraftSnapshot } from './noteAutosave'
 
 const draft = (content: string) => ({ noteId: 'note-1', title: 'T', content, contentHtml: content, fileIds: [], tags: [] })
 
-describe('NoteAutosaveController', () => {
-  it('saves after the idle interval', async () => {
+describe('NoteSaveController', () => {
+  it('retains recovery but never saves merely because typing stops', async () => {
     vi.useFakeTimers()
     const saved: string[] = []
-    const controller = new NoteAutosaveController({ persist: async (value) => { saved.push(value.content) }, recover: () => {} })
+    let recovery: NoteDraftSnapshot | null = null
+    const controller = new NoteSaveController({ persist: async (value) => { saved.push(value.content) }, recover: (value) => { recovery = value } })
     controller.update(draft('latest'))
-    await vi.advanceTimersByTimeAsync(600)
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(saved).toEqual([])
+    expect(recovery).toMatchObject({ content: 'latest' })
+    await controller.flush()
     expect(saved).toEqual(['latest'])
+    expect(recovery).toBeNull()
     vi.useRealTimers()
   })
 
-  it('uses maxWait during continuous typing', async () => {
+  it('does not periodically save during continuous editing', async () => {
     vi.useFakeTimers()
     const saved: string[] = []
-    const controller = new NoteAutosaveController({ persist: async (value) => { saved.push(value.content) }, recover: () => {} })
-    for (let index = 0; index < 10; index += 1) {
+    const controller = new NoteSaveController({ persist: async (value) => { saved.push(value.content) }, recover: () => {} })
+    for (let index = 0; index < 20; index += 1) {
       controller.update(draft(String(index)))
       await vi.advanceTimersByTimeAsync(250)
     }
-    expect(saved.length).toBeGreaterThanOrEqual(1)
-    expect(saved[0]).toBe('7')
+    expect(saved).toEqual([])
+    await controller.flush()
+    expect(saved).toEqual(['19'])
     vi.useRealTimers()
   })
 
   it('serializes saves and never lets an older completion become final', async () => {
     const resolvers: Array<() => void> = []
     const saved: NoteDraftSnapshot[] = []
-    const controller = new NoteAutosaveController({
+    const controller = new NoteSaveController({
       persist: (value) => new Promise<void>((resolve) => { saved.push(value); resolvers.push(resolve) }),
       recover: () => {},
     })
@@ -51,7 +57,7 @@ describe('NoteAutosaveController', () => {
 
   it('keeps the recovery snapshot until the latest save succeeds', async () => {
     let recovery: NoteDraftSnapshot | null = null
-    const controller = new NoteAutosaveController({ persist: async () => {}, recover: (value) => { recovery = value } })
+    const controller = new NoteSaveController({ persist: async () => {}, recover: (value) => { recovery = value } })
     controller.update(draft('safe'))
     expect(recovery).toMatchObject({ content: 'safe' })
     await controller.flush()
@@ -61,7 +67,7 @@ describe('NoteAutosaveController', () => {
   it('coalesces repeated flush requests for the same edit', async () => {
     let calls = 0
     let release = () => {}
-    const controller = new NoteAutosaveController({ persist: () => new Promise<void>((resolve) => { calls += 1; release = resolve }), recover: () => {} })
+    const controller = new NoteSaveController({ persist: () => new Promise<void>((resolve) => { calls += 1; release = resolve }), recover: () => {} })
     controller.update(draft('once'))
     const first = controller.flush()
     const duplicate = controller.flush()
@@ -74,7 +80,7 @@ describe('NoteAutosaveController', () => {
 
   it('does not report a failed in-flight save as a successful navigation flush', async () => {
     let rejectSave: (error: Error) => void = () => {}
-    const controller = new NoteAutosaveController({ persist: () => new Promise<void>((_, reject) => { rejectSave = reject }), recover: () => {} })
+    const controller = new NoteSaveController({ persist: () => new Promise<void>((_, reject) => { rejectSave = reject }), recover: () => {} })
     controller.update(draft('must not disappear'))
     const autosave = controller.flush()
     const navigation = controller.flush()
@@ -82,15 +88,13 @@ describe('NoteAutosaveController', () => {
     rejectSave(new Error('disk full'))
     await expect(autosave).rejects.toThrow('disk full')
     await expect(navigation).rejects.toThrow('disk full')
-    controller.dispose()
   })
 
   it('still saves to SQLite when local recovery storage is full', async () => {
     const saved: string[] = []
-    const controller = new NoteAutosaveController({ persist: async (value) => { saved.push(value.content) }, recover: () => { throw new Error('quota exceeded') } })
+    const controller = new NoteSaveController({ persist: async (value) => { saved.push(value.content) }, recover: () => { throw new Error('quota exceeded') } })
     controller.update(draft('keep this note'))
     await controller.flush()
     expect(saved).toEqual(['keep this note'])
-    controller.dispose()
   })
 })

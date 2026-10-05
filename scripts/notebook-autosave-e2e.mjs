@@ -70,7 +70,10 @@ try {
   await pause(1500)
   if ((await record(note.id)).content === composingContent) throw new Error('Saved an unfinished IME composition')
   await execute(`document.querySelector('.notebook-rich-editor').dispatchEvent(new CompositionEvent('compositionend',{bubbles:true}));return true`)
-  await wait(async () => (await record(note.id)).content === composingContent, 'finished IME composition persisted')
+  await pause(3000)
+  if ((await record(note.id)).content === composingContent) throw new Error('Typing saved without an explicit Save')
+  await execute('document.querySelector(".notebook-save-note").click();return true')
+  await wait(async () => (await record(note.id)).content === composingContent, 'manual Save persists completed IME composition')
 
   const paneWidths = () => execute('return [...document.querySelectorAll(".notebook-resizable-layout > .notebook-sidebar, .notebook-resizable-layout > .notebook-main, .notebook-resizable-layout > .notebook-preview")].map((pane)=>Math.round(pane.getBoundingClientRect().width))')
   const beforeResize = await paneWidths()
@@ -83,9 +86,23 @@ try {
   const typingMs = await execute(`const editor=document.querySelector('.notebook-rich-editor');editor.textContent='长'.repeat(100000);const start=performance.now();for(let i=0;i<80;i++){editor.insertAdjacentText('beforeend','字');editor.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:'字'}))}return performance.now()-start`)
   if (typingMs > 800) throw new Error(`Typing input handlers blocked for ${Math.round(typingMs)} ms`)
 
-  const idleContent = '600ms idle autosave：' + '甲'.repeat(320)
+  const idleContent = '手动保存验收：' + '甲'.repeat(320)
   await editBody(idleContent)
-  await wait(async () => (await record(note.id)).content === idleContent, 'idle autosave persisted')
+  await pause(3000)
+  if ((await record(note.id)).content === idleContent) throw new Error('Idle edits must remain unsaved in SQLite')
+  await wait(() => execute('return JSON.parse(localStorage.getItem(arguments[0])||"null")?.content===arguments[1]', [`jason-os-note-recovery:${note.id}`, idleContent]), 'idle recovery only')
+  await execute('document.querySelector(".notebook-save-note").click();return true')
+  await wait(async () => (await record(note.id)).content === idleContent, 'manual Save persisted')
+
+  const beforeSaveAt = (await record(note.id)).lastAutosavedAt
+  const duringSaveContent = '保存过程中继续编辑：' + '戊'.repeat(320)
+  await execute(`document.querySelector('.notebook-save-note').click();const editor=document.querySelector('.notebook-rich-editor');editor.textContent=arguments[0];editor.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:arguments[0]}));return true`, [duringSaveContent])
+  await wait(async () => (await record(note.id)).lastAutosavedAt > beforeSaveAt, 'first manual Save reaches SQLite')
+  await pause(100)
+  if ((await record(note.id)).content !== idleContent) throw new Error('Saved newer typing without a second Save')
+  if (!(await execute('return document.querySelector(".notebook-save-state")?.classList.contains("dirty") && document.querySelector(".notebook-rich-editor")?.innerText===arguments[0]', [duringSaveContent]))) throw new Error('In-flight save lost typing or incorrectly marked it saved')
+  await execute('document.querySelector(".notebook-save-note").click();return true')
+  await wait(async () => (await record(note.id)).content === duringSaveContent, 'second Save persists newer typing')
 
   const categoryContent = '分类前立即输入：' + '乙'.repeat(360)
   await editBody(categoryContent)
@@ -140,7 +157,7 @@ try {
   const outbox = await invoke('list_sync_outbox', { limit: 1000 })
   const noteUpdates = outbox.filter((item) => item.entityType === 'notes' && item.entityId === note.id && item.operation === 'UPDATE')
   if (noteUpdates.length !== 1) throw new Error(`Expected one coalesced note UPDATE, got ${noteUpdates.length}`)
-  console.log(JSON.stringify({ status: 'passed', noteId: note.id, nativeMaxPaintMs: Math.round(Math.max(...nativePaintLatencies)), checks: ['native macOS keyboard input visible within paint budget', 'WebDriver keyboard text visible', 'unfinished IME composition not saved', 'completed IME composition saved', 'low-latency synthetic input', 'left and right pane drag with restart persistence', 'idle autosave', 'category flush preserves 300+ chars', 'categorized note leaves unorganized', 'category switch removes old membership', 'category clear returns to unorganized', 'note click immediate feedback', 'note switch flush', 'switch back and route return show saved content', 'SIGKILL recovery', 'recovery promoted to SQLite', 'one pending note UPDATE'] }))
+  console.log(JSON.stringify({ status: 'passed', noteId: note.id, nativeMaxPaintMs: Math.round(Math.max(...nativePaintLatencies)), checks: ['native macOS keyboard input visible within paint budget', 'WebDriver keyboard text visible', 'unfinished IME composition not saved', 'manual Save persists completed IME composition', 'low-latency synthetic input', 'left and right pane drag with restart persistence', 'idle recovery without SQLite writes; manual Save persists', 'typing during an in-flight Save remains dirty until saved again', 'category flush preserves 300+ chars', 'categorized note leaves unorganized', 'category switch removes old membership', 'category clear returns to unorganized', 'note click immediate feedback', 'note switch flush', 'switch back and route return show saved content', 'SIGKILL recovery', 'recovery promoted to SQLite', 'one pending note UPDATE'] }))
 } catch (error) {
   const ui = sessionId ? await execute('return {view:document.querySelector(".main-content")?.innerText.slice(0,180),count:document.querySelectorAll(".notebook-content-list article").length}').catch(() => null) : null
   console.error(JSON.stringify({ status: 'failed', dataDir, error: String(error), ui }))

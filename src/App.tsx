@@ -34,7 +34,7 @@ import { filterTimelineItems, groupTimelineItems, timelineCausalEdges, timelineG
 import { api, type AiProviderId, type BackupInfo, type CaptureProviderConfig, type CaptureProviderId, type ChatMessage, type HackStartConfig, type NotebookFilePreview } from './api'
 import { SpreadsheetPreview } from './SpreadsheetPreview'
 import { durableNotebookHtml, imageFiles, notebookFileIds } from './notebookImages'
-import { NoteAutosaveController, readNoteRecovery, writeNoteRecovery, type NoteDraftSnapshot, type NoteSaveState } from './noteAutosave'
+import { NoteSaveController, readNoteRecovery, writeNoteRecovery, type NoteDraftSnapshot, type NoteSaveState } from './noteAutosave'
 import { belongsToNotebookCategory, isUnorganizedNotebookItem } from './notebookClassification'
 import VoiceOperatingPanel from './voice/VoiceOperatingPanel'
 import { routeVoiceIntent } from './voice/intentRouter'
@@ -1519,16 +1519,18 @@ function RichNotebookEditor({ note, records, related, categories, fullscreen, on
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const saveStateRef = useRef<HTMLSpanElement>(null)
+  const lastSaveState = useRef<NoteSaveState | null>(null)
   const showSaveState = (state: NoteSaveState) => {
-    if (!saveStateRef.current) return
+    if (state === 'SAVED' && pendingCapture.current) state = 'DIRTY'
+    if (!saveStateRef.current || lastSaveState.current === state) return
+    lastSaveState.current = state
     saveStateRef.current.className = `notebook-save-state ${state.toLowerCase()}`
-    saveStateRef.current.textContent = state === 'DIRTY' ? '未保存' : state === 'SAVING' ? '保存中…' : state === 'ERROR' ? '保存失败' : state === 'SAVED' ? '已自动保存' : ''
+    saveStateRef.current.textContent = state === 'DIRTY' ? '未保存' : state === 'SAVING' ? '保存中…' : state === 'ERROR' ? '保存失败' : state === 'SAVED' ? '已保存' : ''
   }
   const titleRef = useRef(title)
   const tagsRef = useRef(tags)
-  const controllerRef = useRef<NoteAutosaveController | null>(null)
+  const controllerRef = useRef<NoteSaveController | null>(null)
   const captureTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const maxCaptureTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingCapture = useRef(false)
   const composing = useRef(false)
   const html = () => editorRef.current ? durableNotebookHtml(editorRef.current) : ''
@@ -1536,8 +1538,7 @@ function RichNotebookEditor({ note, records, related, categories, fullscreen, on
   const snapshot = () => ({ noteId: note.id, title: titleRef.current.trim() || '未命名笔记', content: text(), contentHtml: html(), fileIds: editorRef.current ? notebookFileIds(editorRef.current) : [], tags: tagsRef.current })
   const captureDirty = (force = false) => {
     if (captureTimer.current) clearTimeout(captureTimer.current)
-    if (maxCaptureTimer.current) clearTimeout(maxCaptureTimer.current)
-    captureTimer.current = null; maxCaptureTimer.current = null
+    captureTimer.current = null
     if (!pendingCapture.current) return
     if (composing.current && !force) return
     pendingCapture.current = false
@@ -1548,8 +1549,8 @@ function RichNotebookEditor({ note, records, related, categories, fullscreen, on
     showSaveState('DIRTY')
     if (composing.current) return
     if (captureTimer.current) clearTimeout(captureTimer.current)
-    captureTimer.current = setTimeout(captureDirty, 300)
-    if (!maxCaptureTimer.current) maxCaptureTimer.current = setTimeout(captureDirty, 1200)
+    // Recovery only after typing stops; database writes happen on Save or leaving the note.
+    captureTimer.current = setTimeout(captureDirty, 2000)
   }
   const flush = () => { captureDirty(true); return controllerRef.current?.flush() ?? Promise.resolve() }
   useEffect(() => {
@@ -1583,10 +1584,10 @@ function RichNotebookEditor({ note, records, related, categories, fullscreen, on
         if (preview.kind === 'image' && preview.dataUrl && image.isConnected) image.src = preview.dataUrl
       }).catch(() => { image.alt = image.alt || '图片暂时不可用' })
     }
-    const controller = new NoteAutosaveController({
+    const controller = new NoteSaveController({
       persist: async (draft: NoteDraftSnapshot) => {
         const current = await api.get(draft.noteId)
-        if (!current || current.entity !== 'notes') throw new Error('笔记已不存在，无法自动保存')
+        if (!current || current.entity !== 'notes') throw new Error('笔记已不存在，无法保存')
         const saved = await api.save('notes', { ...current, title: draft.title, content: draft.content, contentHtml: draft.contentHtml, fileIds: draft.fileIds, tags: draft.tags, lastAutosavedAt: Date.now(), editSequence: draft.editSequence })
         onSaved(saved)
       },
@@ -1607,7 +1608,6 @@ function RichNotebookEditor({ note, records, related, categories, fullscreen, on
       onRegisterFlush(null)
       captureDirty(true)
       void controller.flush().catch(() => {})
-      controller.dispose()
       if (controllerRef.current === controller) controllerRef.current = null
     }
   // The editor must only be rehydrated when switching notes; metadata refreshes must never overwrite unsaved DOM content.
@@ -1726,7 +1726,7 @@ function RichNotebookEditor({ note, records, related, categories, fullscreen, on
         <button className="notebook-fullscreen-note" title={fullscreen ? '缩小笔记栏' : '放大笔记栏'} aria-label={fullscreen ? '缩小笔记栏' : '放大笔记栏'} onClick={onToggleFullscreen}>{fullscreen ? '↙ 缩小' : '⛶ 放大'}</button>
         <button className="notebook-save-note" title="保存笔记" onClick={() => void save()}>保存</button>
         <button className="notebook-delete-note" title="删除笔记" onClick={() => setDeleteConfirmOpen(true)}>删除</button>
-        <span ref={saveStateRef} className="notebook-save-state clean" />
+        <span ref={saveStateRef} className="notebook-save-state clean" title="编辑完成后点击保存；切换或关闭笔记时会保存以保护内容" />
         <button title="关闭编辑器" onClick={() => void flush().then(onClose)}>×</button>
       </div>
     </header>
