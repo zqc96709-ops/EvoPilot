@@ -4246,18 +4246,13 @@ fn setting(connection: &Connection, key: &str) -> Result<Option<String>, String>
         .map_err(|e| e.to_string())
 }
 
+const AI_PROVIDERS: &[&str] = &["hackstart", "deepseek", "minimax"];
+
 fn provider_models(provider: &str) -> &'static [&'static str] {
     match provider {
         "deepseek" => &["deepseek-v4-pro", "deepseek-v4-flash"],
         "minimax" => &["MiniMax-M3"],
-        "volc-agent-plan" => &[
-            "kimi-k3",
-            "deepseek-v4-flash",
-            "glm-5.2",
-            "minimax-m3",
-            "doubao-seed-evolving",
-            "kimi-k2.7-code",
-        ],
+        "volc-agent-plan" => &[],
         _ => &["gpt-5.5"],
     }
 }
@@ -5403,13 +5398,23 @@ fn store_provider_key(provider: &str, password: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn resolve_active_provider(provider: &str, configured: impl Fn(&str) -> bool) -> String {
+    if AI_PROVIDERS.contains(&provider) {
+        return provider.to_string();
+    }
+    AI_PROVIDERS
+        .iter()
+        .copied()
+        .find(|candidate| configured(candidate))
+        .unwrap_or("hackstart")
+        .to_string()
+}
+
 fn active_provider(connection: &Connection) -> Result<String, String> {
     let provider = setting(connection, "ai_provider")?.unwrap_or_else(|| "hackstart".to_string());
-    if ["hackstart", "deepseek", "minimax", "volc-agent-plan"].contains(&provider.as_str()) {
-        Ok(provider)
-    } else {
-        Ok("hackstart".into())
-    }
+    Ok(resolve_active_provider(&provider, |candidate| {
+        provider_key(candidate).is_ok()
+    }))
 }
 
 fn selected_model(connection: &Connection, provider: &str) -> Result<String, String> {
@@ -5472,7 +5477,7 @@ fn open_external(url: String) -> Result<(), String> {
 fn get_ai_config(app: AppHandle) -> Result<Value, String> {
     let connection = db(&app)?;
     let provider = active_provider(&connection)?;
-    let providers = ["hackstart", "deepseek", "minimax", "volc-agent-plan"]
+    let providers = AI_PROVIDERS
         .iter()
         .map(|item| provider_config(&connection, item))
         .collect::<Result<Vec<_>, _>>()?;
@@ -5608,7 +5613,7 @@ fn verify_provider(provider: &str, key: &str, model: &str) -> Result<Value, Stri
 
 #[tauri::command]
 fn test_ai_provider(app: AppHandle, provider: String, model: String) -> Result<Value, String> {
-    if !["hackstart", "deepseek", "minimax", "volc-agent-plan"].contains(&provider.as_str()) {
+    if !AI_PROVIDERS.contains(&provider.as_str()) {
         return Err("不支持的 AI 服务商".into());
     }
     let connection = db(&app)?;
@@ -5627,7 +5632,7 @@ fn configure_ai_provider(
     api_key: String,
     model: String,
 ) -> Result<Value, String> {
-    if !["hackstart", "deepseek", "minimax", "volc-agent-plan"].contains(&provider.as_str()) {
+    if !AI_PROVIDERS.contains(&provider.as_str()) {
         return Err("不支持的 AI 服务商".into());
     }
     let chosen_model = if model.trim().is_empty() {
@@ -7666,6 +7671,27 @@ mod tests {
         assert_ne!(new_id("goals"), new_id("goals"));
     }
     #[test]
+    fn retired_volc_provider_has_no_available_models() {
+        assert!(provider_models("volc-agent-plan").is_empty());
+    }
+    #[test]
+    fn retired_provider_falls_back_without_changing_supported_selections() {
+        assert_eq!(
+            resolve_active_provider("volc-agent-plan", |id| id == "deepseek"),
+            "deepseek"
+        );
+        assert_eq!(
+            resolve_active_provider("volc-agent-plan", |id| id == "minimax"),
+            "minimax"
+        );
+        assert_eq!(
+            resolve_active_provider("volc-agent-plan", |_| false),
+            "hackstart"
+        );
+        assert_eq!(resolve_active_provider("deepseek", |_| true), "deepseek");
+        assert!(!AI_PROVIDERS.contains(&"volc-agent-plan"));
+    }
+    #[test]
     fn current_provider_model_catalog_is_explicit() {
         assert_eq!(
             provider_models("deepseek"),
@@ -7676,21 +7702,7 @@ mod tests {
             provider_base_url("minimax"),
             "https://api.minimaxi.com/anthropic/v1/messages"
         );
-        assert_eq!(
-            provider_models("volc-agent-plan"),
-            &[
-                "kimi-k3",
-                "deepseek-v4-flash",
-                "glm-5.2",
-                "minimax-m3",
-                "doubao-seed-evolving",
-                "kimi-k2.7-code"
-            ]
-        );
-        assert_eq!(
-            provider_base_url("volc-agent-plan"),
-            "https://ark.cn-beijing.volces.com/api/plan/v3/responses"
-        );
+        assert_eq!(AI_PROVIDERS, &["hackstart", "deepseek", "minimax"]);
     }
     #[test]
     fn relation_fields_are_materialized() {

@@ -404,7 +404,7 @@ function App() {
     return { state: 'DONE', message: response.answer, actionId: response.action?.actionId }
   }
   const saveAiProvider = async (provider: AiProviderId, apiKey: string, model: string) => {
-    try { setAiConfig(await api.configureAiProvider(provider, apiKey, model)); showNotice(`${provider === 'deepseek' ? 'DeepSeek' : provider === 'minimax' ? 'MiniMax Token Plan' : provider === 'volc-agent-plan' ? '火山引擎 Agent Plan' : 'HackStart'} 配置已保存，连通性测试通过。`) }
+    try { setAiConfig(await api.configureAiProvider(provider, apiKey, model)); showNotice(`${provider === 'deepseek' ? 'DeepSeek' : provider === 'minimax' ? 'MiniMax Token Plan' : 'HackStart'} 配置已保存，连通性测试通过。`) }
     catch (error) { showNotice(`保存失败：${String(error)}`, 'danger') }
   }
   const saveCaptureProvider = async (provider: CaptureProviderId, apiKey: string) => {
