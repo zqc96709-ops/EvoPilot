@@ -135,6 +135,10 @@ export const api = {
   },
   async buildProvenance(): Promise<BuildProvenance> { return browser() ? { appPath: window.location.href, appVersion: 'web', gitCommit: String(import.meta.env.VITE_GIT_COMMIT || 'development'), buildTime: String(import.meta.env.VITE_BUILD_TIME || 'development'), schemaVersion: CLIENT_SCHEMA_VERSION, syncProtocolVersion: 1, workspaceId: 'local' } : invoke('get_build_provenance') },
   async archived(): Promise<RecordData[]> { return browser() ? (await (await webDb()).records()).filter((record) => record.archivedAt && !record.deletedAt) : invoke('list_archived') },
+  async searchForAi(query: string): Promise<RecordData[]> {
+    if (!browser()) return invoke('search_ai_records', { query })
+    return (await api.search(query)).filter((record) => !['agentRuns', 'agentActions'].includes(record.entity))
+  },
   async search(query: string, entities: Entity[] = []): Promise<RecordData[]> { return browser() ? (await (await webDb()).records()).filter(active).filter((record) => (!entities.length || entities.includes(record.entity)) && JSON.stringify(record).toLowerCase().includes(query.toLowerCase())) : entities.length ? invoke('search_records_filtered', { query, entities }) : invoke('search_records', { query }) },
   async queryDecisions(query: DecisionLogQuery): Promise<DecisionLogPage> { return browser() ? filterDecisionLogRecords(await (await webDb()).records(), query) : invoke('query_decision_records', { query }) },
   async relations(id: string): Promise<RecordData[]> {

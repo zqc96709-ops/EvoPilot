@@ -2475,14 +2475,23 @@ fn search_filtered(
     query: &str,
     entities: &[String],
 ) -> Result<Vec<Value>, String> {
+    search_filtered_impl(connection, query, entities, false)
+}
+
+fn search_filtered_impl(
+    connection: &Connection,
+    query: &str,
+    entities: &[String],
+    exclude_ai_audit: bool,
+) -> Result<Vec<Value>, String> {
     let trimmed = query.trim();
     let mut results = Vec::new();
     if trimmed.is_empty() {
         let mut statement = connection.prepare(
-            "SELECT id, entity, data_json, created_at, updated_at FROM records WHERE archived_at IS NULL AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 80"
+            "SELECT id, entity, data_json, created_at, updated_at FROM records WHERE archived_at IS NULL AND deleted_at IS NULL AND (?2=0 OR entity NOT IN ('agentRuns','agentActions')) ORDER BY updated_at DESC LIMIT 80"
         ).map_err(|e| e.to_string())?;
         let rows = statement
-            .query_map([], |row| {
+            .query_map(params!["", exclude_ai_audit], |row| {
                 Ok(value_to_record(
                     row.get(0)?,
                     row.get(1)?,
@@ -2505,10 +2514,10 @@ fn search_filtered(
             .join(" ");
         if !fts_query.is_empty() {
             let mut statement = connection.prepare(
-                "SELECT r.id, r.entity, r.data_json, r.created_at, r.updated_at FROM records_fts f JOIN records r ON r.id=f.id WHERE records_fts MATCH ?1 AND r.archived_at IS NULL AND r.deleted_at IS NULL ORDER BY rank LIMIT 80"
+                "SELECT r.id, r.entity, r.data_json, r.created_at, r.updated_at FROM records_fts f JOIN records r ON r.id=f.id WHERE records_fts MATCH ?1 AND r.archived_at IS NULL AND r.deleted_at IS NULL AND (?2=0 OR r.entity NOT IN ('agentRuns','agentActions')) ORDER BY rank LIMIT 80"
             ).map_err(|e| e.to_string())?;
             let rows = statement
-                .query_map(params![fts_query], |row| {
+                .query_map(params![fts_query, exclude_ai_audit], |row| {
                     Ok(value_to_record(
                         row.get(0)?,
                         row.get(1)?,
@@ -2525,10 +2534,10 @@ fn search_filtered(
         if results.is_empty() {
             let pattern = format!("%{}%", trimmed);
             let mut statement = connection.prepare(
-                "SELECT id, entity, data_json, created_at, updated_at FROM records WHERE archived_at IS NULL AND deleted_at IS NULL AND (title LIKE ?1 OR body LIKE ?1) ORDER BY updated_at DESC LIMIT 80"
+                "SELECT id, entity, data_json, created_at, updated_at FROM records WHERE archived_at IS NULL AND deleted_at IS NULL AND (?2=0 OR entity NOT IN ('agentRuns','agentActions')) AND (title LIKE ?1 OR body LIKE ?1) ORDER BY updated_at DESC LIMIT 80"
             ).map_err(|e| e.to_string())?;
             let rows = statement
-                .query_map(params![pattern], |row| {
+                .query_map(params![pattern, exclude_ai_audit], |row| {
                     Ok(value_to_record(
                         row.get(0)?,
                         row.get(1)?,
@@ -2555,6 +2564,11 @@ fn search_filtered(
                 .unwrap_or(false)
         })
         .collect())
+}
+
+#[tauri::command]
+fn search_ai_records(app: AppHandle, query: String) -> Result<Vec<Value>, String> {
+    search_filtered_impl(&db(&app)?, &query, &[], true)
 }
 
 #[tauri::command]
@@ -6570,42 +6584,122 @@ async fn ask_chief(
     .map_err(|error| format!("AI 后台任务失败：{error}"))?
 }
 
-fn compact_for_ai(value: &Value, depth: usize) -> Value {
+// UTF-8/JSON byte budgets are conservative size bounds, not token estimates.
+const AI_CONTEXT_BYTES: usize = 48 * 1024;
+const AI_REQUEST_BYTES: usize = 384 * 1024;
+
+fn bounded_ai_value(value: &Value, depth: usize, remaining: &mut usize) -> Value {
     match value {
+        Value::String(_) | Value::Array(_) | Value::Object(_) if depth >= 5 => {
+            bounded_ai_value(&json!("[嵌套内容已省略]"), 0, remaining)
+        }
         Value::String(text) => {
-            let limit = 12_000;
-            if text.chars().count() > limit {
-                let prefix = text.chars().take(limit).collect::<String>();
-                Value::String(format!("{prefix}\n[内容已省略]"))
-            } else {
-                Value::String(text.clone())
+            let chars = text.chars().take(12_000).collect::<Vec<_>>();
+            let mut count = chars.len();
+            loop {
+                let prefix = chars[..count].iter().collect::<String>();
+                let candidate = if prefix.len() < text.len() {
+                    format!("{prefix}\n[内容已省略]")
+                } else { prefix };
+                let size = serde_json::to_vec(&candidate).unwrap().len();
+                if size <= *remaining {
+                    *remaining -= size;
+                    return json!(candidate);
+                }
+                if count == 0 {
+                    *remaining -= 2;
+                    return json!("");
+                }
+                count /= 2;
             }
         }
         Value::Array(items) => {
-            if depth >= 5 {
-                return Value::String("[嵌套内容已省略]".into());
+            *remaining -= 2;
+            let mut output = Vec::new();
+            for item in items.iter().take(30) {
+                let comma = usize::from(!output.is_empty());
+                if *remaining < comma + 4 { break; }
+                *remaining -= comma;
+                output.push(bounded_ai_value(item, depth + 1, remaining));
             }
-            Value::Array(
-                items
-                    .iter()
-                    .take(30)
-                    .map(|item| compact_for_ai(item, depth + 1))
-                    .collect(),
-            )
+            Value::Array(output)
         }
         Value::Object(object) => {
-            if depth >= 5 {
-                return Value::String("[嵌套内容已省略]".into());
+            *remaining -= 2;
+            let mut output = serde_json::Map::new();
+            // Keep identifiers and safety/route metadata ahead of large payloads.
+            let priority = ["id", "entity", "type", "title", "analysisMode", "voiceMode",
+                "voiceIntent", "currentRoute", "currentEntityId", "currentGoalId",
+                "currentProjectId", "currentTaskId", "selectedItems", "globalContext"];
+            let keys = priority.iter().copied().filter(|key| object.contains_key(*key))
+                .chain(object.keys().map(String::as_str).filter(|key| !priority.contains(key)));
+            for key in keys {
+                let overhead = serde_json::to_vec(key).unwrap().len() + 1
+                    + usize::from(!output.is_empty());
+                if *remaining < overhead + 4 { continue; }
+                *remaining -= overhead;
+                output.insert(key.into(), bounded_ai_value(&object[key], depth + 1, remaining));
             }
-            Value::Object(
-                object
-                    .iter()
-                    .map(|(key, item)| (key.clone(), compact_for_ai(item, depth + 1)))
-                    .collect(),
-            )
+            Value::Object(output)
         }
-        _ => value.clone(),
+        _ => {
+            let size = serde_json::to_vec(value).unwrap().len();
+            if size <= *remaining {
+                *remaining -= size;
+                value.clone()
+            } else {
+                *remaining -= 4;
+                Value::Null
+            }
+        }
     }
+}
+
+fn compact_for_ai(value: &Value, depth: usize) -> Value {
+    let mut remaining = AI_CONTEXT_BYTES;
+    bounded_ai_value(value, depth, &mut remaining)
+}
+
+fn ai_request_messages(
+    question: &str, page_context: &Value, local_context: &[Value],
+    history: Vec<Value>, schema_registry: Value, tool_definitions: Value,
+    system: &str,
+) -> Result<Vec<Value>, String> {
+    if question.len() > 16 * 1024 {
+        return Err("当前消息过长，请分段发送或缩小问题范围；原始内容未删除。".into());
+    }
+    let mut page = page_context.clone();
+    if let Some(object) = page.as_object_mut() {
+        object.remove("recentConversation"); // History is sent once, not duplicated inside context.
+    }
+    let page = bounded_ai_value(&page, 0, &mut (16 * 1024));
+    let page_json = serde_json::to_string(&page).map_err(|error| error.to_string())?;
+    let context_json = serde_json::to_string(local_context).map_err(|error| error.to_string())?;
+    let schema_json = serde_json::to_string(&schema_registry).map_err(|error| error.to_string())?;
+    let tools_json = serde_json::to_string(&tool_definitions).map_err(|error| error.to_string())?;
+    let mut messages = Vec::new();
+    let mut remaining = 24 * 1024;
+    let history_len = history.len();
+    for (index, message) in history.into_iter().enumerate().rev().take(10) {
+        let (Some(role), Some(content)) = (message["role"].as_str(), message["content"].as_str()) else { continue; };
+        if !["user", "assistant"].contains(&role)
+            || (index + 1 == history_len && role == "user" && content == question) { continue; }
+        if remaining < 128 { break; }
+        let content = bounded_ai_value(&json!(content), 0, &mut remaining.min(8 * 1024));
+        let message = json!({"role": role, "content": content});
+        let size = serde_json::to_vec(&message).unwrap().len();
+        if size > remaining { break; }
+        remaining -= size;
+        messages.push(message);
+    }
+    messages.reverse();
+    messages.push(json!({"role":"user","content":format!("当前页面上下文：\n{page_json}\n\nEvoPilot Schema Registry：\n{schema_json}\n\n允许使用的 Tool Registry：\n{tools_json}\n\n相关本地记录与可调用思维模型：\n{context_json}\n\n说明：上下文和历史可能因长度预算省略；未提供的内容不能推断为不存在，需要时请缩小检索范围。\n\n当前用户请求：\n{question}")}));
+    let size = serde_json::to_vec(&messages).map_err(|error| error.to_string())?.len()
+        + serde_json::to_vec(system).map_err(|error| error.to_string())?.len();
+    if size > AI_REQUEST_BYTES {
+        return Err("AI 请求资料超过安全长度，请缩小分析范围；聊天和本地资料未删除。".into());
+    }
+    Ok(messages)
 }
 
 fn workspace_document_roots(app: &AppHandle) -> Vec<PathBuf> {
@@ -6719,7 +6813,7 @@ fn ask_chief_blocking(
         .and_then(|budget| budget.get("maxRelatedEntities"))
         .and_then(Value::as_u64)
         .unwrap_or(24) as usize;
-    let mut local_context = search_filtered(&connection, &question, &[])?;
+    let mut local_context = search_filtered_impl(&connection, &question, &[], true)?;
     local_context.retain(|record| record["entity"].as_str() != Some("profiles"));
     if !include_inbox {
         local_context.retain(|record| record["entity"].as_str() != Some("inbox"));
@@ -6746,6 +6840,9 @@ fn ask_chief_blocking(
     }
     for id in context_ids {
         if let Some(record) = record_by_id(&connection, &id)? {
+            if matches!(record["entity"].as_str(), Some("agentRuns" | "agentActions")) {
+                continue;
+            }
             if !local_context
                 .iter()
                 .any(|existing| existing["id"] == record["id"])
@@ -6782,19 +6879,10 @@ fn ask_chief_blocking(
             ),
         }
     }
+    local_context.retain(|record| !matches!(record["entity"].as_str(), Some("agentRuns" | "agentActions")));
     local_context.truncate(48);
-    let local_context = local_context
-        .iter()
-        .map(|record| compact_for_ai(record, 0))
-        .collect::<Vec<_>>();
-    let context_json =
-        serde_json::to_string_pretty(&local_context).map_err(|error| error.to_string())?;
-    let schema_json = serde_json::to_string(&schema_registry.unwrap_or_else(|| json!([])))
-        .map_err(|error| error.to_string())?;
-    let tools_json = serde_json::to_string(&tool_definitions.unwrap_or_else(|| json!([])))
-        .map_err(|error| error.to_string())?;
-    let page_json =
-        serde_json::to_string_pretty(&page_context).map_err(|error| error.to_string())?;
+    let local_context = compact_for_ai(&json!(local_context), 0)
+        .as_array().cloned().unwrap_or_default();
     let system = r#"你是 EvoPilot 的 AI Agent，也是用户的首席助理。你既能分析，也能通过受控 Action System 操作 EvoPilot。
 必须只返回一个 JSON 对象，禁止 Markdown 代码块。格式：
 {"mode":"chat|action","answer":"给用户看的简体中文","intent":"意图","toolName":"注册工具名","input":{},"missingFields":[]}
@@ -6826,18 +6914,11 @@ fn ask_chief_blocking(
 25. 用户要求根据成果或复盘优化工作链时，只能使用 createWorkflowImprovementProposal 生成改进提案，不能直接修改 Workflow、Promote 或 Rollback。
 26. 能力包只能引用能力资产与明确版本，不能复制资产正文；用户要求应用能力包时，必须说明会建立项目应用快照与模板实例。
 27. 能力资产的 ACTIVE 版本不可静默改写。需要变更时只能创建 DRAFT 新版本；发布、替换或归档必须由用户明确确认，不能自动执行。"#;
-    let mut messages = Vec::new();
-    let recent_history = history.unwrap_or_default();
-    let skip = recent_history.len().saturating_sub(10);
-    for message in recent_history.into_iter().skip(skip) {
-        if let (Some(role), Some(content)) = (message["role"].as_str(), message["content"].as_str())
-        {
-            if ["user", "assistant"].contains(&role) {
-                messages.push(json!({"role": role, "content": content}));
-            }
-        }
-    }
-    messages.push(json!({"role":"user","content":format!("当前页面上下文：\n{page_json}\n\nEvoPilot Schema Registry：\n{schema_json}\n\n允许使用的 Tool Registry：\n{tools_json}\n\n相关本地记录与可调用思维模型：\n{context_json}\n\n当前用户请求：\n{question}")}));
+    let messages = ai_request_messages(
+        &question, &page_context, &local_context, history.unwrap_or_default(),
+        schema_registry.unwrap_or_else(|| json!([])),
+        tool_definitions.unwrap_or_else(|| json!([])), system,
+    )?;
     let (response_json, _) = call_provider(&provider, &key, &model, system, &messages, 2800)?;
     let raw = provider_response_text(&provider, &response_json);
     if raw.trim().is_empty() {
@@ -6962,6 +7043,7 @@ pub fn run() {
             restore_record,
             list_archived,
             search_records,
+            search_ai_records,
             search_records_filtered,
             list_relations,
             add_relation,
@@ -7005,6 +7087,91 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ai_search_excludes_audit_before_limit_but_global_search_keeps_it() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE records(id TEXT PRIMARY KEY,entity TEXT NOT NULL,data_json TEXT NOT NULL,title TEXT,body TEXT,created_at TEXT,updated_at TEXT,archived_at TEXT,deleted_at TEXT); CREATE VIRTUAL TABLE records_fts USING fts5(id UNINDEXED,entity UNINDEXED,title,body);").unwrap();
+        for index in 0..101 {
+            let id = format!("record-{index}");
+            let entity = if index == 100 { "notes" } else if index % 2 == 0 { "agentRuns" } else { "agentActions" };
+            let value = json!({"id": id, "entity": entity, "title": "你好", "content": "真实记录"});
+            connection.execute("INSERT INTO records VALUES(?1,?2,?3,'你好','原始 记录','0',?4,NULL,NULL)", params![id, entity, value.to_string(), if index == 100 { "0" } else { "1" }]).unwrap();
+            connection.execute("INSERT INTO records_fts VALUES(?1,?2,'你好','正文')", params![id, entity]).unwrap();
+        }
+        for query in ["", "你好", "原始 记录"] {
+            let found = search_filtered_impl(&connection, query, &[], true).unwrap();
+            assert_eq!(found.len(), 1);
+            assert_eq!(found[0]["entity"], "notes");
+            assert!(search_filtered(&connection, query, &[]).unwrap().iter()
+                .any(|record| matches!(record["entity"].as_str(), Some("agentRuns" | "agentActions"))));
+        }
+    }
+
+    #[test]
+    fn ai_request_bounds_history_preserves_question_and_full_registries() {
+        let large = "旧历史你好\"\n".repeat(200_000);
+        let mut history = (0..10).map(|_| json!({"role":"assistant","content":large})).collect::<Vec<_>>();
+        history.push(json!({"role":"user","content":"你好"}));
+        let page = json!({"analysisMode":"timeline_readonly", "currentEntityId":"project-1",
+            "recentConversation": history, "payload": large});
+        let messages = ai_request_messages("你好", &page, &[], history,
+            json!([{"entity":"tasks","required":["title"]}]),
+            json!([{"name":"createTask","risk":"LOW_WRITE"}]), "unchanged safety rules").unwrap();
+        let serialized = serde_json::to_string(&messages).unwrap();
+        assert!(serialized.len() < 64 * 1024);
+        let request = messages.last().unwrap()["content"].as_str().unwrap();
+        assert!(request.ends_with("当前用户请求：\n你好"));
+        assert!(request.contains("timeline_readonly"));
+        assert!(request.contains("project-1"));
+        assert!(request.contains(r#"[{"entity":"tasks","required":["title"]}]"#));
+        assert!(request.contains(r#"[{"name":"createTask","risk":"LOW_WRITE"}]"#));
+        assert!(!request.contains("recentConversation"));
+        assert!(!messages[..messages.len()-1].iter().any(|message| message["content"] == "你好"));
+    }
+
+    #[test]
+    fn ai_request_keeps_normal_history_and_rejects_oversized_required_input() {
+        let history = vec![json!({"role":"system","content":"untrusted"}), json!({"role":"user","content":"上一条问题"}), json!({"role":"assistant","content":"上一条回答"})];
+        let messages = ai_request_messages("新问题", &json!({}), &[], history,
+            json!([]), json!([]), "rules").unwrap();
+        assert_eq!(messages[0]["content"], "上一条问题");
+        assert_eq!(messages[1]["content"], "上一条回答");
+        assert_eq!(messages.len(), 3);
+        assert!(ai_request_messages(&"大".repeat(6000), &json!({}), &[], vec![],
+            json!([]), json!([]), "rules").is_err());
+        assert!(ai_request_messages("你好", &json!({}), &[], vec![],
+            json!({"schema": "x".repeat(AI_REQUEST_BYTES)}), json!([]), "rules").is_err());
+    }
+
+    #[test]
+    fn ai_compaction_counts_escaped_utf8_and_tiny_remaining_budgets() {
+        let source = json!({"id":"note-1","entity":"notes","content":"你好\"\n".repeat(10_000),
+            "values":[true,123456789,json!({"nested":"内容".repeat(10_000)})]});
+        for limit in [4, 16, 64, 256, 4096, AI_CONTEXT_BYTES] {
+            let mut remaining = limit;
+            let compact = bounded_ai_value(&source, 0, &mut remaining);
+            let serialized = serde_json::to_vec(&compact).unwrap();
+            assert!(serialized.len() <= limit);
+            assert_eq!(serialized.len(), limit - remaining);
+            assert_eq!(serde_json::from_slice::<Value>(&serialized).unwrap(), compact);
+        }
+    }
+
+
+    #[test]
+    fn ai_context_has_one_total_budget_not_one_budget_per_field() {
+        let records = (0..48).map(|index| json!({
+            "id": format!("note-{index}"), "entity": "notes",
+            "content": "你好\"\n".repeat(10_000),
+            "description": "正文".repeat(10_000)
+        })).collect::<Vec<_>>();
+        let compact = compact_for_ai(&json!(records), 0);
+        assert!(serde_json::to_vec(&compact).unwrap().len() <= 48 * 1024);
+        assert_eq!(compact[0]["id"], "note-0");
+        assert_eq!(compact[0]["entity"], "notes");
+    }
+
 
     #[test]
     fn break_even_state_uses_existing_local_sqlite_settings() {

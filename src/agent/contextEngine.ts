@@ -9,6 +9,7 @@ const stringValue = (value: unknown) => typeof value === 'string' && value ? val
 export type ContextRelationIndex = Map<string, string[]>
 
 const active = (record: RecordData) => !record.archivedAt && !record.deletedAt
+const aiContextRecord = (record: RecordData) => active(record) && !['agentRuns', 'agentActions'].includes(record.entity)
 const short = (value: unknown, limit = 220) => String(value || '').replace(/\s+/g, ' ').trim().slice(0, limit)
 const reference = (record: RecordData, source: ContextReference['source']): ContextReference => ({ id: record.id, entity: record.entity, title: titleFor(record), status: stringValue(record.status), summary: short(record.summary || record.description || record.content || record.whatHappened || record.problem || record.notes), source })
 const IDs = (value: unknown) => Array.isArray(value) ? value.map(String) : String(value || '').split(',').map((item) => item.trim()).filter(Boolean)
@@ -91,11 +92,11 @@ export function detectContextGaps(records: RecordData[]): ContextGap[] {
 export function buildGlobalContext({ query, currentRoute, records, context, relationIndex, retrievedRecords = [] }: { query: string; currentRoute: string; records: RecordData[]; context: AgentContext; relationIndex: ContextRelationIndex; retrievedRecords?: RecordData[] }): GlobalContextPackage {
   const intent = detectGlobalIntent(query, currentRoute); const includeInbox = explicitlyIncludesInbox(query)
   const budget: ContextBudget = { maxRelationDepth: 2, maxRelatedEntities: 24, maxSearchResults: 8, usedRelatedEntities: 0, usedSearchResults: 0 }
-  const live = records.filter(active); const byId = new Map(live.map((record) => [record.id, record]))
+  const live = records.filter(aiContextRecord); const byId = new Map(live.map((record) => [record.id, record]))
   const primary = byId.get(context.currentEntityId || '') || byId.get(context.currentProjectId || '')
   const related = traverse(primary?.id, relationIndex, byId, includeInbox, budget)
   budget.usedRelatedEntities = related.length
-  const retrieved = retrievedRecords.filter((record) => active(record) && (includeInbox || record.entity !== 'inbox') && record.id !== primary?.id && !related.some((item) => item.id === record.id)).slice(0, budget.maxSearchResults)
+  const retrieved = retrievedRecords.filter((record) => aiContextRecord(record) && (includeInbox || record.entity !== 'inbox') && record.id !== primary?.id && !related.some((item) => item.id === record.id)).slice(0, budget.maxSearchResults)
   budget.usedSearchResults = retrieved.length
   const scoped = [primary, ...related].filter(Boolean) as RecordData[]
   const project = primary?.entity === 'projects' ? primary : scoped.find((record) => record.entity === 'projects') || (context.currentProjectId ? byId.get(context.currentProjectId) : undefined)

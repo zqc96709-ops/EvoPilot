@@ -6,6 +6,20 @@ const record = (entity: RecordData['entity'], id: string, data: Record<string, u
 const contextFor = (records: RecordData[], id = 'p1') => buildAgentContext({ currentRoute: 'projects', records, selectedProjectId: id, detailId: id, conversation: [] })
 
 describe('Global Context Engine', () => {
+  it('does not retrieve audit snapshots even when selected or related', () => {
+    const records = [
+      record('projects', 'p1', { title: '项目' }),
+      record('agentRuns', 'run1', { title: '你好', projectId: 'p1', context: [{ content: 'recursive' }] }),
+      record('agentActions', 'action1', { title: '你好', projectId: 'p1' }),
+      record('notes', 'note1', { title: '你好', content: '真实笔记' }),
+    ]
+    const result = buildGlobalContext({ query: '你好', currentRoute: 'projects', records, context: contextFor(records), relationIndex: buildContextRelationIndex(records), retrievedRecords: records.slice(1) })
+    expect(result.retrievedEntities.map((item) => item.id)).toEqual(['note1'])
+    expect(result.relatedEntities.every((item) => !['agentRuns', 'agentActions'].includes(item.entity))).toBe(true)
+    const selected = buildGlobalContext({ query: '你好', currentRoute: 'projects', records, context: contextFor(records, 'run1'), relationIndex: buildContextRelationIndex(records) })
+    expect(selected.primaryContext?.entity).not.toBe('agentRuns')
+  })
+
   it('uses bounded structured project relations before search results', () => {
     const records = [
       record('goals', 'g1', { title: '增长目标' }), record('projects', 'p1', { title: '项目 A', goalId: 'g1', status: 'active' }),

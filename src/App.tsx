@@ -356,7 +356,7 @@ function App() {
     const intent = detectGlobalIntent(question, view)
     let retrievedRecords: RecordData[] = []
     if (shouldRetrieveGlobalContext(intent)) {
-      try { retrievedRecords = await api.search(question) } catch { /* AI still receives bounded structured context when search is unavailable. */ }
+      try { retrievedRecords = await api.searchForAi(question) } catch { /* AI still receives bounded structured context when search is unavailable. */ }
     }
     const baseContext = { ...agentContext, ...contextOverride, recentConversation: nextChat.slice(-10).map(({ role, content }) => ({ role, content })) }
     const requestContext = { ...baseContext, globalContext: buildGlobalContext({ query: question, currentRoute: view, records, context: baseContext, relationIndex: contextRelationIndex, retrievedRecords }) }
