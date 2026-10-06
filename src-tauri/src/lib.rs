@@ -4250,7 +4250,7 @@ const AI_PROVIDERS: &[&str] = &["hackstart", "deepseek", "minimax"];
 
 fn provider_models(provider: &str) -> &'static [&'static str] {
     match provider {
-        "deepseek" => &["deepseek-v4-pro", "deepseek-v4-flash"],
+        "deepseek" => &["deepseek-v4-pro", "deepseek-flash"],
         "minimax" => &["MiniMax-M3"],
         "volc-agent-plan" => &[],
         _ => &["gpt-5.5"],
@@ -5418,7 +5418,7 @@ fn active_provider(connection: &Connection) -> Result<String, String> {
 }
 
 fn selected_model(connection: &Connection, provider: &str) -> Result<String, String> {
-    Ok(setting(connection, &format!("{}_model", provider))?
+    let model = setting(connection, &format!("{}_model", provider))?
         .or_else(|| {
             if provider == "hackstart" {
                 setting(connection, "hackstart_model").ok().flatten()
@@ -5426,7 +5426,12 @@ fn selected_model(connection: &Connection, provider: &str) -> Result<String, Str
                 None
             }
         })
-        .unwrap_or_else(|| provider_models(provider)[0].to_string()))
+        .unwrap_or_else(|| provider_models(provider)[0].to_string());
+    if provider == "deepseek" && model == "deepseek-v4-flash" {
+        Ok("deepseek-flash".into())
+    } else {
+        Ok(model)
+    }
 }
 
 fn provider_config(connection: &Connection, provider: &str) -> Result<Value, String> {
@@ -5437,7 +5442,7 @@ fn provider_config(connection: &Connection, provider: &str) -> Result<Value, Str
                 "deepseek-v4-pro" => "高质量复杂推理",
                 "MiniMax-M3" => "最新旗舰 Agent 与推理模型",
                 "kimi-k3" => "Agent Plan Medium 当前文本模型",
-                "deepseek-v4-flash" => "低延迟高性价比",
+                "deepseek-flash" => "低延迟高性价比",
                 "glm-5.2" => "智谱 GLM 通用大模型",
                 "minimax-m3" => "MiniMax 旗舰 Agent 与推理模型",
                 "doubao-seed-evolving" => "豆包 Seed 自进化模型",
@@ -7692,10 +7697,25 @@ mod tests {
         assert!(!AI_PROVIDERS.contains(&"volc-agent-plan"));
     }
     #[test]
+    fn saved_deepseek_flash_uses_current_model_id() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(
+            "CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT);
+             INSERT INTO settings VALUES('deepseek_model','deepseek-v4-flash');"
+        ).unwrap();
+        assert_eq!(selected_model(&connection, "deepseek").unwrap(), "deepseek-flash");
+        assert_eq!(setting(&connection, "deepseek_model").unwrap().unwrap(), "deepseek-v4-flash");
+        connection.execute("UPDATE settings SET value=?1 WHERE key='deepseek_model'", ["deepseek-v4-pro"]).unwrap();
+        assert_eq!(selected_model(&connection, "deepseek").unwrap(), "deepseek-v4-pro");
+        connection.execute("UPDATE settings SET value=?1 WHERE key='deepseek_model'", ["deepseek-flash"]).unwrap();
+        assert_eq!(selected_model(&connection, "deepseek").unwrap(), "deepseek-flash");
+        assert_eq!(selected_model(&connection, "minimax").unwrap(), "MiniMax-M3");
+    }
+    #[test]
     fn current_provider_model_catalog_is_explicit() {
         assert_eq!(
             provider_models("deepseek"),
-            &["deepseek-v4-pro", "deepseek-v4-flash"]
+            &["deepseek-v4-pro", "deepseek-flash"]
         );
         assert_eq!(provider_models("minimax"), &["MiniMax-M3"]);
         assert_eq!(

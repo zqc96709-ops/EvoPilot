@@ -61,7 +61,7 @@ src-tauri/target/debug/bundle/macos/EvoPilot.app
 AI 首席助理支持独立选择服务商和模型：
 
 - HackStart：`gpt-5.5`
-- DeepSeek：`deepseek-v4-pro`、`deepseek-v4-flash`
+- DeepSeek：`deepseek-v4-pro`、`deepseek-flash`
 - MiniMax：`MiniMax-M3`
 
 每个服务商的 API Key 分别保存到 应用私有凭据文件（权限 0600）。切换服务商时不会覆盖其他服务商的 Key。

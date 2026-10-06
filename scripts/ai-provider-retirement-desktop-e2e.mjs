@@ -30,7 +30,7 @@ try {
   await wait(() => execute('return !!document.querySelector(".news-radar-shortcut")'), 'shell')
   const config = await invoke('get_ai_config')
   assert(JSON.stringify(config.providers.map(provider => provider.id)) === JSON.stringify(['hackstart', 'deepseek', 'minimax']), 'supported providers')
-  assert(config.providers.find(provider => provider.id === 'deepseek').models.some(model => model.id === 'deepseek-v4-flash'), 'native DeepSeek Flash retained')
+  assert(config.providers.find(provider => provider.id === 'deepseek').models.some(model => model.id === 'deepseek-flash'), 'native DeepSeek Flash retained')
   assert(config.providers.find(provider => provider.id === 'minimax').models.some(model => model.id === 'MiniMax-M3'), 'native MiniMax retained')
   const retiredModels = ['kimi-k3', 'deepseek-v4-flash', 'glm-5.2', 'minimax-m3', 'doubao-seed-evolving', 'kimi-k2.7-code']
   for (const model of retiredModels) {
@@ -45,6 +45,10 @@ try {
   const fallback = await invoke('get_ai_config')
   const expected = config.providers.find(provider => provider.configured)?.id || 'hackstart'
   assert(fallback.provider === expected, 'legacy selection falls back to configured provider')
+  execFileSync('sqlite3', [database, "INSERT OR REPLACE INTO settings(key,value,updated_at) VALUES('deepseek_model','deepseek-v4-flash','1')"])
+  const flashConfig = await invoke('get_ai_config')
+  assert(flashConfig.providers.find(provider => provider.id === 'deepseek').model === 'deepseek-flash', 'saved Flash selection uses current model ID')
+  if (flashConfig.provider === 'deepseek') assert(flashConfig.model === 'deepseek-flash', 'active assistant request model normalized')
   await execute('location.reload();return true')
   await wait(() => execute('return !!document.querySelector(".news-radar-shortcut")'), 'reloaded shell')
   await execute('document.querySelectorAll(".global-actions>button")[1].click();return true')
@@ -58,6 +62,10 @@ try {
     assert(!menuModels.some(text => text.includes('火山') || text.includes('Agent Plan')), 'retired provider absent from actual picker')
     const configuredCount = config.providers.filter(provider => provider.configured).reduce((sum, provider) => sum + provider.models.length, 0)
     assert(menuModels.length === configuredCount, 'remaining configured models all visible')
+    assert(!menuModels.some(text => text.includes('deepseek-v4-flash')), 'old Flash name absent from picker')
+    if (config.providers.find(provider => provider.id === 'deepseek').configured) {
+      assert(menuModels.some(text => text.includes('deepseek-flash')), 'current Flash model visible')
+    }
   } else {
     assert(!fallback.configured, 'model picker only absent when nothing configured')
   }
@@ -66,7 +74,7 @@ try {
     const shot = (await request(`/session/${sessionId}/screenshot`)).value
     await writeFile(process.env.AI_PROVIDER_SCREENSHOT, Buffer.from(shot, 'base64'))
   }
-  console.log(JSON.stringify({ status: 'passed', providers: config.providers.map(provider => provider.id), rejectedLegacySelections: 12, fallback: fallback.provider, menuModels, realAiRequests: 0 }))
+  console.log(JSON.stringify({ status: 'passed', providers: config.providers.map(provider => provider.id), rejectedLegacySelections: 12, fallback: fallback.provider, normalizedFlash: flashConfig.providers.find(provider => provider.id === 'deepseek').model, menuModels, realAiRequests: 0 }))
 } catch (error) {
   console.error(String(error)); process.exitCode = 1
 } finally {
