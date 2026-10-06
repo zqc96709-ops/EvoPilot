@@ -1731,6 +1731,14 @@ html[data-theme='light'] { background: #fafaf7; color-scheme: light; }
 .light-theme :is(.search-results>button:hover,.command-palette>div:last-child>button:hover,.ai-composer-model-menu>button:hover,.ai-composer-model-menu>button.active,.ai-attach:hover){background:var(--panel-2)}
 .light-theme :is(.search-icon,.search-results>button>div>div>span,.ai-chat article>span,.ai-context span,.ai-attach,.record-drawer>header>div>span,.related-section>button>span){background:var(--lime-soft);color:#5b812b}
 .light-theme .ai-composer-model-trigger[aria-expanded="true"]{background:var(--lime-soft);color:#5b812b}
+.light-theme :is(.ai-chat article p,.ai-chat article.user p,.ai-action-card dd,.ai-composer-model-menu>button){color:var(--text)}
+.light-theme :is(.ai-drawer>header small,.ai-drawer>header>button,.ai-action-card>header small,.ai-action-card dt,.ai-composer-model-trigger,.ai-composer-model-trigger:hover,.ai-composer-model-menu small,.ai-attachment-chip button){color:var(--muted)}
+.light-theme .ai-composer textarea::placeholder{color:var(--muted);opacity:1}
+.light-theme .ai-context{border-color:var(--line);background:var(--panel-2)}
+.light-theme .ai-action-card>footer button{border-color:var(--line);background:var(--panel-2);color:var(--text)}
+.light-theme :is(.ai-chat article>span,.ai-composer-model-trigger[aria-expanded="true"],.ai-composer-model-trigger i,.ai-composer-model-menu>button>span,.ai-action-card>header>div>span,.ai-action-card>footer button.confirm){color:#426722}
+.light-theme .ai-action-card>footer button.confirm{background:var(--lime-soft)}
+.light-theme .ai-action-error{color:#9c3723!important}
 .light-theme :is(.timer-context-fields select,.provider-settings select,.quick-relation-create input){border-color:var(--line);background:var(--panel);color:var(--text);color-scheme:light}
 .light-theme :is(.timer-inheritance strong,.ai-attachment-name,.detail-fields p,.record-title>p){color:var(--text)}
 .light-theme .record-modal{box-shadow:0 24px 70px rgba(30,40,24,.18)}
