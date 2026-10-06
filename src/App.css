@@ -1752,6 +1752,15 @@ html[data-theme='light'] { background: #fafaf7; color-scheme: light; }
 .light-theme :is(.operating-state-grid p,.capability-apply-preview p){color:var(--text)}
 .light-theme :is(.project-table-scroll,.project-table-scroll th,.project-table-scroll td,.result-asset-grid footer,.result-package-grid footer){border-color:var(--line)}
 .light-theme .radar-controls button.active{border-color:#a9c974;background:var(--lime-soft);color:#5b812b}
+/* Radar text must contrast with light cards, not retain the dark-mode palette. */
+.light-theme :is(.radar-story h4,.radar-summary>div:last-child b,.radar-state h3){color:var(--text)}
+.light-theme :is(.radar-title-en,.radar-why,.radar-why b,.radar-story-meta,.radar-story-meta>span:first-child,.radar-story footer span,.radar-summary small,.radar-summary>div:last-child span,.radar-controls button,.radar-controls button:hover,.radar-top>header small,.radar-feed>header small,.radar-state){color:var(--muted)}
+.light-theme :is(.ai-news-toolbar>div>span,.radar-top>header span,.radar-feed>header span,.radar-story footer strong,.radar-controls button.active,.radar-state>span,.radar-state button){color:#426722}
+.light-theme .radar-kind{color:#4b6b39}
+.light-theme .radar-kind.kind-official{color:#326779}
+.light-theme .radar-kind.kind-curated{color:#74601e}
+.light-theme .radar-kind.kind-builders{color:#4e5c94}
+.light-theme .radar-kind.kind-creator{color:#85496e}
 .light-theme{--time-heat-empty:#eaf0e2;--time-heat-low:#bad39a}
 .light-theme .ti-heat-row button{color:var(--text)}
 .light-theme :is(.decision-question-box textarea,.decision-entry-box textarea,.mental-model-toolbar>input,.mental-model-filters select){border-color:var(--line);background:var(--panel);color:var(--text);color-scheme:light}
