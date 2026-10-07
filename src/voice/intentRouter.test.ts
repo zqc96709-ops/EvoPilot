@@ -6,6 +6,7 @@ describe('Voice deterministic intent router', () => {
     expect(routeVoiceIntent('开始计时')).toMatchObject({ intent: 'START_TIMER', reason: 'deterministic', confidence: 'HIGH' })
     expect(routeVoiceIntent('打开决策中心')).toMatchObject({ intent: 'OPEN_PAGE', page: 'decisionCenter', reason: 'deterministic' })
     expect(routeVoiceIntent('打开今天')).toMatchObject({ intent: 'OPEN_PAGE', page: 'today', reason: 'deterministic', confidence: 'HIGH' })
+    expect(routeVoiceIntent('打开开始界面')).toMatchObject({ intent: 'OPEN_PAGE', page: 'command', reason: 'deterministic', confidence: 'HIGH' })
     expect(routeVoiceIntent('搜索 EvoPilot 项目')).toMatchObject({ intent: 'SEARCH_SIMPLE', query: 'EvoPilot 项目', reason: 'deterministic' })
   })
 

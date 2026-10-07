@@ -37,9 +37,12 @@ try {
     class Recognition {
       start(){window.__voiceStarts++;queueMicrotask(()=>{
         if(window.__voiceMode==="error")this.onerror?.({error:"service-not-allowed"});
-        else this.onresult?.({results:[{0:{transcript:"打开今天"},isFinal:true}]});
+        else {
+          this.onresult?.({results:[{0:{transcript:window.__voiceMode==="success"?"打开今天":"打开开始界面"},isFinal:window.__voiceMode==="success"}]});
+          if(window.__voiceMode==="interim-end")this.onend?.();
+        }
       })}
-      stop(){} abort(){}
+      stop(){queueMicrotask(()=>this.onend?.())} abort(){}
     }
     Object.defineProperty(window,"SpeechRecognition",{configurable:true,value:Recognition});
     Object.defineProperty(window,"webkitSpeechRecognition",{configurable:true,value:Recognition});
@@ -63,6 +66,13 @@ try {
   await wait(() => execute('return document.querySelector(".voice-transcript")?.innerText.includes("打开今天")'), 'recognized transcript')
   await execute('[...document.querySelectorAll(".voice-panel footer button")].find(node=>node.textContent.includes("停止并执行")).click();return true')
   await wait(() => execute('return document.querySelector(".voice-result")?.innerText.includes("已打开")'), 'deterministic voice navigation')
+  for(const mode of ['interim-end','interim-stop']) {
+    await execute(`window.__voiceMode="${mode}";[...document.querySelectorAll(".voice-panel footer button")].find(node=>node.textContent.includes("开始说话")).click();return true`)
+    await wait(() => execute('return document.querySelector(".voice-transcript")?.innerText.includes("打开开始界面")'), 'displayed interim transcript')
+    assert(await execute('return !document.querySelector(".voice-result")'), 'interim text does not auto-execute or produce a false empty-speech error')
+    await execute('[...document.querySelectorAll(".voice-panel footer button")].find(node=>node.textContent.includes("停止并执行")).click();return true')
+    await wait(() => execute('return document.querySelector(".voice-result")?.innerText.includes("已打开指挥中心")'), `${mode} preserves displayed text for explicit navigation`)
+  }
   await execute('document.querySelector(".app-shell").classList.add("light-theme");return true')
   const contrast=await execute('const panel=document.querySelector(".voice-panel"),shell=document.querySelector(".app-shell");return {background:getComputedStyle(panel).backgroundColor,text:getComputedStyle(panel).color,expectedText:getComputedStyle(shell).getPropertyValue("--text").trim()}')
   assert(contrast.background==='rgb(255, 255, 255)','voice panel uses light theme surface')
@@ -73,7 +83,7 @@ try {
   }
   const database=join(dataDir,'jason-os.sqlite3')
   assert(execFileSync('sqlite3',[database,'PRAGMA integrity_check'],{encoding:'utf8'}).trim()==='ok','database integrity')
-  console.log(JSON.stringify({status:'passed',retryClicks:starts,transcriptNavigation:true,contrast,realMicrophoneTested:false,realSpeechServiceTested:false}))
+  console.log(JSON.stringify({status:'passed',retryClicks:starts,transcriptNavigation:true,interimEndNavigation:true,interimStopNavigation:true,noAutomaticExecution:true,contrast,realMicrophoneTested:false,realSpeechServiceTested:false}))
 } catch(error) {
   if(sessionId)console.error(await execute('return {panel:document.querySelector(".voice-panel")?.innerText,starts:window.__voiceStarts,stops:window.__voiceStops}').catch(()=>null))
   console.error(String(error));process.exitCode=1

@@ -151,4 +151,41 @@ describe('Speech recognition lifecycle', () => {
     controller.dispose()
   })
 
+  it('keeps displayed interim text when the system ends without a final result', async () => {
+    const mic = microphone(); vi.stubGlobal('window', { webkitSpeechRecognition: Recognition })
+    const controller = new VoiceSessionController()
+    await controller.start()
+    const recognition = Recognition.instances[0]
+    recognition.onresult!({ results: [{ 0: { transcript: '打开开始界面' }, isFinal: false }] })
+    expect(controller.current.partialTranscript).toBe('打开开始界面')
+    recognition.onend!()
+    expect(controller.current.error).toBeUndefined()
+    expect(await controller.stop()).toBe('打开开始界面')
+    expect(mic.stop).toHaveBeenCalledOnce()
+    controller.dispose()
+  })
+
+  it('keeps the latest full text including an interim suffix on end', () => {
+    vi.stubGlobal('window', { webkitSpeechRecognition: Recognition })
+    const stt = new SystemSpeechToTextProvider(); const callbacks = input()
+    stt.startTranscription(callbacks)
+    const recognition = Recognition.instances[0]
+    recognition.onresult!({ results: [{ 0: { transcript: '打开' }, isFinal: true }, { 0: { transcript: '开始界面' }, isFinal: false }] })
+    recognition.onend!()
+    expect(callbacks.onFinal).toHaveBeenLastCalledWith('打开开始界面')
+    expect(callbacks.onError).not.toHaveBeenCalled()
+    stt.cancel()
+  })
+
+  it('never accepts an interim transcript after cancellation', () => {
+    vi.stubGlobal('window', { webkitSpeechRecognition: Recognition })
+    const stt = new SystemSpeechToTextProvider(); const callbacks = input()
+    stt.startTranscription(callbacks)
+    const recognition = Recognition.instances[0]; const end = recognition.onend!
+    recognition.onresult!({ results: [{ 0: { transcript: '打开开始界面' }, isFinal: false }] })
+    stt.cancel(); end()
+    expect(callbacks.onFinal).not.toHaveBeenCalled()
+    expect(callbacks.onError).not.toHaveBeenCalled()
+  })
+
 })

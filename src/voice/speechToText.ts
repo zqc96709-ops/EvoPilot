@@ -10,6 +10,7 @@ const recognitionConstructor = () => (window as Window & { SpeechRecognition?: R
 export class SystemSpeechToTextProvider implements SpeechToTextProvider {
   private recognition?: WebSpeechRecognition
   private finalTranscript = ''
+  private latestTranscript = ''
 
   capabilities() { return { streaming: Boolean(recognitionConstructor()), microphone: Boolean(navigator.mediaDevices?.getUserMedia), provider: 'system-speech' } }
   async health() { return recognitionConstructor() ? { ok: true, message: '系统语音接口可用；实际权限和识别服务将在开始时检查。' } : { ok: false, message: '当前 Mac WebView 未提供语音识别接口，不能开始识别；需要接入原生或独立语音转文字服务。' } }
@@ -29,7 +30,8 @@ export class SystemSpeechToTextProvider implements SpeechToTextProvider {
         else interim += value
       }
       this.finalTranscript = final
-      onPartial(`${this.finalTranscript}${interim}`.trim())
+      this.latestTranscript = `${final}${interim}`.trim()
+      onPartial(this.latestTranscript)
       if (this.finalTranscript.trim()) onFinal(this.finalTranscript.trim())
     }
     recognition.onerror = (event) => {
@@ -45,7 +47,10 @@ export class SystemSpeechToTextProvider implements SpeechToTextProvider {
       if (this.recognition !== recognition) return
       this.recognition = undefined
       recognition.onresult = null; recognition.onerror = null; recognition.onend = null
-      if (!this.finalTranscript.trim()) onError(new Error('没有识别到语音。请重新开始说话，并检查输入麦克风。'))
+      // WebKit may end with only interim results; retain the displayed text for the user's stop/execute click.
+      this.finalTranscript = this.latestTranscript || this.finalTranscript
+      if (this.finalTranscript.trim()) onFinal(this.finalTranscript.trim())
+      else onError(new Error('没有识别到语音。请重新开始说话，并检查输入麦克风。'))
     }
     try { recognition.start() } catch (error) {
       this.cancel(); onError(error instanceof Error ? error : new Error(String(error)))
@@ -54,7 +59,7 @@ export class SystemSpeechToTextProvider implements SpeechToTextProvider {
   finish() { this.recognition?.stop() }
   async transcribeAudio(): Promise<string> { if (!this.finalTranscript.trim()) throw new Error('系统语音识别没有返回文字。'); return this.finalTranscript.trim() }
   cancel() {
-    const recognition = this.recognition; this.recognition = undefined; this.finalTranscript = ''
+    const recognition = this.recognition; this.recognition = undefined; this.finalTranscript = ''; this.latestTranscript = ''
     if (recognition) {
       recognition.onresult = null; recognition.onerror = null; recognition.onend = null
       try { recognition.abort() } catch { /* The previous session may already have ended. */ }

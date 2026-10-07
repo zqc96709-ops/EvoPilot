@@ -1,7 +1,7 @@
 import type { VoiceRoute } from './types'
 
 const pageMatchers: Array<[RegExp, string]> = [
-  [/(收纳箱|收集箱|笔记)/, 'notebook'], [/(任务|待办)/, 'tasks'], [/(项目)/, 'projects'], [/(今天|今日)/, 'today'], [/(时间|计时记录)/, 'time'], [/(成果|结果)/, 'outcomes'], [/(财务)/, 'finance'], [/(决策)/, 'decisionCenter'], [/(认知|知识|洞见|复盘)/, 'cognition'], [/(指挥中心|驾驶舱)/, 'command'],
+  [/(收纳箱|收集箱|笔记)/, 'notebook'], [/(任务|待办)/, 'tasks'], [/(项目)/, 'projects'], [/(今天|今日)/, 'today'], [/(时间|计时记录)/, 'time'], [/(成果|结果)/, 'outcomes'], [/(财务)/, 'finance'], [/(决策)/, 'decisionCenter'], [/(认知|知识|洞见|复盘)/, 'cognition'], [/(指挥中心|驾驶舱|开始界面)/, 'command'],
 ]
 const route = (intent: VoiceRoute['intent'], confidence: VoiceRoute['confidence'], reason: VoiceRoute['reason'], extra: Partial<VoiceRoute> = {}): VoiceRoute => ({ intent, confidence, reason, ...extra })
 
