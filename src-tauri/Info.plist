@@ -4,5 +4,7 @@
 <dict>
   <key>NSMicrophoneUsageDescription</key>
   <string>EvoPilot 仅在你主动开始语音操作时使用麦克风，将语音转为文字；不会保存原始录音。</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>EvoPilot 仅在你主动开始语音操作时使用系统语音识别，将声音转为文字；识别可能由 Apple 的服务器处理。EvoPilot 不保存原始录音。</string>
 </dict>
 </plist>
