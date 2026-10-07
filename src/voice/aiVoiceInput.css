@@ -1,0 +1,11 @@
+.ai-composer-bar{position:relative}
+.ai-composer-voice{margin-left:auto;flex:0 0 26px}
+.ai-composer-voice+.ai-composer-model{margin-left:0}
+.ai-voice-trigger{width:26px;height:26px;display:grid;place-items:center;padding:0;border:1px solid var(--line);border-radius:50%;background:var(--panel-2);color:var(--text);cursor:pointer}
+.ai-voice-trigger:hover,.ai-voice-trigger.active{border-color:var(--lime);background:var(--lime-soft)}
+.ai-voice-trigger:disabled{opacity:.5;cursor:default}
+.ai-voice-status{position:absolute;bottom:calc(100% + 4px);left:8px;right:8px;display:flex;align-items:center;gap:8px;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text);font-size:9px;line-height:1.5;max-height:100px;overflow-y:auto}
+.ai-voice-status>span{flex:1;min-width:0;overflow-wrap:anywhere}
+.ai-voice-status small{margin-top:3px;color:var(--text);font-size:inherit}
+.ai-voice-status button{flex-shrink:0;padding:3px 6px;border:1px solid var(--line);border-radius:5px;background:var(--panel-2);color:var(--text);font-size:inherit;cursor:pointer}
+.ai-voice-status.error{border-color:#bd6758}
