@@ -3,7 +3,7 @@ import { VoiceSessionController } from './VoiceSessionController'
 import type { VoiceExecutionResult, VoiceSessionSnapshot, VoiceState } from './types'
 import './voice.css'
 
-const copy: Partial<Record<VoiceState, string>> = { IDLE: '点击开始说话', LISTENING: '正在聆听…', TRANSCRIBING: '正在识别…', UNDERSTANDING: '正在理解你的操作…', FETCHING_CONTEXT: '正在读取必要上下文…', READY_TO_EXECUTE: '已理解，准备执行', AWAITING_CONFIRMATION: '请确认本次操作', EXECUTING: '正在执行…', DONE: '已完成', ERROR: '语音操作未完成', CANCELLED: '已取消，没有执行任何操作' }
+const copy: Partial<Record<VoiceState, string>> = { IDLE: '点击开始说话，可说“开始计时”“停止计时”或“打开收纳箱”', LISTENING: '正在聆听…', TRANSCRIBING: '正在识别…', UNDERSTANDING: '正在理解你的操作…', FETCHING_CONTEXT: '正在读取必要上下文…', READY_TO_EXECUTE: '已理解，准备执行', AWAITING_CONFIRMATION: '请确认本次操作', EXECUTING: '正在执行…', DONE: '已完成', ERROR: '语音操作未完成', CANCELLED: '已取消，没有执行任何操作' }
 
 export default function VoiceOperatingPanel({ onClose, onTranscript, onConfirm, onCancel }: { onClose: () => void; onTranscript: (transcript: string) => Promise<VoiceExecutionResult>; onConfirm: (actionId: string) => Promise<VoiceExecutionResult>; onCancel: (actionId: string) => Promise<VoiceExecutionResult> }) {
   const controller = useRef<VoiceSessionController | null>(null); const [snapshot, setSnapshot] = useState<VoiceSessionSnapshot>(() => ({ state: 'IDLE' as VoiceState, transcript: '', partialTranscript: '', level: 0 })); const [result, setResult] = useState<VoiceExecutionResult | null>(null); const [busy, setBusy] = useState(false)

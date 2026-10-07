@@ -4,6 +4,7 @@ import { routeVoiceIntent } from './intentRouter'
 describe('Voice deterministic intent router', () => {
   it('does not send deterministic navigation or timer commands to an LLM', () => {
     expect(routeVoiceIntent('开始计时')).toMatchObject({ intent: 'START_TIMER', reason: 'deterministic', confidence: 'HIGH' })
+    expect(routeVoiceIntent('停止计时')).toMatchObject({ intent: 'STOP_TIMER', reason: 'deterministic', confidence: 'HIGH' })
     expect(routeVoiceIntent('打开决策中心')).toMatchObject({ intent: 'OPEN_PAGE', page: 'decisionCenter', reason: 'deterministic' })
     expect(routeVoiceIntent('打开今天')).toMatchObject({ intent: 'OPEN_PAGE', page: 'today', reason: 'deterministic', confidence: 'HIGH' })
     expect(routeVoiceIntent('打开开始界面')).toMatchObject({ intent: 'OPEN_PAGE', page: 'command', reason: 'deterministic', confidence: 'HIGH' })
