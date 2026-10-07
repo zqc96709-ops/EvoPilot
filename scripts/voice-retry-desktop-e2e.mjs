@@ -114,6 +114,18 @@ try {
     await voiceCommand('打开'+label,'已打开'+label)
     await wait(()=>execute(`return localStorage.getItem('evopilot-last-view')===${JSON.stringify(page)}`),'actual page '+page)
   }
+  const settings=[['外观设置','appearance','外观'],['设置中的语音','voice','语音'],['账户设置','account','账户'],['AI 与模型设置','ai','AI 与模型'],['AI 协作上下文','aiContext','AI 协作上下文'],['同步与设备','sync','同步与设备'],['数据与备份','data','数据与备份'],['隐私与安全','privacy','隐私与安全'],['通知设置','notifications','通知'],['快捷键设置','shortcuts','快捷键'],['Provider / API','providers','Provider / API'],['退出登录页面','logout','退出登录'],['关于 EvoPilot','about','关于 EvoPilot'],['存储设置','storage','存储'],['帮助与反馈','help','帮助与反馈'],['通用设置','general','通用']]
+  for(const [command,section,label] of settings) {
+    await voiceCommand('打开'+command,'已打开'+label)
+    await wait(()=>execute(`return location.hash===${JSON.stringify('#settings/'+section)}&&localStorage.getItem('evopilot-settings-section')===${JSON.stringify(section)}&&document.querySelector('.settings-workspace nav button.active')?.textContent.includes(${JSON.stringify(label)})`),'actual settings section '+section)
+  }
+  await voiceCommand('打开外观设置','已打开外观')
+  const countBeforeThemes=execFileSync('sqlite3',[database,'SELECT count(*) FROM records'],{encoding:'utf8'}).trim()
+  for(const [command,preference] of [['打开暗色模式','dark'],['打开浅色模式','light'],['切换到自动主题','auto'],['打开浅色模式','light']]) {
+    await voiceCommand(command,preference==='auto'?'已开启自动主题':'已切换为')
+    await wait(()=>execute(`const active=${JSON.stringify(preference)}==='auto'?(new Date().getHours()>=7&&new Date().getHours()<19?'light':'dark'):${JSON.stringify(preference)};return localStorage.getItem('jason-os-theme')===${JSON.stringify(preference)}&&document.documentElement.dataset.theme===active&&document.querySelector('.app-shell').classList.contains('light-theme')===(active==='light')&&document.querySelector('.theme-picker button.active strong')?.textContent===${JSON.stringify({dark:'深色',light:'浅色',auto:'自动'}[preference])}`),'theme changes live and persists '+preference)
+  }
+  assert(execFileSync('sqlite3',[database,'SELECT count(*) FROM records'],{encoding:'utf8'}).trim()===countBeforeThemes,'settings shortcuts do not write business or audit records')
   await voiceCommand('打开 AI 助理','已打开AI 助理')
   assert(await execute('return !!document.querySelector(".ai-drawer")'),'assistant actually opens')
   await voiceCommand('搜索语音验收','正在搜索：语音验收')
@@ -176,7 +188,9 @@ try {
     await writeFile(process.env.VOICE_RETRY_SCREENSHOT,Buffer.from(shot,'base64'))
   }
   assert(execFileSync('sqlite3',[database,'PRAGMA integrity_check'],{encoding:'utf8'}).trim()==='ok','database integrity')
-  console.log(JSON.stringify({status:'passed',sidebarVoiceEntry:true,entryHeight,voiceTimerStartStop:true,duplicateTimerPrevented:true,manualTimerPreserved:true,globalPages:pages.length,globalQuery:true,confirmedCreateUpdateDelete:true,cancelPreservesRecord:true,wrongTargetBlocked:true,realAiRequests:0,retryClicks:starts,transcriptNavigation:true,interimEndNavigation:true,interimStopNavigation:true,noAutomaticExecution:true,contrast,realMicrophoneTested:false,realSpeechServiceTested:false}))
+  await execute('location.reload();return true')
+  await wait(()=>execute('return !!document.querySelector(".settings-workspace")&&document.documentElement.dataset.theme==="light"&&localStorage.getItem("jason-os-theme")==="light"&&document.querySelector(".settings-workspace nav button.active")?.textContent.includes("外观")'),'voice appearance settings survive reload')
+  console.log(JSON.stringify({status:'passed',sidebarVoiceEntry:true,entryHeight,voiceTimerStartStop:true,duplicateTimerPrevented:true,manualTimerPreserved:true,globalPages:pages.length,settingsSections:settings.length,themeSwitchAndPersistence:true,globalQuery:true,confirmedCreateUpdateDelete:true,cancelPreservesRecord:true,wrongTargetBlocked:true,realAiRequests:0,retryClicks:starts,transcriptNavigation:true,interimEndNavigation:true,interimStopNavigation:true,noAutomaticExecution:true,contrast,realMicrophoneTested:false,realSpeechServiceTested:false}))
 } catch(error) {
   if(sessionId)console.error(await execute('return {panel:document.querySelector(".voice-panel")?.innerText,toast:document.querySelector(".toast")?.innerText,plans:window.__voicePlans,last:window.__lastVoiceRequest?.question,starts:window.__voiceStarts,stops:window.__voiceStops}').catch(()=>null))
   console.error(String(error));process.exitCode=1

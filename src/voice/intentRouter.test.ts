@@ -36,3 +36,26 @@ describe('whole-system voice routing', () => {
     expect(['FAST_AI', 'STRONG_AI']).toContain(routeVoiceIntent(text).intent)
   })
 })
+
+describe('voice settings controls', () => {
+  it.each([
+    ['打开暗色模式', 'dark'], ['切换到深色模式', 'dark'], ['帮我开启深色主题', 'dark'],
+    ['打开浅色模式', 'light'], ['设置为亮色主题', 'light'], ['关闭暗色模式', 'light'],
+    ['切换到自动主题', 'auto'], ['恢复自动模式', 'auto'],
+  ])('applies %s locally', (text, theme) => {
+    expect(routeVoiceIntent(text)).toMatchObject({ intent: 'SET_THEME', theme, reason: 'deterministic' })
+  })
+  it.each([
+    ['打开外观设置', 'appearance'], ['打开设置中的语音', 'voice'], ['进入账户设置', 'account'],
+    ['打开 AI 与模型设置', 'ai'], ['打开 AI 协作上下文', 'aiContext'], ['打开同步与设备', 'sync'],
+    ['打开数据与备份', 'data'], ['打开隐私与安全', 'privacy'], ['打开通知设置', 'notifications'],
+    ['打开快捷键设置', 'shortcuts'], ['打开 Provider / API', 'providers'], ['打开退出登录页面', 'logout'],
+    ['打开关于 EvoPilot', 'about'], ['打开存储设置', 'storage'], ['打开帮助与反馈', 'help'],
+    ['打开通用设置', 'general'],
+  ])('navigates %s without changing account or data', (text, settingsSection) => {
+    expect(routeVoiceIntent(text)).toMatchObject({ intent: 'OPEN_PAGE', page: 'settings', settingsSection, reason: 'deterministic' })
+  })
+  it.each(['打开暗色模式并删除笔记', '打开外观设置并修改昵称', '为什么暗色模式不好看', '把 API 密钥改为 abc', '退出登录', '删除所有备份'])('does not execute ambiguous or sensitive requests: %s', (text) => {
+    expect(['FAST_AI', 'STRONG_AI']).toContain(routeVoiceIntent(text).intent)
+  })
+})

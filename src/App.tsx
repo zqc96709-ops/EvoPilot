@@ -385,7 +385,8 @@ function App() {
   const runVoiceTranscript = async (transcript: string): Promise<VoiceExecutionResult> => {
     const intent = routeVoiceIntent(transcript)
     if (voicePendingActionId && !['CONFIRM', 'CANCEL'].includes(intent.intent)) return { state: 'AWAITING_CONFIRMATION', actionId: voicePendingActionId, message: '还有一项操作等待确认；请说“确认执行”或“取消操作”，再提出新请求。' }
-    if (intent.intent === 'OPEN_PAGE' && intent.page) { if (intent.page === 'assistant') setAiOpen(true); else { setDetailId(null); if (intent.page !== 'projects') setSelectedProjectId(null); setView(intent.page as View) } return { state: 'DONE', message: `已打开${pageTitleForVoice(intent.page)}。` } }
+    if (intent.intent === 'SET_THEME' && intent.theme) { setThemePreference(intent.theme); return { state: 'DONE', message: intent.theme === 'auto' ? '已开启自动主题：本地时间 07:00–19:00 使用浅色，其余时间使用深色。' : `已切换为${intent.theme === 'dark' ? '暗色' : '浅色'}模式。` } }
+    if (intent.intent === 'OPEN_PAGE' && intent.page) { if (intent.page === 'assistant') setAiOpen(true); else { setDetailId(null); if (intent.page !== 'projects') setSelectedProjectId(null); if (intent.settingsSection) { localStorage.setItem('evopilot-settings-section', intent.settingsSection); window.location.hash = `settings/${intent.settingsSection}` } setView(intent.page as View) } return { state: 'DONE', message: `已打开${pageTitleForVoice(intent.page, intent.settingsSection)}。` } }
     if (intent.intent === 'SEARCH_SIMPLE' && intent.query) { setSearchQuery(intent.query); setSearchOpen(true); return { state: 'DONE', message: `正在搜索：${intent.query}` } }
     if (intent.intent === 'START_TIMER') {
       if (running) return { state: 'ERROR', message: `已有计时正在运行：${titleFor(running)}。` }

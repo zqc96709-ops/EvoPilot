@@ -1,7 +1,7 @@
 export type VoiceState = 'IDLE' | 'LISTENING' | 'TRANSCRIBING' | 'UNDERSTANDING' | 'FETCHING_CONTEXT' | 'READY_TO_EXECUTE' | 'AWAITING_CONFIRMATION' | 'EXECUTING' | 'DONE' | 'ERROR' | 'CANCELLED'
 
-export type VoiceIntent = 'START_TIMER' | 'STOP_TIMER' | 'OPEN_PAGE' | 'SEARCH_SIMPLE' | 'CONFIRM' | 'CANCEL' | 'FAST_AI' | 'STRONG_AI'
-export type VoiceRoute = { intent: VoiceIntent; page?: string; query?: string; confidence: 'HIGH' | 'MEDIUM' | 'LOW'; reason: 'deterministic' | 'fast_ai' | 'strong_ai' }
+export type VoiceIntent = 'START_TIMER' | 'STOP_TIMER' | 'SET_THEME' | 'OPEN_PAGE' | 'SEARCH_SIMPLE' | 'CONFIRM' | 'CANCEL' | 'FAST_AI' | 'STRONG_AI'
+export type VoiceRoute = { intent: VoiceIntent; theme?: 'dark' | 'light' | 'auto'; settingsSection?: import('../SettingsWorkspace').SettingsSection; page?: string; query?: string; confidence: 'HIGH' | 'MEDIUM' | 'LOW'; reason: 'deterministic' | 'fast_ai' | 'strong_ai' }
 
 export type VoiceSessionSnapshot = {
   state: VoiceState
