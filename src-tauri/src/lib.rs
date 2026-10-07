@@ -5697,6 +5697,24 @@ fn configure_hackstart(app: AppHandle, api_key: String, model: String) -> Result
 
 fn agent_tool_metadata(tool: &str) -> Option<(&'static str, &'static str, bool, &'static str)> {
     match tool {
+        "deleteNote" => Some(("notes", "HIGH_RISK", true, "DELETE")),
+        "deleteNotebookFile" => Some(("notebookFiles", "HIGH_RISK", true, "DELETE")),
+        "deleteTask" => Some(("tasks", "HIGH_RISK", true, "DELETE")),
+        "deleteProject" => Some(("projects", "HIGH_RISK", true, "DELETE")),
+        "deleteOutcome" => Some(("results", "HIGH_RISK", true, "DELETE")),
+        "deleteDecision" => Some(("decisions", "HIGH_RISK", true, "DELETE")),
+        "deleteKnowledge" => Some(("knowledge", "HIGH_RISK", true, "DELETE")),
+        "deleteReview" => Some(("reviews", "HIGH_RISK", true, "DELETE")),
+        "deleteEvent" => Some(("events", "HIGH_RISK", true, "DELETE")),
+        "deletePerson" => Some(("people", "HIGH_RISK", true, "DELETE")),
+        "createEvent" => Some(("events", "MEDIUM_WRITE", true, "CREATE")),
+        "updateEvent" => Some(("events", "MEDIUM_WRITE", true, "UPDATE")),
+        "createPerson" => Some(("people", "MEDIUM_WRITE", true, "CREATE")),
+        "updatePerson" => Some(("people", "MEDIUM_WRITE", true, "UPDATE")),
+        "updateReview" => Some(("reviews", "MEDIUM_WRITE", true, "UPDATE")),
+        "updateInsight" => Some(("insights", "MEDIUM_WRITE", true, "UPDATE")),
+        "updatePrinciple" => Some(("principles", "MEDIUM_WRITE", true, "UPDATE")),
+
         "createMentalModel" => Some(("mentalModels", "LOW_WRITE", false, "CREATE")),
         "updateMentalModel" => Some(("mentalModels", "MEDIUM_WRITE", true, "UPDATE")),
         "createNote" => Some(("notes", "LOW_WRITE", false, "CREATE")),
@@ -5790,13 +5808,13 @@ fn action_idempotency_key(tool: &str, input: &Value) -> String {
 
 fn required_agent_fields(entity: &str) -> &'static [&'static str] {
     match entity {
-        "mentalModels" => &["name"],
+        "mentalModels" | "people" => &["name"],
         "notes" => &["title"],
         "notebookCategories" | "notebookFolders" | "notebookFiles" => &["name"],
         "knowledge" => &["title", "content"],
         "goals" | "projects" | "tasks" | "decisions" | "reviews" | "deliverables"
         | "resultPackages" | "workflowRuns" | "workflowSteps" | "workflowGates"
-        | "workflowImprovementProposals" => &["title"],
+        | "workflowImprovementProposals" | "events" => &["title"],
         "workflows" | "workflowVersions" => &["name"],
         "workflowMetricDefinitions" => &["name", "workflowVersionId"],
         "insights" | "principles" => &["statement"],
@@ -5811,7 +5829,7 @@ fn required_agent_fields(entity: &str) -> &'static [&'static str] {
 
 fn validate_agent_input(entity: &str, action_type: &str, input: &Value) -> Result<(), String> {
     let object = input.as_object().ok_or("AI Action 参数必须是结构化对象")?;
-    if ["UPDATE", "COMPLETE"].contains(&action_type)
+    if ["UPDATE", "COMPLETE", "DELETE"].contains(&action_type)
         && object
             .get("id")
             .and_then(Value::as_str)
@@ -5834,6 +5852,15 @@ fn validate_agent_input(entity: &str, action_type: &str, input: &Value) -> Resul
         }
     }
     Ok(())
+}
+
+fn validate_agent_delete(connection: &Connection, entity: &str, input: &Value) -> Result<Value, String> {
+    validate_agent_input(entity, "DELETE", input)?;
+    let id = input["id"].as_str().ok_or("删除操作缺少真实记录 ID")?;
+    let record = record_by_id(connection, id)?.ok_or("要删除的记录不存在")?;
+    if record["entity"] != entity { return Err("记录类型与删除操作不匹配".into()); }
+    if record.get("deletedAt").is_some_and(|value| !value.is_null()) { return Err("记录已删除".into()); }
+    Ok(record)
 }
 
 fn validate_agent_tool_input(tool: &str, input: &Value) -> Result<(), String> {
@@ -6186,6 +6213,7 @@ fn create_agent_action(app: AppHandle, plan: &Value, context: &Value) -> Result<
     )?;
     validate_agent_input(entity, action_type, &input)?;
     validate_agent_tool_input(tool, &input)?;
+    let delete_target = if action_type == "DELETE" { Some(validate_agent_delete(&connection, entity, &input)?) } else { None };
     let idempotency_key = action_idempotency_key(tool, &input);
     if let Some(existing) = find_agent_action_by_key(&connection, &idempotency_key)? {
         return Ok(existing);
@@ -6203,8 +6231,8 @@ fn create_agent_action(app: AppHandle, plan: &Value, context: &Value) -> Result<
         "requiresConfirmation": requires_confirmation,
         "userConfirmed": false,
         "idempotencyKey": idempotency_key,
-        "previewTitle": agent_preview_title(tool, &input),
-        "previewFields": action_preview_fields(&input),
+        "previewTitle": if let Some(record) = &delete_target { format!("准备删除：{}", record["title"].as_str().or_else(|| record["name"].as_str()).or_else(|| record["statement"].as_str()).unwrap_or("记录")) } else { agent_preview_title(tool, &input) },
+        "previewFields": if delete_target.is_some() { vec![json!({"label":"记录 ID", "value":input["id"]}), json!({"label":"影响", "value":"删除此记录并移除其关联，其他记录与原始文件不会被批量删除。"})] } else { action_preview_fields(&input) },
         "context": voice_audit_context(context),
         "source": if voice_mode(context) { "VOICE" } else { "AI" },
         "createdAt": now()
@@ -6304,6 +6332,12 @@ fn execute_registered_tool(app: AppHandle, action: &Value) -> Result<Value, Stri
         return import_workspace_document_to_notebook(app, input);
     }
     match action_type {
+        "DELETE" => {
+            if action["userConfirmed"] != true { return Err("删除必须由用户明确确认".into()); }
+            let record = validate_agent_delete(&db(&app)?, entity, &input)?;
+            delete_record(app, input["id"].as_str().ok_or("删除操作缺少 ID")?.into())?;
+            Ok(record)
+        }
         "CREATE" => save_record(app, entity.into(), input),
         "UPDATE" => {
             let id = input
@@ -6887,13 +6921,13 @@ fn ask_chief_blocking(
 必须只返回一个 JSON 对象，禁止 Markdown 代码块。格式：
 {"mode":"chat|action","answer":"给用户看的简体中文","intent":"意图","toolName":"注册工具名","input":{},"missingFields":[]}
 规则：
-1. 用户明确要求保存、创建、更新、完成、开始或停止计时时，mode=action；不要回复“无法写入”，不要询问 Markdown/JSON/存储路径。
+1. 用户明确要求保存、创建、更新、完成、删除单条记录、开始或停止计时时，mode=action；不要回复“无法写入”，不要询问 Markdown/JSON/存储路径。
 2. “保存到思维模型库”“沉淀为思维模型”“把刚才的模型保存”使用 createMentalModel，intent=SAVE_MENTAL_MODEL 或 CONVERT_TO_MENTAL_MODEL。
 3. 从最近对话完整提取思维模型：name, category, corePrinciple, problem, framework, steps, keyQuestions, useCases, examples, outputTemplate, source, tags。多项内容可整理为换行文本。
 4. 当前页面是思维模型且用户说“保存这个”时，目标就是思维模型库。
 5. 创建 Project/Task/Time/Decision 时不要编造关系 ID；缺省关系由 Action System 根据当前上下文继承。
 6. 写入遵循 Action Guard：READ 直接分析；用户明确、字段完整且 Tool 标记为 LOW_WRITE 的创建操作可直接执行；MEDIUM_WRITE 与 HIGH_RISK 必须只生成预览并等待确认。绝不能声称尚未执行的操作已经保存。
-7. 删除、批量修改或批量删除不要生成 Action，只说明影响并要求明确确认；当前阶段没有删除 Tool。
+7. 删除单条记录仅可使用注册的 delete Tool，id 必须来自真实本地记录，必须展示对象与影响并等待确认；名称不明确或有重名时先询问，不能猜测 ID。批量修改或批量删除不要生成 Action。不能删除已入账财务流水，应使用 voidFinancialTransaction 生成作废预览。
 8. 如果缺少真正必要字段，将 mode=chat，missingFields 列出并只问最少问题。
 9. 普通分析/搜索问题 mode=chat，依据本地记录回答；可以明确说明正在调用找到的思维模型。
 10. 不向用户暴露 JSON、Schema、数据库、SQL、内部 API 或 Tool 技术细节。
@@ -6962,7 +6996,7 @@ fn ask_chief_blocking(
                     answer = format!("已按你的明确指令保存{label}。可在对应模块继续查看或修改。");
                     action = executed.get("action").cloned();
                 } else if status == "SUCCESS" {
-                    answer = "相同操作已经执行成功，为避免重复，没有再次创建。".into();
+                    answer = "相同操作已经执行成功，为避免重复，没有再次执行。".into();
                     action = Some(saved_action);
                 } else {
                     answer = format!(
@@ -7489,12 +7523,38 @@ mod tests {
     }
 
     #[test]
-    fn agent_registry_allows_mental_model_writes_but_not_delete_tools() {
+    fn agent_registry_requires_confirmation_for_delete_tools() {
         assert_eq!(
             agent_tool_metadata("createMentalModel").unwrap().0,
             "mentalModels"
         );
-        assert!(agent_tool_metadata("deleteProject").is_none());
+        assert_eq!(agent_tool_metadata("deleteProject"), Some(("projects", "HIGH_RISK", true, "DELETE")));
+    }
+
+    #[test]
+    fn agent_delete_rejects_missing_wrong_and_deleted_targets() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE records(id TEXT PRIMARY KEY,entity TEXT NOT NULL,data_json TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,archived_at TEXT,deleted_at TEXT);").unwrap();
+        connection.execute("INSERT INTO records VALUES ('note-a','notes',?1,'1','1',NULL,NULL)", params![json!({"title":"真实笔记"}).to_string()]).unwrap();
+        assert!(validate_agent_delete(&connection, "notes", &json!({})).is_err());
+        assert!(validate_agent_delete(&connection, "notes", &json!({"id":"missing"})).is_err());
+        assert!(validate_agent_delete(&connection, "projects", &json!({"id":"note-a"})).is_err());
+        assert_eq!(validate_agent_delete(&connection, "notes", &json!({"id":"note-a"})).unwrap()["title"], "真实笔记");
+        connection.execute("UPDATE records SET data_json=?1 WHERE id='note-a'", params![json!({"title":"真实笔记","deletedAt":"2"}).to_string()]).unwrap();
+        assert!(validate_agent_delete(&connection, "notes", &json!({"id":"note-a"})).is_err());
+    }
+
+    #[test]
+    fn whole_system_writes_require_identified_inputs() {
+        for tool in ["deleteNote", "deleteNotebookFile", "deleteTask", "deleteProject", "deleteOutcome", "deleteDecision", "deleteKnowledge", "deleteReview", "deleteEvent", "deletePerson"] {
+            let (_, risk, confirmation, action) = agent_tool_metadata(tool).unwrap();
+            assert_eq!((risk, confirmation, action), ("HIGH_RISK", true, "DELETE"));
+            assert!(validate_agent_input("notes", action, &json!({})).is_err());
+        }
+        assert!(validate_agent_input("events", "CREATE", &json!({})).is_err());
+        assert!(validate_agent_input("people", "CREATE", &json!({})).is_err());
+        assert!(validate_agent_input("events", "CREATE", &json!({"title":"会议"})).is_ok());
+        assert!(validate_agent_input("people", "CREATE", &json!({"name":"小李"})).is_ok());
     }
 
     #[test]

@@ -119,7 +119,7 @@ export type ToolDefinition = {
   inputSchema: JsonObjectSchema
   outputSchema: JsonObjectSchema
   entity: Entity
-  actionType: 'READ' | 'CREATE' | 'UPDATE' | 'COMPLETE' | 'START_TIMER' | 'STOP_TIMER'
+  actionType: 'READ' | 'CREATE' | 'DELETE' | 'UPDATE' | 'COMPLETE' | 'START_TIMER' | 'STOP_TIMER'
   riskLevel: AgentRiskLevel
   requiresConfirmation: boolean
   idempotencyKey: string

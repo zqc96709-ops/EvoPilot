@@ -9,9 +9,10 @@ const inputFor = (entity: Entity, update = false): JsonObjectSchema => {
   return { type: 'object', properties: Object.fromEntries(fields.map((field) => [field, { type: field.endsWith('Ids') ? 'array' : 'string' }])), required: update ? ['id'] : schema?.requiredFields, additionalProperties: false }
 }
 const tool = (name: string, description: string, entity: Entity, actionType: ToolDefinition['actionType'], riskLevel: AgentRiskLevel, requiresConfirmation: boolean): ToolDefinition => {
-  const inputSchema = inputFor(entity, actionType === 'UPDATE' || actionType === 'COMPLETE')
-  if (actionType === 'UPDATE' || actionType === 'COMPLETE') inputSchema.properties.id = { type: 'string', description: '必须来自真实本地记录' }
+  const inputSchema = inputFor(entity, actionType === 'UPDATE' || actionType === 'COMPLETE' || actionType === 'DELETE')
+  if (actionType === 'UPDATE' || actionType === 'COMPLETE' || actionType === 'DELETE') inputSchema.properties.id = { type: 'string', description: '必须来自真实本地记录' }
   if (actionType === 'START_TIMER' || actionType === 'STOP_TIMER') inputSchema.required = []
+  if (actionType === 'DELETE') { inputSchema.properties = { id: { type: 'string', description: '必须是用户明确选择的真实记录 ID' } }; inputSchema.required = ['id'] }
   return { name, description, entity, actionType, riskLevel, requiresConfirmation, inputSchema, outputSchema, idempotencyKey: `${name}:normalized-input`, permission: actionType === 'READ' ? 'local_read' : 'local_write' }
 }
 const importWorkspaceDocumentToNotebook: ToolDefinition = {
@@ -23,6 +24,24 @@ const importWorkspaceDocumentToNotebook: ToolDefinition = {
 }
 
 export const toolRegistry: ToolDefinition[] = [
+  tool('deleteNote', '删除指定记录；先展示名称和影响，确认后使用系统原有删除规则', 'notes', 'DELETE', 'HIGH_RISK', true),
+  tool('deleteNotebookFile', '删除指定记录；先展示名称和影响，确认后使用系统原有删除规则', 'notebookFiles', 'DELETE', 'HIGH_RISK', true),
+  tool('deleteTask', '删除指定记录；先展示名称和影响，确认后使用系统原有删除规则', 'tasks', 'DELETE', 'HIGH_RISK', true),
+  tool('deleteProject', '删除指定记录；先展示名称和影响，确认后使用系统原有删除规则', 'projects', 'DELETE', 'HIGH_RISK', true),
+  tool('deleteOutcome', '删除指定记录；先展示名称和影响，确认后使用系统原有删除规则', 'results', 'DELETE', 'HIGH_RISK', true),
+  tool('deleteDecision', '删除指定记录；先展示名称和影响，确认后使用系统原有删除规则', 'decisions', 'DELETE', 'HIGH_RISK', true),
+  tool('deleteKnowledge', '删除指定记录；先展示名称和影响，确认后使用系统原有删除规则', 'knowledge', 'DELETE', 'HIGH_RISK', true),
+  tool('deleteReview', '删除指定记录；先展示名称和影响，确认后使用系统原有删除规则', 'reviews', 'DELETE', 'HIGH_RISK', true),
+  tool('deleteEvent', '删除指定记录；先展示名称和影响，确认后使用系统原有删除规则', 'events', 'DELETE', 'HIGH_RISK', true),
+  tool('deletePerson', '删除指定记录；先展示名称和影响，确认后使用系统原有删除规则', 'people', 'DELETE', 'HIGH_RISK', true),
+  tool('createEvent', '创建事件记录；确认后执行', 'events', 'CREATE', 'MEDIUM_WRITE', true),
+  tool('updateEvent', '更新事件记录；确认后执行', 'events', 'UPDATE', 'MEDIUM_WRITE', true),
+  tool('createPerson', '创建人物记录；确认后执行', 'people', 'CREATE', 'MEDIUM_WRITE', true),
+  tool('updatePerson', '更新人物记录；确认后执行', 'people', 'UPDATE', 'MEDIUM_WRITE', true),
+  tool('updateReview', '更新复盘记录；确认后执行', 'reviews', 'UPDATE', 'MEDIUM_WRITE', true),
+  tool('updateInsight', '更新洞见记录；确认后执行', 'insights', 'UPDATE', 'MEDIUM_WRITE', true),
+  tool('updatePrinciple', '更新原则记录；确认后执行', 'principles', 'UPDATE', 'MEDIUM_WRITE', true),
+
   tool('readWorkspaceDocument', '读取用户明确指定、且位于 EvoPilot docs/ 目录内的本地 Markdown、TXT、JSON 或 CSV 文档；只读，不修改文件。', 'dataRecords', 'READ', 'READ', false),
   tool('getProfile', '读取当前用户的我的档案与 AI 上下文；仅在当前问题相关时使用。', 'profiles', 'READ', 'READ', false),
   tool('updateProfile', '更新当前用户的我的档案；必须先向用户展示变更预览并等待确认。', 'profiles', 'UPDATE', 'MEDIUM_WRITE', true),

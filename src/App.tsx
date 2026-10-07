@@ -37,7 +37,7 @@ import { durableNotebookHtml, imageFiles, notebookFileIds } from './notebookImag
 import { NoteSaveController, readNoteRecovery, writeNoteRecovery, type NoteDraftSnapshot, type NoteSaveState } from './noteAutosave'
 import { belongsToNotebookCategory, isUnorganizedNotebookItem } from './notebookClassification'
 import VoiceOperatingPanel from './voice/VoiceOperatingPanel'
-import { routeVoiceIntent } from './voice/intentRouter'
+import { pageTitleForVoice, routeVoiceIntent } from './voice/intentRouter'
 import type { VoiceExecutionResult } from './voice/types'
 import './voice/voiceSidebar.css'
 import {
@@ -65,7 +65,6 @@ const formatDate = (value: unknown, withTime = false) => {
   return date.toLocaleString('zh-CN', withTime ? { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' } : { year: 'numeric', month: 'short', day: 'numeric' })
 }
 const formatMinutes = (minutes: number) => minutes < 60 ? `${Math.round(minutes)} 分钟` : `${Math.floor(minutes / 60)} 小时 ${Math.round(minutes % 60)} 分钟`
-const pageTitleForVoice = (view: string) => ({ notebook: '收纳箱', tasks: '任务', projects: '项目', today: '今天', time: '时间', outcomes: '成果', finance: '财务', decisionCenter: '决策中心', cognition: '认知中心', command: '指挥中心' }[view] || '页面')
 const optionParts = (option: FieldOption) => typeof option === 'string' ? { value: option, label: option } : option
 const defaultStatus = (entity: Entity) => ({ tasks: 'todo', goals: 'active', projects: 'active', hypotheses: 'untested', experiments: 'planned', decisions: 'pending', inbox: 'unprocessed', notes: 'INBOX', notebookFiles: 'ACTIVE', results: 'PLANNED', deliverables: 'DRAFT', resultPackages: 'ACTIVE', capabilityPacks: 'DRAFT', capabilityAssets: 'DRAFT', capabilityAssetVersions: 'DRAFT', capabilityPackItems: 'ACTIVE', capabilityWorkspaceFolders: 'ACTIVE', capabilityWorkspaceEntries: 'ACTIVE', packApplications: 'APPLIED', packApplicationItems: 'ACTIVE', templateInstances: 'ACTIVE', capabilityImprovementProposals: 'DRAFT', workflows: 'ACTIVE', workflowVersions: 'EXPERIMENTAL', workflowRuns: 'PLANNED', workflowRunSteps: 'PLANNED', workflowImprovementProposals: 'DRAFT', financialAccounts: 'ACTIVE', financialCategories: 'ACTIVE', financialTransactions: 'POSTED' } as Partial<Record<Entity, string>>)[entity] || 'active'
 const tagsFor = (record: RecordData) => Array.isArray(record.tags) ? record.tags.map(String).map((tag) => tag.trim()).filter(Boolean) : String(record.tags || '').split(',').map((tag) => tag.trim()).filter(Boolean)
@@ -375,8 +374,8 @@ function App() {
   const executeVoiceAction = async (actionId: string): Promise<VoiceExecutionResult> => {
     try {
       const result = await api.confirmAiAction(actionId); await refresh(); setVoicePendingActionId(null)
-      const record = result.record; const label = record ? configFor(record.entity).singular : '操作'
-      return { state: 'DONE', message: result.duplicate ? `相同的${label}已执行，无需重复写入。` : `已完成：${record ? titleFor(record) : result.action.previewTitle || label}`, viewLabel: record ? `已保存到${label}` : undefined }
+      const record = result.record; const label = record ? configFor(record.entity).singular : '操作'; const deleted = result.action.toolName.startsWith('delete')
+      return { state: 'DONE', message: result.duplicate ? `相同的${label}已执行，无需重复写入。` : `${deleted ? '已删除' : '已完成'}：${record ? titleFor(record) : result.action.previewTitle || label}`, viewLabel: record ? deleted ? `已从${label}中移除` : `已保存到${label}` : undefined }
     } catch (error) { return { state: 'ERROR', message: `执行失败：${String(error)}。没有写入成功。` } }
   }
   const cancelVoiceAction = async (actionId: string): Promise<VoiceExecutionResult> => {
@@ -385,7 +384,8 @@ function App() {
   }
   const runVoiceTranscript = async (transcript: string): Promise<VoiceExecutionResult> => {
     const intent = routeVoiceIntent(transcript)
-    if (intent.intent === 'OPEN_PAGE' && intent.page) { setView(intent.page as View); return { state: 'DONE', message: `已打开${pageTitleForVoice(intent.page)}。` } }
+    if (voicePendingActionId && !['CONFIRM', 'CANCEL'].includes(intent.intent)) return { state: 'AWAITING_CONFIRMATION', actionId: voicePendingActionId, message: '还有一项操作等待确认；请说“确认执行”或“取消操作”，再提出新请求。' }
+    if (intent.intent === 'OPEN_PAGE' && intent.page) { if (intent.page === 'assistant') setAiOpen(true); else { setDetailId(null); if (intent.page !== 'projects') setSelectedProjectId(null); setView(intent.page as View) } return { state: 'DONE', message: `已打开${pageTitleForVoice(intent.page)}。` } }
     if (intent.intent === 'SEARCH_SIMPLE' && intent.query) { setSearchQuery(intent.query); setSearchOpen(true); return { state: 'DONE', message: `正在搜索：${intent.query}` } }
     if (intent.intent === 'START_TIMER') {
       if (running) return { state: 'ERROR', message: `已有计时正在运行：${titleFor(running)}。` }
@@ -400,7 +400,7 @@ function App() {
     if (!aiConfig?.configured) { setView('settings'); return { state: 'ERROR', message: '复杂语音操作需要已配置的 AI 服务商；已打开“设置与数据”。' } }
     const response = await sendAi(transcript, { voiceMode: true, voiceIntent: intent.intent })
     if (!response) return { state: 'ERROR', message: 'AI 未能完成语音请求；没有执行写入。' }
-    if (response.action?.status === 'CONFIRM_REQUIRED') { setVoicePendingActionId(response.action.actionId); return { state: 'AWAITING_CONFIRMATION', actionId: response.action.actionId, message: response.action.previewTitle || '已生成操作预览，请确认后执行。' } }
+    if (response.action?.status === 'CONFIRM_REQUIRED') { setVoicePendingActionId(response.action.actionId); return { state: 'AWAITING_CONFIRMATION', actionId: response.action.actionId, message: response.action.previewTitle || '已生成操作预览，请确认后执行。', previewFields: response.action.previewFields } }
     return { state: 'DONE', message: response.answer, actionId: response.action?.actionId }
   }
   const saveAiProvider = async (provider: AiProviderId, apiKey: string, model: string) => {

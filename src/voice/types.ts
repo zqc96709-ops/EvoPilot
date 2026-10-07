@@ -21,4 +21,4 @@ export type SpeechToTextProvider = {
   health(): Promise<{ ok: boolean; message: string }>
 }
 
-export type VoiceExecutionResult = { state: Extract<VoiceState, 'DONE' | 'AWAITING_CONFIRMATION' | 'ERROR' | 'CANCELLED'>; message: string; actionId?: string; viewLabel?: string }
+export type VoiceExecutionResult = { state: Extract<VoiceState, 'DONE' | 'AWAITING_CONFIRMATION' | 'ERROR' | 'CANCELLED'>; message: string; actionId?: string; viewLabel?: string; previewFields?: Array<{ label: string; value: string }> }

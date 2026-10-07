@@ -31,6 +31,14 @@ describe('EvoPilot Agent registries and context', () => {
     expect(toolFor('createFinancialTransaction')).toMatchObject({ entity: 'financialTransactions', riskLevel: 'HIGH_RISK', requiresConfirmation: true })
   })
 
+  it('exposes guarded whole-system writes and deletion', () => {
+    for (const name of ['createEvent', 'updateEvent', 'createPerson', 'updatePerson', 'updateReview', 'updateInsight', 'updatePrinciple']) expect(toolFor(name)).toBeDefined()
+    for (const [name, entity] of [['deleteNote', 'notes'], ['deleteNotebookFile', 'notebookFiles'], ['deleteTask', 'tasks'], ['deleteProject', 'projects'], ['deleteOutcome', 'results'], ['deleteDecision', 'decisions'], ['deleteKnowledge', 'knowledge'], ['deleteReview', 'reviews'], ['deleteEvent', 'events'], ['deletePerson', 'people']] as const) {
+      expect(toolFor(name)).toMatchObject({ entity, actionType: 'DELETE', riskLevel: 'HIGH_RISK', requiresConfirmation: true, inputSchema: { required: ['id'] } })
+      expect(schemaFor(entity)?.allowedActions).toContain(name)
+    }
+  })
+
   it('derives Goal → Project → Task context from the current task', () => {
     const records = [record('goals', 'g1'), record('projects', 'p1', { goalId: 'g1' }), record('tasks', 't1', { projectId: 'p1', goalId: 'g1' })]
     expect(buildAgentContext({ currentRoute: 'tasks', records, selectedProjectId: null, detailId: 't1', conversation: [] })).toMatchObject({ currentEntityType: 'tasks', currentEntityId: 't1', currentTaskId: 't1', currentProjectId: 'p1', currentGoalId: 'g1' })
